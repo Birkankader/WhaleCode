@@ -105,46 +105,46 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUN-01 | Phase ? | Pending |
-| FOUN-02 | Phase ? | Pending |
-| FOUN-03 | Phase ? | Pending |
-| PROC-01 | Phase ? | Pending |
-| PROC-02 | Phase ? | Pending |
-| PROC-03 | Phase ? | Pending |
-| PROC-04 | Phase ? | Pending |
-| PROC-05 | Phase ? | Pending |
-| PROC-06 | Phase ? | Pending |
-| PROC-07 | Phase ? | Pending |
-| PROC-08 | Phase ? | Pending |
-| CTXT-01 | Phase ? | Pending |
-| CTXT-02 | Phase ? | Pending |
-| CTXT-03 | Phase ? | Pending |
-| CTXT-04 | Phase ? | Pending |
-| CTXT-05 | Phase ? | Pending |
-| PMPT-01 | Phase ? | Pending |
-| PMPT-02 | Phase ? | Pending |
-| PMPT-03 | Phase ? | Pending |
-| PMPT-04 | Phase ? | Pending |
-| ROUT-01 | Phase ? | Pending |
-| ROUT-02 | Phase ? | Pending |
-| ROUT-03 | Phase ? | Pending |
-| ROUT-04 | Phase ? | Pending |
-| SAFE-01 | Phase ? | Pending |
-| SAFE-02 | Phase ? | Pending |
-| SAFE-03 | Phase ? | Pending |
-| SAFE-04 | Phase ? | Pending |
-| SAFE-05 | Phase ? | Pending |
-| SAFE-06 | Phase ? | Pending |
-| INTG-01 | Phase ? | Pending |
-| INTG-02 | Phase ? | Pending |
-| INTG-03 | Phase ? | Pending |
-| INTG-04 | Phase ? | Pending |
+| FOUN-01 | Phase 1 | Pending |
+| FOUN-02 | Phase 1 | Pending |
+| FOUN-03 | Phase 1 | Pending |
+| PROC-01 | Phase 3 | Pending |
+| PROC-02 | Phase 6 | Pending |
+| PROC-03 | Phase 7 | Pending |
+| PROC-04 | Phase 5 | Pending |
+| PROC-05 | Phase 2 | Pending |
+| PROC-06 | Phase 2 | Pending |
+| PROC-07 | Phase 2 | Pending |
+| PROC-08 | Phase 2 | Pending |
+| CTXT-01 | Phase 4 | Pending |
+| CTXT-02 | Phase 4 | Pending |
+| CTXT-03 | Phase 4 | Pending |
+| CTXT-04 | Phase 4 | Pending |
+| CTXT-05 | Phase 4 | Pending |
+| PMPT-01 | Phase 8 | Pending |
+| PMPT-02 | Phase 8 | Pending |
+| PMPT-03 | Phase 8 | Pending |
+| PMPT-04 | Phase 8 | Pending |
+| ROUT-01 | Phase 7 | Pending |
+| ROUT-02 | Phase 7 | Pending |
+| ROUT-03 | Phase 7 | Pending |
+| ROUT-04 | Phase 7 | Pending |
+| SAFE-01 | Phase 9 | Pending |
+| SAFE-02 | Phase 9 | Pending |
+| SAFE-03 | Phase 5 | Pending |
+| SAFE-04 | Phase 5 | Pending |
+| SAFE-05 | Phase 7 | Pending |
+| SAFE-06 | Phase 7 | Pending |
+| INTG-01 | Phase 3 | Pending |
+| INTG-02 | Phase 6 | Pending |
+| INTG-03 | Phase 6 | Pending |
+| INTG-04 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 34 total
-- Mapped to phases: 0
-- Unmapped: 34 ⚠️
+- Mapped to phases: 34
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-03-05*
-*Last updated: 2026-03-05 after initial definition*
+*Last updated: 2026-03-05 after roadmap creation — traceability complete*
