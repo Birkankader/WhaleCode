@@ -52,6 +52,47 @@ async resumeProcess(taskId: string) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Spawn a Claude Code subprocess in headless streaming mode.
+ * 
+ * Retrieves the API key from the macOS Keychain, builds the Claude CLI command,
+ * and spawns it through the process manager with secure env var injection.
+ * 
+ * Returns the task_id for tracking the process.
+ */
+async spawnClaudeTask(prompt: string, projectDir: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("spawn_claude_task", { prompt, projectDir, onEvent }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Store a Claude API key in the macOS Keychain.
+ * 
+ * Validates that the key starts with "sk-ant-" before storing.
+ * SECURITY: The key is never logged or included in error messages.
+ */
+async setClaudeApiKey(key: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_claude_api_key", { key }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Check whether a Claude API key is stored in the macOS Keychain.
+ */
+async hasClaudeApiKey() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("has_claude_api_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

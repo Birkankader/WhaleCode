@@ -5,7 +5,10 @@ mod ipc;
 mod process;
 mod state;
 
-use commands::{cancel_process, get_task_count, pause_process, resume_process, spawn_process, start_stream};
+use commands::{
+    cancel_process, get_task_count, has_claude_api_key, pause_process, resume_process,
+    set_claude_api_key, spawn_claude_task, spawn_process, start_stream,
+};
 use state::AppState;
 use tauri::Manager;
 use tauri_specta::collect_commands;
@@ -19,6 +22,9 @@ pub fn run() {
         cancel_process,
         pause_process,
         resume_process,
+        spawn_claude_task,
+        set_claude_api_key,
+        has_claude_api_key,
     ]);
 
     #[cfg(debug_assertions)]

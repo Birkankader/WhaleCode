@@ -1,3 +1,4 @@
+pub mod claude;
 pub mod process;
 
 use tauri::ipc::Channel;
@@ -5,6 +6,7 @@ use tauri::ipc::Channel;
 use crate::ipc::events::OutputEvent;
 use crate::state::AppState;
 
+pub use claude::{has_claude_api_key, set_claude_api_key, spawn_claude_task};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 
 #[tauri::command]
