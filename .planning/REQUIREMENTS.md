@@ -26,11 +26,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Context Management
 
-- [ ] **CTXT-01**: App maintains a persistent project context store (code structure, files, past decisions)
+- [x] **CTXT-01**: App maintains a persistent project context store (code structure, files, past decisions)
 - [ ] **CTXT-02**: Project context is automatically injected into each tool before it starts a task
 - [ ] **CTXT-03**: App records every file change made by every tool in a structured event log
 - [ ] **CTXT-04**: Each tool can read the event log to know what other tools have changed
-- [ ] **CTXT-05**: Context persists across app restarts (SQLite-backed)
+- [x] **CTXT-05**: Context persists across app restarts (SQLite-backed)
 
 ### Prompt Engine
 
@@ -116,11 +116,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PROC-06 | Phase 2 | Complete |
 | PROC-07 | Phase 2 | Complete |
 | PROC-08 | Phase 2 | Complete |
-| CTXT-01 | Phase 4 | Pending |
+| CTXT-01 | Phase 4 | Complete |
 | CTXT-02 | Phase 4 | Pending |
 | CTXT-03 | Phase 4 | Pending |
 | CTXT-04 | Phase 4 | Pending |
-| CTXT-05 | Phase 4 | Pending |
+| CTXT-05 | Phase 4 | Complete |
 | PMPT-01 | Phase 8 | Pending |
 | PMPT-02 | Phase 8 | Pending |
 | PMPT-03 | Phase 8 | Pending |
