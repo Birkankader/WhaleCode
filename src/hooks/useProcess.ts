@@ -24,7 +24,6 @@ export function registerProcessOutput(
 ) {
   // Flush any buffered events first
   const buf = outputBuffers.get(taskId);
-  console.log('[register]', taskId, 'buffered:', buf?.length ?? 0);
   if (buf) {
     for (const event of buf) {
       cb(event);
@@ -39,7 +38,6 @@ export function unregisterProcessOutput(taskId: string) {
 }
 
 function emitProcessOutput(taskId: string, event: OutputEvent) {
-  console.log('[emit]', taskId, event.event, outputCallbacks.has(taskId) ? 'HAS_CB' : 'BUFFERING');
   const cb = outputCallbacks.get(taskId);
   if (cb) {
     cb(event);
