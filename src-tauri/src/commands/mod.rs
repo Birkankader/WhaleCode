@@ -1,7 +1,11 @@
+pub mod process;
+
 use tauri::ipc::Channel;
 
 use crate::ipc::events::OutputEvent;
 use crate::state::AppState;
+
+pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 
 #[tauri::command]
 #[specta::specta]

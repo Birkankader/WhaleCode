@@ -3,14 +3,21 @@ mod ipc;
 mod process;
 mod state;
 
-use commands::{get_task_count, start_stream};
+use commands::{cancel_process, get_task_count, pause_process, resume_process, spawn_process, start_stream};
 use state::AppState;
+use tauri::Manager;
 use tauri_specta::collect_commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder =
-        tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![start_stream, get_task_count,]);
+    let builder = tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
+        start_stream,
+        get_task_count,
+        spawn_process,
+        cancel_process,
+        pause_process,
+        resume_process,
+    ]);
 
     #[cfg(debug_assertions)]
     {
@@ -31,10 +38,17 @@ pub fn run() {
         .setup(|_app| Ok(()))
         .build(tauri::generate_context!())
         .unwrap()
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                println!("App exiting cleanly");
-                // Phase 2: kill child processes from AppState here
+                println!("App exiting — killing all tracked processes");
+                let state: tauri::State<AppState> = app_handle.state();
+                let mut inner = state.lock().unwrap();
+                for (_id, proc) in inner.processes.drain() {
+                    let _ = nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(proc.pgid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                }
             }
         });
 }
