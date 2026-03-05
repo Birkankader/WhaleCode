@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-03-05T21:32:49Z"
-last_activity: 2026-03-05 — Completed 04-01 ContextStore foundation (SQLite, models, Tauri state)
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-03-05T21:52:04Z"
+last_activity: 2026-03-05 — Completed 04-02 Event recording/querying with IPC commands
 progress:
   total_phases: 9
   completed_phases: 3
   total_plans: 12
-  completed_plans: 10
-  percent: 83
+  completed_plans: 11
+  percent: 91
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 4 of 9 (Context Store)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: executing
-Last activity: 2026-03-05 — Completed 04-01 ContextStore foundation (SQLite, models, Tauri state)
+Last activity: 2026-03-05 — Completed 04-02 Event recording/querying with IPC commands
 
-Progress: [████████░░] 83%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [████████░░] 83%
 | Phase 03 P03 | 4min | 3 tasks | 7 files |
 | Phase 03 P04 | 6min | 3 tasks | 7 files |
 | Phase 04 P01 | 9min | 2 tasks | 6 files |
+| Phase 04 P02 | 17min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,9 @@ Recent decisions affecting current work:
 - [04-01]: ContextStore is separate managed state (not inside AppState) for independent access
 - [04-01]: Single migration with both tables and all indexes for atomic schema creation
 - [04-01]: DefaultHasher for project path hashing (deterministic within process, sufficient for local DB naming)
+- [04-02]: Sync IPC commands (not async with spawn_blocking) since std::sync::Mutex with Tauri thread pool is sufficient
+- [04-02]: with_conn closure pattern on ContextStore to encapsulate mutex locking and error mapping
+- [04-02]: i64 intermediate for duration_ms in SQL queries since SQLite INTEGER is signed
 
 ### Pending Todos
 
@@ -116,6 +120,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T21:32:49Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-03-05T21:52:04Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
