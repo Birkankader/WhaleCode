@@ -1,47 +1,139 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 use super::models::{ContextEvent, FileChangeRecord};
 use crate::adapters::claude::ClaudeStreamEvent;
 
 /// Record a task completion event with associated file changes in a single transaction.
 pub fn record_task_completion(
-    _conn: &Connection,
-    _task_id: &str,
-    _tool_name: &str,
-    _event_type: &str,
-    _prompt: Option<&str>,
-    _summary: Option<&str>,
-    _project_dir: &str,
-    _duration_ms: Option<u64>,
-    _cost_usd: Option<f64>,
-    _files_changed: &[(String, String)],
+    conn: &Connection,
+    task_id: &str,
+    tool_name: &str,
+    event_type: &str,
+    prompt: Option<&str>,
+    summary: Option<&str>,
+    project_dir: &str,
+    duration_ms: Option<u64>,
+    cost_usd: Option<f64>,
+    files_changed: &[(String, String)],
 ) -> Result<i64, rusqlite::Error> {
-    todo!()
+    let tx = conn.unchecked_transaction()?;
+    let duration_ms_i64 = duration_ms.map(|v| v as i64);
+
+    tx.execute(
+        "INSERT INTO context_events (task_id, tool_name, event_type, prompt, summary, project_dir, duration_ms, cost_usd)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![task_id, tool_name, event_type, prompt, summary, project_dir, duration_ms_i64, cost_usd],
+    )?;
+    let event_id = tx.last_insert_rowid();
+
+    for (file_path, change_type) in files_changed {
+        tx.execute(
+            "INSERT INTO file_changes (event_id, file_path, change_type) VALUES (?1, ?2, ?3)",
+            params![event_id, file_path, change_type],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(event_id)
 }
 
 /// Get recent file changes for a project, ordered by created_at DESC.
 pub fn get_recent_file_changes(
-    _conn: &Connection,
-    _project_dir: &str,
-    _limit: u32,
+    conn: &Connection,
+    project_dir: &str,
+    limit: u32,
 ) -> Result<Vec<FileChangeRecord>, rusqlite::Error> {
-    todo!()
+    let mut stmt = conn.prepare(
+        "SELECT fc.file_path, fc.change_type, ce.tool_name, ce.summary, fc.created_at
+         FROM file_changes fc
+         JOIN context_events ce ON fc.event_id = ce.id
+         WHERE ce.project_dir = ?1
+         ORDER BY fc.created_at DESC
+         LIMIT ?2",
+    )?;
+
+    let rows = stmt.query_map(params![project_dir, limit], |row| {
+        Ok(FileChangeRecord {
+            file_path: row.get(0)?,
+            change_type: row.get(1)?,
+            tool_name: row.get(2)?,
+            summary: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+
+    rows.collect()
 }
 
 /// Get recent events with their associated file paths for a project.
 pub fn get_recent_events(
-    _conn: &Connection,
-    _project_dir: &str,
-    _limit: u32,
+    conn: &Connection,
+    project_dir: &str,
+    limit: u32,
 ) -> Result<Vec<(ContextEvent, Vec<String>)>, rusqlite::Error> {
-    todo!()
+    let mut event_stmt = conn.prepare(
+        "SELECT id, task_id, tool_name, event_type, prompt, summary, project_dir, metadata, duration_ms, cost_usd, created_at
+         FROM context_events
+         WHERE project_dir = ?1
+         ORDER BY created_at DESC
+         LIMIT ?2",
+    )?;
+
+    let mut file_stmt = conn.prepare(
+        "SELECT file_path FROM file_changes WHERE event_id = ?1",
+    )?;
+
+    let events = event_stmt.query_map(params![project_dir, limit], |row| {
+        let duration_ms_i64: Option<i64> = row.get(8)?;
+        Ok(ContextEvent {
+            id: row.get(0)?,
+            task_id: row.get(1)?,
+            tool_name: row.get(2)?,
+            event_type: row.get(3)?,
+            prompt: row.get(4)?,
+            summary: row.get(5)?,
+            project_dir: row.get(6)?,
+            metadata: row.get(7)?,
+            duration_ms: duration_ms_i64.map(|v| v as u64),
+            cost_usd: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for event_result in events {
+        let event = event_result?;
+        let file_paths: Vec<String> = file_stmt
+            .query_map(params![event.id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        result.push((event, file_paths));
+    }
+
+    Ok(result)
 }
 
 /// Extract file changes from Claude stream events (Write = created, Edit = modified).
 pub fn extract_file_changes_from_claude_events(
-    _events: &[ClaudeStreamEvent],
+    events: &[ClaudeStreamEvent],
 ) -> Vec<(String, String)> {
-    todo!()
+    let mut changes = Vec::new();
+
+    for event in events {
+        if let ClaudeStreamEvent::ToolUse { name: Some(name), input: Some(input) } = event {
+            let change_type = match name.as_str() {
+                "Write" => "created",
+                "Edit" => "modified",
+                _ => continue,
+            };
+
+            if let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) {
+                changes.push((file_path.to_string(), change_type.to_string()));
+            }
+        }
+    }
+
+    changes
 }
 
 #[cfg(test)]
