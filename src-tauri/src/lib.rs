@@ -8,10 +8,11 @@ mod worktree;
 mod state;
 
 use commands::{
-    cancel_process, delete_claude_api_key, get_context_summary, get_recent_changes,
-    get_task_count, has_claude_api_key, pause_process, record_task_completion_cmd,
-    resume_process, set_claude_api_key, spawn_claude_task, spawn_process, start_stream,
-    validate_claude_result,
+    cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
+    delete_claude_api_key, get_context_summary, get_recent_changes, get_task_count,
+    has_claude_api_key, list_worktrees, merge_worktree, pause_process,
+    record_task_completion_cmd, resume_process, set_claude_api_key, spawn_claude_task,
+    spawn_process, start_stream, validate_claude_result,
 };
 use state::AppState;
 use tauri::Manager;
@@ -34,6 +35,11 @@ pub fn run() {
         record_task_completion_cmd,
         get_recent_changes,
         get_context_summary,
+        create_worktree,
+        check_worktree_conflicts,
+        merge_worktree,
+        cleanup_worktrees,
+        list_worktrees,
     ]);
 
     #[cfg(debug_assertions)]

@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod context;
 pub mod process;
+pub mod worktree;
 
 use tauri::ipc::Channel;
 
@@ -13,6 +14,9 @@ pub use claude::{
 };
 pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
+pub use worktree::{
+    check_worktree_conflicts, cleanup_worktrees, create_worktree, list_worktrees, merge_worktree,
+};
 
 #[tauri::command]
 #[specta::specta]
