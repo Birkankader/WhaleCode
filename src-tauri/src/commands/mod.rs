@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod context;
 pub mod process;
 
 use tauri::ipc::Channel;
@@ -10,6 +11,7 @@ pub use claude::{
     delete_claude_api_key, has_claude_api_key, set_claude_api_key, spawn_claude_task,
     validate_claude_result,
 };
+pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 
 #[tauri::command]

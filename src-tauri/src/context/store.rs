@@ -11,6 +11,16 @@ pub struct ContextStore {
 }
 
 impl ContextStore {
+    /// Execute a function with access to the underlying SQLite connection.
+    /// Locks the mutex, calls the closure, and maps rusqlite errors to String.
+    pub fn with_conn<F, T>(&self, f: F) -> Result<T, String>
+    where
+        F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+    {
+        let conn = self.conn.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        f(&conn).map_err(|e| e.to_string())
+    }
+
     pub fn new(db_path: &Path) -> Result<Self, rusqlite::Error> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {

@@ -7,7 +7,8 @@ mod context;
 mod state;
 
 use commands::{
-    cancel_process, delete_claude_api_key, get_task_count, has_claude_api_key, pause_process,
+    cancel_process, delete_claude_api_key, get_context_summary, get_recent_changes,
+    get_task_count, has_claude_api_key, pause_process, record_task_completion_cmd,
     resume_process, set_claude_api_key, spawn_claude_task, spawn_process, start_stream,
     validate_claude_result,
 };
@@ -29,6 +30,9 @@ pub fn run() {
         has_claude_api_key,
         validate_claude_result,
         delete_claude_api_key,
+        record_task_completion_cmd,
+        get_recent_changes,
+        get_context_summary,
     ]);
 
     #[cfg(debug_assertions)]
