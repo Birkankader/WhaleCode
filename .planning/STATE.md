@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-05T20:10:16.703Z"
-last_activity: 2026-03-05 — Completed 02-02 Process UI
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-03-05T20:37:34Z"
+last_activity: 2026-03-05 — Completed 03-01 Credential Storage & Env Var Injection
 progress:
   total_phases: 9
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_plans: 8
+  completed_plans: 6
+  percent: 75
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** Multiple AI coding tools working in parallel on the same project, fully aware of each other's changes and sharing a unified context
-**Current focus:** Phase 2 — Process Core (complete)
+**Current focus:** Phase 3 — Claude Code Adapter (in progress)
 
 ## Current Position
 
-Phase: 2 of 9 (Process Core)
-Plan: 2 of 2 in current phase (phase complete)
+Phase: 3 of 9 (Claude Code Adapter)
+Plan: 1 of 3 in current phase
 Status: executing
-Last activity: 2026-03-05 — Completed 02-02 Process UI
+Last activity: 2026-03-05 — Completed 03-01 Credential Storage & Env Var Injection
 
-Progress: [██████████] 100%
+Progress: [███████░░░] 75%
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Progress: [██████████] 100%
 | Phase 01 P03 | 2min | 2 tasks | 8 files |
 | Phase 02 P01 | 5min | 2 tasks | 10 files |
 | Phase 02 P02 | 8min | 2 tasks | 7 files |
+| Phase 03 P01 | 4min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,9 @@ Recent decisions affecting current work:
 - [02-02]: Global event routing pattern (registerProcessOutput/emitProcessOutput) instead of Channel-per-OutputConsole
 - [02-02]: Event buffering for process output to handle output before component mount
 - [02-02]: Memoized xterm options and ref guards to prevent infinite re-render loops
+- [03-01]: keyring 3 with apple-native for direct macOS Keychain access
+- [03-01]: Test keychain uses separate com.whalecode.test service to avoid polluting real credentials
+- [03-01]: spawn delegates to spawn_with_env with empty slice — no code duplication
 
 ### Pending Todos
 
@@ -95,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T20:07:44.059Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-03-05T20:37:34Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
