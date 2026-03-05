@@ -118,6 +118,62 @@ async deleteClaudeApiKey() : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Create an isolated git worktree for a task.
+ */
+async createWorktree(taskId: string, projectDir: string) : Promise<Result<WorktreeEntry, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_worktree", { taskId, projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Check for file-level conflicts between two worktree branches.
+ */
+async checkWorktreeConflicts(projectDir: string, branchA: string, branchB: string) : Promise<Result<ConflictReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_worktree_conflicts", { projectDir, branchA, branchB }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Merge a worktree branch into the main/default branch.
+ * SAFE-04: Pre-merge conflict gate.
+ */
+async mergeWorktree(projectDir: string, branchName: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("merge_worktree", { projectDir, branchName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Clean up stale/invalid worktrees from previous crashed sessions.
+ */
+async cleanupWorktrees(projectDir: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cleanup_worktrees", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List all active whalecode worktrees for the project.
+ */
+async listWorktrees(projectDir: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_worktrees", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -132,6 +188,9 @@ async deleteClaudeApiKey() : Promise<Result<null, string>> {
 /** user-defined types **/
 
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
+export interface WorktreeEntry { task_id: string; worktree_name: string; branch_name: string; path: string; created_at: string }
+export interface ConflictFile { path: string }
+export interface ConflictReport { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
 export type TAURI_CHANNEL<TSend> = null
 
 /** tauri-specta globals **/
