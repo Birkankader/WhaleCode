@@ -28,3 +28,4 @@ keyring = { version = "3", features = ["apple-native"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 rusqlite_migration = "2.4"
 chrono = { version = "0.4", features = ["serde"] }
+git2 = { version = "0.20", features = ["vendored-libgit2"] }
