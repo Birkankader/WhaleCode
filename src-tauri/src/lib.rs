@@ -3,6 +3,7 @@ mod commands;
 mod credentials;
 mod ipc;
 mod process;
+mod context;
 mod state;
 
 use commands::{
