@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Tauri v2 scaffold, AppState, IPC channel pipeline, base UI shell (completed 2026-03-05)
 - [x] **Phase 2: Process Core** - Subprocess lifecycle management, zombie cleanup, streaming output console (completed 2026-03-05)
-- [x] **Phase 3: Claude Code Adapter** - Tool trait, headless NDJSON execution, silent failure detection, API key security (completed 2026-03-05)
+- [ ] **Phase 3: Claude Code Adapter** - Tool trait, headless NDJSON execution, silent failure detection, API key security
 - [ ] **Phase 4: Context Store** - SQLite write-ahead log of file changes and decisions, persistent project memory
 - [ ] **Phase 5: Worktree Isolation + Conflict Detection** - Git worktree per task, file-lock registry, conflict alerts
 - [ ] **Phase 6: Gemini CLI Adapter** - Second tool adapter, output validation, quota tracking, both adapters proven
@@ -62,11 +62,12 @@ Plans:
   2. A zero-token or empty response from Claude Code is flagged as a failure in the UI, not shown as success
   3. When Claude Code hits an API rate limit, the user sees a notification and the task retries with backoff
   4. Claude Code API key is stored in the OS keychain — not visible in app files or logs
-**Plans**: 3 plans
+**Plans**: 4 plans
 Plans:
-- [ ] 03-01-PLAN.md — Keychain credential storage, process manager env var extension
-- [ ] 03-02-PLAN.md — Claude adapter NDJSON parsing, failure detection, IPC commands
-- [ ] 03-03-PLAN.md — Frontend Claude integration, API key settings UI, end-to-end verification
+- [x] 03-01-PLAN.md — Keychain credential storage, process manager env var extension
+- [x] 03-02-PLAN.md — Claude adapter NDJSON parsing, failure detection, IPC commands
+- [x] 03-03-PLAN.md — Frontend Claude integration, API key settings UI, end-to-end verification
+- [ ] 03-04-PLAN.md — Gap closure: wire retry loop, silent failure detection, API key delete
 
 ### Phase 4: Context Store
 **Goal**: The app maintains a persistent, queryable record of every file change and task decision; this record survives app restarts and is automatically injected into each tool before it starts
@@ -168,7 +169,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-03-05 |
 | 2. Process Core | 2/2 | Complete   | 2026-03-05 |
-| 3. Claude Code Adapter | 3/3 | Complete   | 2026-03-05 |
+| 3. Claude Code Adapter | 3/4 | Gap closure   | - |
 | 4. Context Store | 0/TBD | Not started | - |
 | 5. Worktree Isolation + Conflict Detection | 0/TBD | Not started | - |
 | 6. Gemini CLI Adapter | 0/TBD | Not started | - |
