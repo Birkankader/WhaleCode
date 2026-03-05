@@ -47,7 +47,18 @@ pub fn run() {
         .manage(AppState::default())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(invoke_handler)
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir().map_err(|e| {
+                Box::<dyn std::error::Error>::from(format!("Failed to get app_data_dir: {}", e))
+            })?;
+            let db_path =
+                context::store::ContextStore::db_path_for_project(&app_data_dir, "default");
+            let context_store = context::store::ContextStore::new(&db_path).map_err(|e| {
+                Box::<dyn std::error::Error>::from(format!("Failed to init ContextStore: {}", e))
+            })?;
+            app.manage(context_store);
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .unwrap()
         .run(|app_handle, event| {
