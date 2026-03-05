@@ -1,5 +1,6 @@
 use tauri::ipc::Channel;
 
+use crate::context::store::ContextStore;
 use crate::ipc::events::OutputEvent;
 use crate::state::AppState;
 
@@ -7,6 +8,7 @@ use crate::state::AppState;
 ///
 /// Retrieves the API key from the macOS Keychain, builds the Claude CLI command,
 /// and spawns it through the process manager with secure env var injection.
+/// Automatically prepends recent project context to the prompt.
 ///
 /// Returns the task_id for tracking the process.
 #[tauri::command]
@@ -16,6 +18,7 @@ pub async fn spawn_claude_task(
     project_dir: String,
     on_event: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
+    context_store: tauri::State<'_, ContextStore>,
 ) -> Result<String, String> {
     // Retrieve API key from keychain (blocking call wrapped for async)
     let api_key = tokio::task::spawn_blocking(|| {
@@ -24,8 +27,25 @@ pub async fn spawn_claude_task(
     .await
     .map_err(|e| format!("Failed to retrieve API key: {}", e))??;
 
+    // Build context preamble from recent project history
+    let context_store_clone = context_store.inner().clone();
+    let project_dir_clone = project_dir.clone();
+    let context_preamble = tokio::task::spawn_blocking(move || {
+        context_store_clone.with_conn(|conn| {
+            crate::context::injection::build_context_preamble(conn, &project_dir_clone, 5, 2000)
+        })
+    })
+    .await
+    .map_err(|e| format!("Context injection failed: {}", e))??;
+
+    let full_prompt = if context_preamble.is_empty() {
+        prompt
+    } else {
+        format!("{}\n\n---\nUser task:\n{}", context_preamble, prompt)
+    };
+
     // Build Claude-specific command
-    let cmd = crate::adapters::claude::build_command(&prompt, &project_dir, &api_key);
+    let cmd = crate::adapters::claude::build_command(&full_prompt, &project_dir, &api_key);
 
     // Convert env Vec<(String, String)> to slice-compatible format
     let env_refs: Vec<(&str, &str)> = cmd.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
