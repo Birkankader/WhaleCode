@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-03-05T04:21:00.860Z"
-last_activity: 2026-03-05 — Roadmap created, 34 requirements mapped across 9 phases
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-03-05T06:30:20.223Z"
+last_activity: 2026-03-05 — Completed 01-01 Project Scaffold
 progress:
   total_phases: 9
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 1
-  percent: 3
+  total_plans: 3
+  completed_plans: 2
+  percent: 67
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 1 of 9 (Foundation)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: executing
-Last activity: 2026-03-05 — Completed 01-01 Project Scaffold
+Last activity: 2026-03-05 — Completed 01-02 IPC Pipeline
 
-Progress: [▓░░░░░░░░░] 3%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
@@ -50,6 +50,7 @@ Progress: [▓░░░░░░░░░] 3%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 01 P02 | 6min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,9 @@ Recent decisions affecting current work:
 - [Research]: Git worktree isolation per agent is mandatory before enabling parallel dispatch — no exceptions
 - [Research]: Use tauri::Channel (not global Tauri events) for streaming subprocess output — events are too slow
 - [Research]: Use std::sync::Mutex (not tokio::sync::Mutex) for AppState unless holding lock across .await points
+- [Phase 01]: Added specta =2.0.0-rc.22 direct dep for specta::specta macro
+- [Phase 01]: Use u32 not usize for specta-exported numeric types (BigIntForbidden)
+- [Phase 01]: Use CARGO_MANIFEST_DIR for absolute bindings export path
 
 ### Pending Todos
 
@@ -81,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T06:21:31Z
-Stopped at: Completed 01-01-PLAN.md
-Resume file: .planning/phases/01-foundation/01-02-PLAN.md
+Last session: 2026-03-05T06:30:20.221Z
+Stopped at: Completed 01-02-PLAN.md
+Resume file: None
