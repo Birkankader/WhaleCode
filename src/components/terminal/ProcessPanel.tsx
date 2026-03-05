@@ -72,7 +72,7 @@ export function ProcessPanel() {
             <line x1="12" y1="9" x2="12" y2="13" />
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
-          Rate limit detected. Claude Code is being throttled. Retrying automatically...
+          {typeof rateLimitWarning === 'string' ? rateLimitWarning : 'Rate limit detected.'}
         </div>
       )}
 

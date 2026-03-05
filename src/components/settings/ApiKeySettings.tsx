@@ -60,18 +60,12 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
     setMessage(null);
 
     try {
-      // Setting empty key triggers validation error on backend,
-      // so we use a special delete flow. For now, set a known-invalid
-      // value — the backend validates sk-ant- prefix and rejects.
-      // In practice, the delete is handled by the keyring crate.
-      const result = await commands.setClaudeApiKey('');
+      const result = await commands.deleteClaudeApiKey();
       if (result.status === 'ok') {
         setHasKey(false);
-        setMessage({ type: 'success', text: 'API key removed' });
+        setMessage({ type: 'success', text: 'API key removed from Keychain' });
       } else {
-        // Expected: backend rejects empty key, but the keyring entry
-        // may need a dedicated delete command. For now, inform user.
-        setMessage({ type: 'error', text: 'Could not delete key: ' + result.error });
+        setMessage({ type: 'error', text: 'Failed to delete: ' + result.error });
       }
     } catch {
       setMessage({ type: 'error', text: 'Failed to delete API key' });
