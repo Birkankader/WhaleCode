@@ -37,7 +37,7 @@ export function unregisterProcessOutput(taskId: string) {
   outputCallbacks.delete(taskId);
 }
 
-function emitProcessOutput(taskId: string, event: OutputEvent) {
+export function emitProcessOutput(taskId: string, event: OutputEvent) {
   const cb = outputCallbacks.get(taskId);
   if (cb) {
     cb(event);
