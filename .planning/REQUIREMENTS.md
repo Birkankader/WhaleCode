@@ -11,7 +11,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **FOUN-01**: App launches as native macOS window with Tauri v2 shell
 - [x] **FOUN-02**: Rust backend initializes with managed AppState and IPC channels
-- [ ] **FOUN-03**: Frontend renders React app with routing and base layout
+- [x] **FOUN-03**: Frontend renders React app with routing and base layout
 
 ### Process Management
 
@@ -107,7 +107,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | FOUN-01 | Phase 1 | Complete |
 | FOUN-02 | Phase 1 | Complete |
-| FOUN-03 | Phase 1 | Pending |
+| FOUN-03 | Phase 1 | Complete |
 | PROC-01 | Phase 3 | Pending |
 | PROC-02 | Phase 6 | Pending |
 | PROC-03 | Phase 7 | Pending |
