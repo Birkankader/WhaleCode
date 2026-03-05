@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseClaudeEvent, formatClaudeEvent, type ClaudeStreamEvent } from '../lib/claude';
+import { parseClaudeEvent, formatClaudeEvent } from '../lib/claude';
 
 describe('parseClaudeEvent', () => {
   it('parses init event JSON to typed object', () => {
