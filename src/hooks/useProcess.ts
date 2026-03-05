@@ -13,6 +13,45 @@ export interface ProcessInfo {
   channel: Channel<OutputEvent>;
 }
 
+// ── Global output routing (outside React/Zustand to avoid timing issues) ──
+
+const outputCallbacks = new Map<string, (event: OutputEvent) => void>();
+const outputBuffers = new Map<string, OutputEvent[]>();
+
+export function registerProcessOutput(
+  taskId: string,
+  cb: (event: OutputEvent) => void,
+) {
+  // Flush any buffered events first
+  const buf = outputBuffers.get(taskId);
+  console.log('[register]', taskId, 'buffered:', buf?.length ?? 0);
+  if (buf) {
+    for (const event of buf) {
+      cb(event);
+    }
+    outputBuffers.delete(taskId);
+  }
+  outputCallbacks.set(taskId, cb);
+}
+
+export function unregisterProcessOutput(taskId: string) {
+  outputCallbacks.delete(taskId);
+}
+
+function emitProcessOutput(taskId: string, event: OutputEvent) {
+  console.log('[emit]', taskId, event.event, outputCallbacks.has(taskId) ? 'HAS_CB' : 'BUFFERING');
+  const cb = outputCallbacks.get(taskId);
+  if (cb) {
+    cb(event);
+  } else {
+    const buf = outputBuffers.get(taskId) ?? [];
+    buf.push(event);
+    outputBuffers.set(taskId, buf);
+  }
+}
+
+// ── Zustand store (only manages process state, not output routing) ──
+
 interface ProcessState {
   processes: Map<string, ProcessInfo>;
   activeProcessId: string | null;
@@ -23,7 +62,6 @@ interface ProcessState {
     cmd: string,
     args: string[],
     cwd: string,
-    onOutput: (event: OutputEvent) => void,
   ) => Promise<string | null>;
 
   cancelProcess: (taskId: string) => Promise<void>;
@@ -40,20 +78,26 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
 
   setActiveProcess: (taskId) => set({ activeProcessId: taskId }),
 
-  spawnProcess: async (cmd, args, cwd, onOutput) => {
-    const channel = new Channel<OutputEvent>();
+  spawnProcess: async (cmd, args, cwd) => {
+    let channel: Channel<OutputEvent>;
+    try {
+      channel = new Channel<OutputEvent>();
+    } catch {
+      return null;
+    }
+
+    let resolvedTaskId: string | null = null;
+    const earlyEvents: OutputEvent[] = [];
 
     channel.onmessage = (msg: OutputEvent) => {
-      onOutput(msg);
-
+      if (!resolvedTaskId) {
+        earlyEvents.push(msg);
+        return;
+      }
+      emitProcessOutput(resolvedTaskId, msg);
       if (msg.event === 'exit') {
         const code = Number(msg.data);
-        get()._updateStatus(
-          // We need to find taskId after spawn resolves; handled below
-          '', // placeholder, overwritten after spawn
-          code === 0 ? 'completed' : 'failed',
-          code,
-        );
+        get()._updateStatus(resolvedTaskId, code === 0 ? 'completed' : 'failed', code);
       }
     };
 
@@ -65,15 +109,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       }
 
       const taskId = result.data;
-
-      // Replace the channel handler now that we have the real taskId
-      channel.onmessage = (msg: OutputEvent) => {
-        onOutput(msg);
-        if (msg.event === 'exit') {
-          const code = Number(msg.data);
-          get()._updateStatus(taskId, code === 0 ? 'completed' : 'failed', code);
-        }
-      };
+      resolvedTaskId = taskId;
 
       const processInfo: ProcessInfo = {
         taskId,
@@ -91,9 +127,17 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
         };
       });
 
+      // Replay events that arrived during the await
+      for (const msg of earlyEvents) {
+        emitProcessOutput(taskId, msg);
+        if (msg.event === 'exit') {
+          const code = Number(msg.data);
+          get()._updateStatus(taskId, code === 0 ? 'completed' : 'failed', code);
+        }
+      }
+
       return taskId;
     } catch {
-      // Not running inside Tauri runtime (e.g., browser dev or test)
       return null;
     }
   },

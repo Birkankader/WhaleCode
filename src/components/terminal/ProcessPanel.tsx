@@ -1,7 +1,6 @@
-import { useCallback, useRef } from 'react';
+import { useCallback } from 'react';
 import { useProcessStore, type ProcessStatus } from '../../hooks/useProcess';
 import { OutputConsole } from './OutputConsole';
-import type { OutputEvent } from '../../bindings';
 
 function statusColor(status: ProcessStatus): string {
   switch (status) {
@@ -38,18 +37,11 @@ export function ProcessPanel() {
   const pauseProcess = useProcessStore((s) => s.pauseProcess);
   const resumeProcess = useProcessStore((s) => s.resumeProcess);
 
-  // Store output write functions per process
-  const outputWriters = useRef<Map<string, (event: OutputEvent) => void>>(new Map());
-
   const handleSpawnTest = useCallback(async () => {
-    const onOutput = (_event: OutputEvent) => {
-      // Output is written directly to the terminal by OutputConsole
-    };
     await spawnProcess(
       '/bin/sh',
       ['-c', 'echo "hello" && sleep 5 && echo "done"'],
       '/tmp',
-      onOutput,
     );
   }, [spawnProcess]);
 
@@ -149,13 +141,7 @@ export function ProcessPanel() {
                 display: proc.taskId === activeProcessId ? 'block' : 'none',
               }}
             >
-              <OutputConsole
-                processId={proc.taskId}
-                onOutput={(event) => {
-                  const writer = outputWriters.current.get(proc.taskId);
-                  if (writer) writer(event);
-                }}
-              />
+              <OutputConsole processId={proc.taskId} />
             </div>
           ))
         )}

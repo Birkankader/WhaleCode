@@ -1,86 +1,89 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useXTerm } from 'react-xtermjs';
 import { FitAddon } from '@xterm/addon-fit';
 import { Channel } from '@tauri-apps/api/core';
 import { commands } from '../../bindings';
+import { registerProcessOutput, unregisterProcessOutput } from '../../hooks/useProcess';
 import type { OutputEvent } from '../../bindings';
 
 function timestamp(): string {
   return `[${new Date().toLocaleTimeString('en-US', { hour12: false })}]`;
 }
 
+const XTERM_OPTIONS = {
+  scrollback: 10000,
+  convertEol: true,
+  theme: {
+    background: '#0a0a0a',
+    foreground: '#e2e2e2',
+    cursor: '#e2e2e2',
+  },
+  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+  fontSize: 13,
+} as const;
+
 interface OutputConsoleProps {
-  /** When provided, the console is bound to a specific process and does not auto-start a stream */
   processId?: string;
-  /** Callback to expose the Channel to parent (for process-managed lifecycle) */
   channelRef?: (channel: Channel<OutputEvent>) => void;
-  /** External handler for output events (used by ProcessPanel) */
   onOutput?: (event: OutputEvent) => void;
 }
 
 export function OutputConsole({ processId, channelRef, onOutput }: OutputConsoleProps = {}) {
-  const { instance, ref } = useXTerm({
-    options: {
-      scrollback: 10000,
-      convertEol: true,
-      theme: {
-        background: '#0a0a0a',
-        foreground: '#e2e2e2',
-        cursor: '#e2e2e2',
-      },
-      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-      fontSize: 13,
-    },
-  });
-  const fitAddon = useRef(new FitAddon());
+  const options = useMemo(() => ({ options: XTERM_OPTIONS }), []);
+  const { instance, ref } = useXTerm(options);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const initializedRef = useRef(false);
+  const registeredRef = useRef(false);
 
-  const writeEvent = useCallback(
-    (msg: OutputEvent) => {
-      if (!instance) return;
-      const ts = timestamp();
-      if (msg.event === 'stdout') {
-        instance.writeln(`\x1b[2m${ts}\x1b[0m ${msg.data}`);
-      } else if (msg.event === 'stderr') {
-        instance.writeln(`\x1b[2m${ts}\x1b[0m \x1b[31m${msg.data}\x1b[0m`);
-      } else if (msg.event === 'exit') {
-        instance.writeln(
-          `\x1b[2m${ts} [Process exited with code ${msg.data}]\x1b[0m`,
-        );
-      } else if (msg.event === 'error') {
-        instance.writeln(
-          `\x1b[2m${ts}\x1b[0m \x1b[31m[Error: ${msg.data}]\x1b[0m`,
-        );
-      }
-    },
-    [instance],
-  );
+  // Stable writeEvent via ref (avoids dependency on instance in callbacks)
+  const instanceRef = useRef(instance);
+  instanceRef.current = instance;
 
-  // Expose writeEvent so parent can forward events to this terminal
-  const writeEventRef = useRef(writeEvent);
-  writeEventRef.current = writeEvent;
-
-  // Load FitAddon when terminal instance is ready
-  useEffect(() => {
-    if (instance) {
-      instance.loadAddon(fitAddon.current);
-      fitAddon.current.fit();
+  const writeEvent = useCallback((msg: OutputEvent) => {
+    const term = instanceRef.current;
+    if (!term) return;
+    const ts = timestamp();
+    if (msg.event === 'stdout') {
+      term.writeln(`\x1b[2m${ts}\x1b[0m ${msg.data}`);
+    } else if (msg.event === 'stderr') {
+      term.writeln(`\x1b[2m${ts}\x1b[0m \x1b[31m${msg.data}\x1b[0m`);
+    } else if (msg.event === 'exit') {
+      term.writeln(`\x1b[2m${ts} [Process exited with code ${msg.data}]\x1b[0m`);
+    } else if (msg.event === 'error') {
+      term.writeln(`\x1b[2m${ts}\x1b[0m \x1b[31m[Error: ${msg.data}]\x1b[0m`);
     }
+  }, []);
+
+  // Load FitAddon once when terminal instance is first available
+  useEffect(() => {
+    if (!instance || initializedRef.current) return;
+    initializedRef.current = true;
+
+    const addon = new FitAddon();
+    fitAddonRef.current = addon;
+    instance.loadAddon(addon);
+    addon.fit();
   }, [instance]);
 
   // Keep terminal sized to container on resize
   useEffect(() => {
-    const observer = new ResizeObserver(() => fitAddon.current?.fit());
+    const observer = new ResizeObserver(() => fitAddonRef.current?.fit());
     if (ref.current) observer.observe(ref.current);
     return () => observer.disconnect();
   }, [ref]);
 
-  // Wire Channel to terminal on mount (only when no processId — legacy/standalone mode)
+  // Legacy/standalone mode: create own channel and stream
   useEffect(() => {
     if (!instance || processId !== undefined) return;
 
-    const channel = new Channel<OutputEvent>();
+    let channel: Channel<OutputEvent>;
+    try {
+      channel = new Channel<OutputEvent>();
+    } catch {
+      return;
+    }
     channel.onmessage = (msg: OutputEvent) => {
-      writeEventRef.current(msg);
+      writeEvent(msg);
       onOutput?.(msg);
     };
 
@@ -88,34 +91,25 @@ export function OutputConsole({ processId, channelRef, onOutput }: OutputConsole
       channelRef(channel);
     }
 
-    // Start the test stream - use .catch to suppress errors in non-Tauri env
-    commands.startStream(channel).catch(() => {
-      // Not running inside Tauri runtime (e.g., browser dev or test) - expected
+    commands.startStream(channel).catch(() => {});
+  }, [instance, processId, channelRef, onOutput, writeEvent]);
+
+  // Process mode: register for output via global event routing
+  useEffect(() => {
+    if (!instance || processId === undefined) return;
+    if (registeredRef.current) return;
+    registeredRef.current = true;
+
+    registerProcessOutput(processId, (msg: OutputEvent) => {
+      writeEvent(msg);
+      onOutput?.(msg);
     });
 
     return () => {
-      // Channel cleanup: no explicit close API in tauri::Channel; GC handles it
+      registeredRef.current = false;
+      unregisterProcessOutput(processId);
     };
-  }, [instance, processId, channelRef, onOutput]);
-
-  // When processId is provided, create a channel and expose it to parent
-  useEffect(() => {
-    if (!instance || processId === undefined) return;
-
-    const channel = new Channel<OutputEvent>();
-    channel.onmessage = (msg: OutputEvent) => {
-      writeEventRef.current(msg);
-      onOutput?.(msg);
-    };
-
-    if (channelRef) {
-      channelRef(channel);
-    }
-
-    return () => {
-      // Channel cleanup: GC handles it
-    };
-  }, [instance, processId, channelRef, onOutput]);
+  }, [instance, processId, onOutput, writeEvent]);
 
   return (
     <div
