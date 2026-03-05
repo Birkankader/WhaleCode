@@ -1,6 +1,6 @@
 import { Routes, Route } from 'react-router';
 import { AppShell } from '../components/layout/AppShell';
-import { OutputConsole } from '../components/terminal/OutputConsole';
+import { ProcessPanel } from '../components/terminal/ProcessPanel';
 
 export function AppRoutes() {
   return (
@@ -9,7 +9,7 @@ export function AppRoutes() {
         path="/"
         element={
           <AppShell>
-            <OutputConsole />
+            <ProcessPanel />
           </AppShell>
         }
       />
