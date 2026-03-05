@@ -1,5 +1,219 @@
 // Claude Code adapter: NDJSON parsing, command building, failure detection, rate limit detection
-// Implementation will be added after tests (TDD RED phase)
+
+use serde::Deserialize;
+
+// ---------------------------------------------------------------------------
+// NDJSON Event Types
+// ---------------------------------------------------------------------------
+
+/// Represents a single line from Claude Code's `--output-format stream-json` NDJSON output.
+/// Uses serde tagged enum on the `type` field. All inner fields are `Option<T>` for
+/// resilient parsing — the exact schema may vary across CLI versions.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum ClaudeStreamEvent {
+    #[serde(rename = "init")]
+    Init {
+        session_id: Option<String>,
+    },
+
+    #[serde(rename = "message")]
+    Message {
+        role: Option<String>,
+        content: Option<Vec<ContentBlock>>,
+    },
+
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        name: Option<String>,
+        input: Option<serde_json::Value>,
+    },
+
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        output: Option<String>,
+    },
+
+    #[serde(rename = "result")]
+    Result {
+        status: Option<String>,
+        duration_ms: Option<u64>,
+        result: Option<String>,
+        subtype: Option<String>,
+        is_error: Option<bool>,
+        total_cost_usd: Option<f64>,
+        num_turns: Option<u32>,
+        session_id: Option<String>,
+    },
+
+    /// Raw API events emitted with --verbose --include-partial-messages
+    #[serde(rename = "stream_event")]
+    StreamEvent {
+        event: Option<serde_json::Value>,
+    },
+}
+
+/// A content block inside a `message` event.
+#[derive(Debug, Deserialize)]
+pub struct ContentBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub text: Option<String>,
+    pub name: Option<String>,
+    pub input: Option<serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Command Builder
+// ---------------------------------------------------------------------------
+
+/// Holds the fully resolved command, args, env vars, and working directory
+/// needed to spawn a Claude Code subprocess.
+pub struct ClaudeCommand {
+    pub cmd: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub cwd: String,
+}
+
+/// Build the CLI command for spawning Claude Code in headless streaming mode.
+///
+/// SECURITY: The `api_key` is stored in `env` only — it is never included
+/// in args or logged.
+pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
+    ClaudeCommand {
+        cmd: "claude".to_string(),
+        args: vec![
+            "-p".to_string(),
+            prompt.to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+        ],
+        env: vec![
+            ("ANTHROPIC_API_KEY".to_string(), api_key.to_string()),
+            ("NO_COLOR".to_string(), "1".to_string()),
+        ],
+        cwd: cwd.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NDJSON Parser
+// ---------------------------------------------------------------------------
+
+/// Parse a single line from Claude Code's NDJSON output stream.
+/// Returns `None` for non-JSON lines (expected per Pitfall 5 in research).
+pub fn parse_stream_line(line: &str) -> Option<ClaudeStreamEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Result Validator
+// ---------------------------------------------------------------------------
+
+/// Validate a result event from Claude Code for silent failures.
+///
+/// Checks:
+/// - is_error is not true
+/// - result text is non-empty
+/// - num_turns > 0
+/// - status == "success"
+///
+/// Returns a descriptive error for each failure mode.
+pub fn validate_result(event: &ClaudeStreamEvent) -> Result<(), String> {
+    match event {
+        ClaudeStreamEvent::Result {
+            status,
+            result,
+            is_error,
+            num_turns,
+            ..
+        } => {
+            // Check for explicit error flag
+            if *is_error == Some(true) {
+                return Err("Claude Code reported an error".to_string());
+            }
+            // Check for empty/missing result (silent failure)
+            if result.as_ref().map_or(true, |r| r.trim().is_empty()) {
+                return Err(
+                    "Claude Code returned empty result (silent failure)".to_string(),
+                );
+            }
+            // Check for zero turns (nothing happened)
+            if *num_turns == Some(0) {
+                return Err(
+                    "Claude Code completed zero turns (silent failure)".to_string(),
+                );
+            }
+            // Check status
+            if status.as_deref() != Some("success") {
+                return Err(format!("Claude Code status: {:?}", status));
+            }
+            Ok(())
+        }
+        _ => Err("No result event received from Claude Code".to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rate Limit Detector
+// ---------------------------------------------------------------------------
+
+/// Information about a detected rate limit.
+pub struct RateLimitInfo {
+    pub retry_after_secs: Option<u64>,
+}
+
+/// Detect rate-limit or overload errors in a stderr/stdout line.
+/// Returns `Some(RateLimitInfo)` if the line indicates a rate limit.
+pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
+    if line.contains("rate_limit")
+        || line.contains("Rate limit")
+        || line.contains("overloaded")
+        || line.contains("529")
+        || line.contains("429")
+    {
+        Some(RateLimitInfo {
+            retry_after_secs: None,
+        })
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retry Policy
+// ---------------------------------------------------------------------------
+
+/// Exponential backoff retry policy for rate-limited Claude Code requests.
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl RetryPolicy {
+    /// Default retry policy for Claude Code: 3 retries, 5s base, 60s max.
+    pub fn default_claude() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay_ms: 5_000,
+            max_delay_ms: 60_000,
+        }
+    }
+
+    /// Calculate the delay in milliseconds for a given attempt (0-indexed).
+    /// Delay = base * 2^attempt, capped at max_delay_ms.
+    pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
+        let delay = self.base_delay_ms.saturating_mul(2u64.saturating_pow(attempt));
+        delay.min(self.max_delay_ms)
+    }
+}
 
 #[cfg(test)]
 mod tests {
