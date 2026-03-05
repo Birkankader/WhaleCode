@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-05T22:34:50.080Z"
-last_activity: 2026-03-06 — Completed 05-01 WorktreeManager foundation
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-05T22:39:45.000Z"
+last_activity: 2026-03-06 — Completed 05-02 Conflict detection and IPC commands
 progress:
   total_phases: 9
   completed_phases: 4
   total_plans: 15
-  completed_plans: 13
-  percent: 87
+  completed_plans: 14
+  percent: 93
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 5 of 9 (Worktree Isolation)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: executing
-Last activity: 2026-03-06 — Completed 05-01 WorktreeManager foundation
+Last activity: 2026-03-06 — Completed 05-02 Conflict detection and IPC commands
 
-Progress: [█████████░] 87%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -62,6 +62,7 @@ Progress: [█████████░] 87%
 | Phase 04 P02 | 17min | 2 tasks | 7 files |
 | Phase 04 P03 | 14min | 2 tasks | 4 files |
 | Phase 05 P01 | 5min | 2 tasks | 5 files |
+| Phase 05 P02 | 3min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,9 @@ Recent decisions affecting current work:
 - [05-01]: String for WorktreeEntry.created_at instead of chrono::DateTime -- specta lacks Type impl for chrono types
 - [05-01]: WorktreeManager.with_base_dir for test isolation -- prevents parallel test interference
 - [05-01]: Canonicalize repo_path before computing worktree_base_dir -- resolves macOS symlinks
+- [05-02]: Stale worktree cleanup runs on first spawn_claude_task (not app setup) -- project_dir not known at startup
+- [05-02]: merge_worktree checks conflicts against default branch AND all other active whalecode branches
+- [05-02]: auto_commit uses IndexAddOption::DEFAULT with wildcard glob for staging all changes
 
 ### Pending Todos
 
@@ -129,6 +133,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T22:34:00Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-05T22:39:45Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None
