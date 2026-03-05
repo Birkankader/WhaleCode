@@ -1,5 +1,6 @@
 mod commands;
 mod ipc;
+mod process;
 mod state;
 
 use commands::{get_task_count, start_stream};

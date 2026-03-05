@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use serde::Serialize;
+use specta::Type;
 
 pub type TaskId = String;
 
@@ -8,13 +11,27 @@ pub struct TaskInfo {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Type)]
+pub enum ProcessStatus {
+    Running,
+    Paused,
+    Completed(i32),
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub struct ProcessEntry {
+    pub pgid: i32,
+    pub status: ProcessStatus,
+}
+
 #[derive(Default)]
 pub struct AppStateInner {
     pub tasks: HashMap<TaskId, TaskInfo>,
-    // Phase 2: add Vec<Child> process_registry here for zombie cleanup
+    pub processes: HashMap<TaskId, ProcessEntry>,
 }
 
-pub type AppState = Mutex<AppStateInner>;
+pub type AppState = Arc<Mutex<AppStateInner>>;
 
 #[cfg(test)]
 mod tests {
@@ -25,6 +42,7 @@ mod tests {
         let state = AppState::default();
         let inner = state.lock().unwrap();
         assert_eq!(inner.tasks.len(), 0);
+        assert_eq!(inner.processes.len(), 0);
     }
 
     #[test]
