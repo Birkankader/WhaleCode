@@ -15,7 +15,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Process Management
 
-- [ ] **PROC-01**: User can spawn a Claude Code subprocess in headless mode and see streaming output in real-time
+- [x] **PROC-01**: User can spawn a Claude Code subprocess in headless mode and see streaming output in real-time
 - [ ] **PROC-02**: User can spawn a Gemini CLI subprocess in headless mode and see streaming output in real-time
 - [ ] **PROC-03**: User can run two tool processes in parallel on the same project
 - [ ] **PROC-04**: Each tool process runs in its own git worktree, isolated from other tools
@@ -108,7 +108,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUN-01 | Phase 1 | Complete |
 | FOUN-02 | Phase 1 | Complete |
 | FOUN-03 | Phase 1 | Complete |
-| PROC-01 | Phase 3 | Pending |
+| PROC-01 | Phase 3 | Complete |
 | PROC-02 | Phase 6 | Pending |
 | PROC-03 | Phase 7 | Pending |
 | PROC-04 | Phase 5 | Pending |

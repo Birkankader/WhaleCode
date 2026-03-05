@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-03-05T20:37:34Z"
-last_activity: 2026-03-05 — Completed 03-01 Credential Storage & Env Var Injection
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-03-05T20:41:44.538Z"
+last_activity: 2026-03-05 — Completed 03-02 Claude Code Adapter NDJSON parsing and IPC commands
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 8
-  completed_plans: 6
-  percent: 75
+  completed_plans: 7
+  percent: 88
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 3 of 9 (Claude Code Adapter)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: executing
-Last activity: 2026-03-05 — Completed 03-01 Credential Storage & Env Var Injection
+Last activity: 2026-03-05 — Completed 03-02 Claude Code Adapter NDJSON parsing and IPC commands
 
-Progress: [███████░░░] 75%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [███████░░░] 75%
 | Phase 02 P01 | 5min | 2 tasks | 10 files |
 | Phase 02 P02 | 8min | 2 tasks | 7 files |
 | Phase 03 P01 | 4min | 2 tasks | 5 files |
+| Phase 03 P02 | 3min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,9 @@ Recent decisions affecting current work:
 - [03-01]: keyring 3 with apple-native for direct macOS Keychain access
 - [03-01]: Test keychain uses separate com.whalecode.test service to avoid polluting real credentials
 - [03-01]: spawn delegates to spawn_with_env with empty slice — no code duplication
+- [03-02]: All ClaudeStreamEvent fields use Option<T> for resilient parsing across CLI versions
+- [03-02]: API key format validated with sk-ant- prefix before keychain storage
+- [03-02]: parse_stream_line returns None for non-JSON lines (graceful handling per Pitfall 5)
 
 ### Pending Todos
 
@@ -99,6 +103,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T20:37:34Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-03-05T20:41:44.536Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
