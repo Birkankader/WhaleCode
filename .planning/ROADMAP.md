@@ -95,9 +95,9 @@ Plans:
   4. When the app crashes mid-task, the abandoned worktree is detected and cleaned up on next launch
 **Plans**: 3 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 05-01-PLAN.md — WorktreeManager foundation: git2 dep, models, create/remove/list/cleanup
+- [ ] 05-02-PLAN.md — ConflictDetector, IPC commands, Claude spawn worktree integration
+- [ ] 05-03-PLAN.md — Frontend conflict alert UI, worktree status panel, end-to-end verification
 
 ### Phase 6: Gemini CLI Adapter
 **Goal**: Users can run Gemini CLI tasks with the same control and output visibility as Claude Code; both adapters validate output content and handle rate limits; the Tool trait is proven with two implementations
@@ -171,7 +171,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Process Core | 2/2 | Complete   | 2026-03-05 |
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
 | 4. Context Store | 3/3 | Complete   | 2026-03-06 |
-| 5. Worktree Isolation + Conflict Detection | 0/TBD | Not started | - |
+| 5. Worktree Isolation + Conflict Detection | 0/3 | Not started | - |
 | 6. Gemini CLI Adapter | 0/TBD | Not started | - |
 | 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
 | 8. Prompt Engine | 0/TBD | Not started | - |
