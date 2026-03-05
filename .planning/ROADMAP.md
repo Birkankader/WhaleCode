@@ -33,7 +33,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Rust backend initializes AppState with Mutex-protected state and IPC channels wired up
   3. React frontend renders with routing and base layout — no blank screen, no console errors
   4. A test event sent from Rust over a Tauri Channel appears rendered in the frontend output area
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 2: Process Core
 **Goal**: Users can spawn, monitor, cancel, pause, and cleanly terminate CLI subprocesses; the app shuts down without leaving zombie processes; each tool has its own output log
@@ -44,7 +48,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can cancel a running process via UI; the process terminates and the output log reflects the cancellation
   3. User can pause and resume a process; output resumes from where it paused
   4. After quitting the app, running `pgrep` on any spawned CLIs returns no results (no zombies)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 3: Claude Code Adapter
 **Goal**: Users can submit a task to Claude Code and see streaming output in real-time; silent failures are detected and surfaced, not silently dropped; API key is stored securely
@@ -55,7 +63,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. A zero-token or empty response from Claude Code is flagged as a failure in the UI, not shown as success
   3. When Claude Code hits an API rate limit, the user sees a notification and the task retries with backoff
   4. Claude Code API key is stored in the OS keychain — not visible in app files or logs
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 4: Context Store
 **Goal**: The app maintains a persistent, queryable record of every file change and task decision; this record survives app restarts and is automatically injected into each tool before it starts
@@ -66,7 +78,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. The context store persists across app restarts — records written in one session are readable in the next
   3. Before a tool starts a new task, relevant context (recent changes, decisions) is automatically prepended to its invocation
   4. A tool can query the event log to see what files another tool changed in previous tasks
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 5: Worktree Isolation + Conflict Detection
 **Goal**: Each tool task runs in its own git worktree; two tools modifying the same file produces a visible conflict alert before any merge to main happens
@@ -77,7 +93,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. When two tool tasks that touch the same file are dispatched, the user receives a conflict warning before either task is allowed to merge back
   3. Conflict detection fires before merge to the main branch — not after
   4. When the app crashes mid-task, the abandoned worktree is detected and cleaned up on next launch
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 6: Gemini CLI Adapter
 **Goal**: Users can run Gemini CLI tasks with the same control and output visibility as Claude Code; both adapters validate output content and handle rate limits; the Tool trait is proven with two implementations
@@ -88,7 +108,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Both adapters (Claude Code and Gemini) validate output content — malformed or empty responses are flagged, not silently accepted
   3. When Gemini hits a quota limit, the user sees a notification and the task backs off, matching Claude adapter behavior
   4. Claude Code and Gemini CLI adapters are interchangeable through the same Tool trait — adding a new adapter doesn't require changes to the Process Manager
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 7: Task Router + Parallel Execution
 **Goal**: Users can submit a task and have the app suggest the right tool; two tasks can run in parallel on the same project with a live status panel showing each tool's real-time state
@@ -100,7 +124,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Two tasks run simultaneously on the same project without interfering with each other's worktrees
   4. Live status panel shows each tool's real-time state (idle, running, completed, failed) with current task description and elapsed time
   5. A task that depends on another tool's output waits for that tool to finish before dispatching
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 8: Prompt Engine
 **Goal**: Users write one prompt; the app automatically rewrites it for each target tool's conventions and injects relevant project context; users can preview the optimized prompt before sending
@@ -111,7 +139,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can open a preview panel to see the optimized prompt for each tool before it is sent
   3. The optimized prompt includes relevant project context and recent change history, drawn from the context store
   4. Prompt optimization applies tool-specific conventions (Claude gets planning preamble, Gemini gets large-context structure)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ### Phase 9: Review UI + Safety Controls
 **Goal**: Users can review every file change a tool made as a unified diff and accept or reject changes at file level before anything merges; no change is ever committed without explicit user action
@@ -122,7 +154,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can accept or reject individual files from the diff view; rejected files are not merged back to main
   3. No changes are automatically committed — every merge requires explicit user action in the UI
   4. The status panel clearly distinguishes active vs. idle tools; conflict alerts appear in human-readable language, not raw file paths
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
+- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
+- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
 
 ## Progress
 
