@@ -80,9 +80,9 @@ Plans:
   4. A tool can query the event log to see what files another tool changed in previous tasks
 **Plans**: 3 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 04-01-PLAN.md — SQLite ContextStore foundation: schema, migrations, models, Tauri state
+- [ ] 04-02-PLAN.md — Event recording and querying: task completion logging, IPC commands
+- [ ] 04-03-PLAN.md — Context injection: preamble builder, Claude adapter integration
 
 ### Phase 5: Worktree Isolation + Conflict Detection
 **Goal**: Each tool task runs in its own git worktree; two tools modifying the same file produces a visible conflict alert before any merge to main happens
@@ -170,7 +170,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Foundation | 3/3 | Complete    | 2026-03-05 |
 | 2. Process Core | 2/2 | Complete   | 2026-03-05 |
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
-| 4. Context Store | 0/TBD | Not started | - |
+| 4. Context Store | 0/3 | Not started | - |
 | 5. Worktree Isolation + Conflict Detection | 0/TBD | Not started | - |
 | 6. Gemini CLI Adapter | 0/TBD | Not started | - |
 | 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
