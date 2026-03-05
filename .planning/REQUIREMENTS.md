@@ -19,9 +19,9 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **PROC-02**: User can spawn a Gemini CLI subprocess in headless mode and see streaming output in real-time
 - [ ] **PROC-03**: User can run two tool processes in parallel on the same project
 - [ ] **PROC-04**: Each tool process runs in its own git worktree, isolated from other tools
-- [ ] **PROC-05**: User can cancel a running tool process without affecting other running processes
-- [ ] **PROC-06**: User can pause and resume a tool process
-- [ ] **PROC-07**: App cleans up all child and grandchild processes on exit (no zombies)
+- [x] **PROC-05**: User can cancel a running tool process without affecting other running processes
+- [x] **PROC-06**: User can pause and resume a tool process
+- [x] **PROC-07**: App cleans up all child and grandchild processes on exit (no zombies)
 - [ ] **PROC-08**: Each tool has a dedicated scrollable output log with timestamps
 
 ### Context Management
@@ -112,9 +112,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PROC-02 | Phase 6 | Pending |
 | PROC-03 | Phase 7 | Pending |
 | PROC-04 | Phase 5 | Pending |
-| PROC-05 | Phase 2 | Pending |
-| PROC-06 | Phase 2 | Pending |
-| PROC-07 | Phase 2 | Pending |
+| PROC-05 | Phase 2 | Complete |
+| PROC-06 | Phase 2 | Complete |
+| PROC-07 | Phase 2 | Complete |
 | PROC-08 | Phase 2 | Pending |
 | CTXT-01 | Phase 4 | Pending |
 | CTXT-02 | Phase 4 | Pending |
