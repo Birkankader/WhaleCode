@@ -1,0 +1,23 @@
+use tauri::ipc::Channel;
+
+use crate::ipc::events::OutputEvent;
+use crate::state::AppState;
+
+#[tauri::command]
+#[specta::specta]
+pub async fn start_stream(on_event: Channel<OutputEvent>) -> Result<(), String> {
+    tauri::async_runtime::spawn(async move {
+        on_event
+            .send(OutputEvent::Stdout("Test event from Rust".to_string()))
+            .ok();
+        on_event.send(OutputEvent::Exit(0)).ok();
+    });
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_task_count(state: tauri::State<'_, AppState>) -> Result<u32, String> {
+    let inner = state.lock().map_err(|e| e.to_string())?;
+    Ok(inner.tasks.len() as u32)
+}
