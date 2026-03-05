@@ -48,11 +48,10 @@ Plans:
   2. User can cancel a running process via UI; the process terminates and the output log reflects the cancellation
   3. User can pause and resume a process; output resumes from where it paused
   4. After quitting the app, running `pgrep` on any spawned CLIs returns no results (no zombies)
-**Plans**: 3 plans
+**Plans**: 2 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 02-01-PLAN.md — Process manager spawn/cancel/pause/resume, signal handling, zombie cleanup
+- [ ] 02-02-PLAN.md — Process management UI with tabbed ProcessPanel and OutputConsole
 
 ### Phase 3: Claude Code Adapter
 **Goal**: Users can submit a task to Claude Code and see streaming output in real-time; silent failures are detected and surfaced, not silently dropped; API key is stored securely
@@ -65,9 +64,9 @@ Plans:
   4. Claude Code API key is stored in the OS keychain — not visible in app files or logs
 **Plans**: 3 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 03-01-PLAN.md — Keychain credential storage, process manager env var extension
+- [ ] 03-02-PLAN.md — Claude adapter NDJSON parsing, failure detection, IPC commands
+- [ ] 03-03-PLAN.md — Frontend Claude integration, API key settings UI, end-to-end verification
 
 ### Phase 4: Context Store
 **Goal**: The app maintains a persistent, queryable record of every file change and task decision; this record survives app restarts and is automatically injected into each tool before it starts
@@ -169,7 +168,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-03-05 |
 | 2. Process Core | 2/2 | Complete   | 2026-03-05 |
-| 3. Claude Code Adapter | 0/TBD | Not started | - |
+| 3. Claude Code Adapter | 0/3 | Not started | - |
 | 4. Context Store | 0/TBD | Not started | - |
 | 5. Worktree Isolation + Conflict Detection | 0/TBD | Not started | - |
 | 6. Gemini CLI Adapter | 0/TBD | Not started | - |
