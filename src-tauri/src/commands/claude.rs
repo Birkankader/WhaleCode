@@ -72,3 +72,26 @@ pub async fn has_claude_api_key() -> Result<bool, String> {
     .await
     .map_err(|e| format!("Failed to check API key: {}", e))?
 }
+
+/// Validate a Claude Code result JSON for silent failures.
+///
+/// Parses the result JSON line with `parse_stream_line`, then validates via
+/// `validate_result` — checking is_error, empty result, zero turns, and status.
+#[tauri::command]
+#[specta::specta]
+pub async fn validate_claude_result(result_json: String) -> Result<(), String> {
+    let event = crate::adapters::claude::parse_stream_line(&result_json)
+        .ok_or_else(|| "Failed to parse result JSON".to_string())?;
+    crate::adapters::claude::validate_result(&event)
+}
+
+/// Delete the stored Claude API key from the macOS Keychain.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_claude_api_key() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| {
+        crate::credentials::keychain::delete_api_key()
+    })
+    .await
+    .map_err(|e| format!("Failed to delete API key: {}", e))?
+}

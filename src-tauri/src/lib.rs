@@ -6,8 +6,9 @@ mod process;
 mod state;
 
 use commands::{
-    cancel_process, get_task_count, has_claude_api_key, pause_process, resume_process,
-    set_claude_api_key, spawn_claude_task, spawn_process, start_stream,
+    cancel_process, delete_claude_api_key, get_task_count, has_claude_api_key, pause_process,
+    resume_process, set_claude_api_key, spawn_claude_task, spawn_process, start_stream,
+    validate_claude_result,
 };
 use state::AppState;
 use tauri::Manager;
@@ -25,6 +26,8 @@ pub fn run() {
         spawn_claude_task,
         set_claude_api_key,
         has_claude_api_key,
+        validate_claude_result,
+        delete_claude_api_key,
     ]);
 
     #[cfg(debug_assertions)]
