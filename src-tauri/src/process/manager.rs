@@ -16,6 +16,22 @@ pub async fn spawn(
     channel: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
+    spawn_with_env(cmd, args, cwd, &[], channel, state).await
+}
+
+/// Spawn a subprocess with custom environment variables and pgid isolation,
+/// streaming stdout/stderr via Channel. Returns the task_id for tracking.
+///
+/// SECURITY: env_vars values are never logged or included in error messages
+/// as they may contain API keys or other secrets.
+pub async fn spawn_with_env(
+    cmd: &str,
+    args: &[String],
+    cwd: &str,
+    env_vars: &[(&str, &str)],
+    channel: Channel<OutputEvent>,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
     let task_id = Uuid::new_v4().to_string();
 
     let mut command = Command::new(cmd);
@@ -26,6 +42,11 @@ pub async fn spawn(
         .env("TERM", "dumb")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    // Inject custom environment variables (keys only logged, values redacted)
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
 
     // Create new process group so we can kill the entire tree
     unsafe {
