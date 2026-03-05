@@ -13,7 +13,7 @@ WhaleCode is built in nine phases, each delivering a coherent, independently-ver
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Tauri v2 scaffold, AppState, IPC channel pipeline, base UI shell (completed 2026-03-05)
-- [ ] **Phase 2: Process Core** - Subprocess lifecycle management, zombie cleanup, streaming output console
+- [x] **Phase 2: Process Core** - Subprocess lifecycle management, zombie cleanup, streaming output console (completed 2026-03-05)
 - [ ] **Phase 3: Claude Code Adapter** - Tool trait, headless NDJSON execution, silent failure detection, API key security
 - [ ] **Phase 4: Context Store** - SQLite write-ahead log of file changes and decisions, persistent project memory
 - [ ] **Phase 5: Worktree Isolation + Conflict Detection** - Git worktree per task, file-lock registry, conflict alerts
@@ -168,7 +168,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-03-05 |
-| 2. Process Core | 0/TBD | Not started | - |
+| 2. Process Core | 2/2 | Complete   | 2026-03-05 |
 | 3. Claude Code Adapter | 0/TBD | Not started | - |
 | 4. Context Store | 0/TBD | Not started | - |
 | 5. Worktree Isolation + Conflict Detection | 0/TBD | Not started | - |

@@ -22,7 +22,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **PROC-05**: User can cancel a running tool process without affecting other running processes
 - [x] **PROC-06**: User can pause and resume a tool process
 - [x] **PROC-07**: App cleans up all child and grandchild processes on exit (no zombies)
-- [ ] **PROC-08**: Each tool has a dedicated scrollable output log with timestamps
+- [x] **PROC-08**: Each tool has a dedicated scrollable output log with timestamps
 
 ### Context Management
 
@@ -115,7 +115,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PROC-05 | Phase 2 | Complete |
 | PROC-06 | Phase 2 | Complete |
 | PROC-07 | Phase 2 | Complete |
-| PROC-08 | Phase 2 | Pending |
+| PROC-08 | Phase 2 | Complete |
 | CTXT-01 | Phase 4 | Pending |
 | CTXT-02 | Phase 4 | Pending |
 | CTXT-03 | Phase 4 | Pending |
