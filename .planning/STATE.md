@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-03-05T20:47:00.000Z"
-last_activity: 2026-03-05 — Completed 03-03 Claude Code frontend integration (Phase 3 complete)
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-03-05T21:07:00.000Z"
+last_activity: 2026-03-05 — Completed 03-04 gap closure (IPC wiring, retry loop, API key delete)
 progress:
   total_phases: 9
   completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 9
+  completed_plans: 9
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** Multiple AI coding tools working in parallel on the same project, fully aware of each other's changes and sharing a unified context
-**Current focus:** Phase 3 — Claude Code Adapter (complete)
+**Current focus:** Phase 3 — Claude Code Adapter (complete, gap closure done)
 
 ## Current Position
 
 Phase: 3 of 9 (Claude Code Adapter)
-Plan: 3 of 3 in current phase (PHASE COMPLETE)
+Plan: 4 of 4 in current phase (PHASE COMPLETE)
 Status: executing
-Last activity: 2026-03-05 — Completed 03-03 Claude Code frontend integration (Phase 3 complete)
+Last activity: 2026-03-05 — Completed 03-04 gap closure (IPC wiring, retry loop, API key delete)
 
 Progress: [██████████] 100%
 
@@ -57,6 +57,7 @@ Progress: [██████████] 100%
 | Phase 03 P01 | 4min | 2 tasks | 5 files |
 | Phase 03 P02 | 3min | 2 tasks | 6 files |
 | Phase 03 P03 | 4min | 3 tasks | 7 files |
+| Phase 03 P04 | 6min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,9 @@ Recent decisions affecting current work:
 - [03-03]: useClaudeTask registers in existing useProcessStore for unified tab management
 - [03-03]: emitProcessOutput exported from useProcess for cross-hook output routing
 - [03-03]: Settings modal overlay pattern for API key management (not a route)
+- [03-04]: Frontend retry loop (not Rust-side) since spawn_with_env streams directly to Channel
+- [03-04]: rateLimitWarning changed from boolean to string|false for dynamic retry status messages
+- [03-04]: spawnOnce wraps Channel spawn in Promise resolving on exit for clean retry control flow
 
 ### Pending Todos
 
@@ -101,13 +105,13 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 3]: Claude Code silent failure rate (~8% of headless runs) needs validation — validate JSON result field + token count, never trust exit code 0 alone
+- [Phase 3]: Claude Code silent failure detection now wired via validate_claude_result IPC (03-04) — validates is_error, empty result, zero turns, status on every exit
 - [Phase 5]: Git worktree lifecycle edge cases on crash/partial merge need research before Phase 5 begins
 - [Phase 6]: Gemini CLI headless stability is MEDIUM confidence — `--output_format json` availability needs validation before Phase 6 begins
 - [Phase 8]: Prompt optimization effectiveness cannot be confirmed by research alone — plan empirical measurement after Phase 8 ships
 
 ## Session Continuity
 
-Last session: 2026-03-05T20:47:00.000Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-03-05T21:07:00.000Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
