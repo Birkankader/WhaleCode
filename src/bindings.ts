@@ -93,6 +93,31 @@ async hasClaudeApiKey() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Validate a Claude Code result JSON for silent failures.
+ *
+ * Parses the result JSON line with `parse_stream_line`, then validates via
+ * `validate_result` — checking is_error, empty result, zero turns, and status.
+ */
+async validateClaudeResult(resultJson: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_claude_result", { resultJson }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the stored Claude API key from the macOS Keychain.
+ */
+async deleteClaudeApiKey() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_claude_api_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
