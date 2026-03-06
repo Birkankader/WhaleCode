@@ -25,6 +25,25 @@ pub struct ConflictReport {
     pub worktree_b: String,
 }
 
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct FileDiff {
+    pub path: String,
+    pub status: String,
+    pub old_path: Option<String>,
+    pub patch: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct WorktreeDiffReport {
+    pub branch_name: String,
+    pub default_branch: String,
+    pub files: Vec<FileDiff>,
+    pub total_additions: u32,
+    pub total_deletions: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
