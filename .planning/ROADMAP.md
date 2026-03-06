@@ -139,11 +139,10 @@ Plans:
   2. User can open a preview panel to see the optimized prompt for each tool before it is sent
   3. The optimized prompt includes relevant project context and recent change history, drawn from the context store
   4. Prompt optimization applies tool-specific conventions (Claude gets planning preamble, Gemini gets large-context structure)
-**Plans**: 3 plans
+**Plans**: 2 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 08-01-PLAN.md — Rust prompt engine module, tool-specific templates, IPC command, dispatch integration
+- [ ] 08-02-PLAN.md — Frontend PromptPreview component, ProcessPanel preview toggle, end-to-end verification
 
 ### Phase 9: Review UI + Safety Controls
 **Goal**: Users can review every file change a tool made as a unified diff and accept or reject changes at file level before anything merges; no change is ever committed without explicit user action
@@ -174,5 +173,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
 | 6. Gemini CLI Adapter | 3/3 | Complete   | 2026-03-06 |
 | 7. Task Router + Parallel Execution | 2/2 | Complete   | 2026-03-06 |
-| 8. Prompt Engine | 0/TBD | Not started | - |
+| 8. Prompt Engine | 0/2 | Not started | - |
 | 9. Review UI + Safety Controls | 0/TBD | Not started | - |
