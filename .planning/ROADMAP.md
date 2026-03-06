@@ -109,10 +109,11 @@ Plans:
   2. Both adapters (Claude Code and Gemini) validate output content — malformed or empty responses are flagged, not silently accepted
   3. When Gemini hits a quota limit, the user sees a notification and the task backs off, matching Claude adapter behavior
   4. Claude Code and Gemini CLI adapters are interchangeable through the same Tool trait — adding a new adapter doesn't require changes to the Process Manager
-**Plans**: 2 plans
+**Plans**: 3 plans
 Plans:
 - [ ] 06-01-PLAN.md — Rust backend: Gemini adapter module, keychain credentials, IPC commands, bindings
 - [ ] 06-02-PLAN.md — Frontend: Gemini event formatter, useGeminiTask hook, ApiKeySettings extension
+- [ ] 06-03-PLAN.md — Gap closure: ToolAdapter trait, impl for both adapters, commands use trait
 
 ### Phase 7: Task Router + Parallel Execution
 **Goal**: Users can submit a task and have the app suggest the right tool; two tasks can run in parallel on the same project with a live status panel showing each tool's real-time state
@@ -172,7 +173,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
 | 4. Context Store | 3/3 | Complete   | 2026-03-06 |
 | 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
-| 6. Gemini CLI Adapter | 2/2 | Complete   | 2026-03-06 |
+| 6. Gemini CLI Adapter | 2/3 | In progress   | 2026-03-06 |
 | 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
 | 8. Prompt Engine | 0/TBD | Not started | - |
 | 9. Review UI + Safety Controls | 0/TBD | Not started | - |
