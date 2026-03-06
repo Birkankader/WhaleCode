@@ -5,8 +5,115 @@ use models::RoutingSuggestion;
 pub struct TaskRouter;
 
 impl TaskRouter {
-    pub fn suggest(_prompt: &str, _claude_busy: bool, _gemini_busy: bool) -> RoutingSuggestion {
-        todo!()
+    /// Suggest the best tool for a given prompt based on keyword heuristics and tool availability.
+    ///
+    /// Scoring: each keyword match adds its weight to the respective tool's score.
+    /// If a tool is busy, its score is multiplied by 0.3 (penalty).
+    /// Default bias: if both scores are 0.0, claude_score is set to 0.5.
+    /// Confidence = (winning_score / 2.0).min(1.0).
+    pub fn suggest(prompt: &str, claude_busy: bool, gemini_busy: bool) -> RoutingSuggestion {
+        let prompt_lower = prompt.to_lowercase();
+
+        // Keyword weights for each tool
+        let claude_keywords: &[(&str, f32)] = &[
+            ("refactor", 0.8),
+            ("architect", 0.7),
+            ("redesign", 0.7),
+            ("fix bug", 0.8),
+            ("debug", 0.7),
+            ("implement", 0.6),
+            ("write test", 0.6),
+            ("type", 0.3),
+            ("fix", 0.5),
+        ];
+
+        let gemini_keywords: &[(&str, f32)] = &[
+            ("read", 0.6),
+            ("analyze", 0.7),
+            ("search", 0.6),
+            ("find", 0.5),
+            ("explain", 0.6),
+            ("summarize", 0.7),
+            ("review", 0.5),
+            ("understand", 0.5),
+            ("large", 0.4),
+        ];
+
+        // Calculate raw scores
+        let mut claude_score: f32 = 0.0;
+        for (keyword, weight) in claude_keywords {
+            if prompt_lower.contains(keyword) {
+                claude_score += weight;
+            }
+        }
+
+        let mut gemini_score: f32 = 0.0;
+        for (keyword, weight) in gemini_keywords {
+            if prompt_lower.contains(keyword) {
+                gemini_score += weight;
+            }
+        }
+
+        // Default bias: if no keywords matched, favor Claude
+        if claude_score == 0.0 && gemini_score == 0.0 {
+            claude_score = 0.5;
+        }
+
+        // Apply busy penalties
+        if claude_busy {
+            claude_score *= 0.3;
+        }
+        if gemini_busy {
+            gemini_score *= 0.3;
+        }
+
+        // Availability bonus: if one tool is busy and the other has zero score,
+        // give the available tool a small baseline so the suggestion shifts
+        if claude_busy && !gemini_busy && gemini_score == 0.0 && claude_score > 0.0 {
+            gemini_score = claude_score + 0.1;
+        }
+        if gemini_busy && !claude_busy && claude_score == 0.0 && gemini_score > 0.0 {
+            claude_score = gemini_score + 0.1;
+        }
+
+        // Determine winner
+        let (suggested, alternative, winning_score, is_busy) = if claude_score >= gemini_score {
+            ("claude", "gemini", claude_score, claude_busy)
+        } else {
+            ("gemini", "claude", gemini_score, gemini_busy)
+        };
+
+        let confidence = (winning_score / 2.0).min(1.0);
+        let reason = Self::explain_choice(suggested, prompt, is_busy);
+
+        RoutingSuggestion {
+            suggested_tool: suggested.to_string(),
+            confidence,
+            reason,
+            alternative_tool: Some(alternative.to_string()),
+            tool_available: !is_busy,
+        }
+    }
+
+    /// Build a human-readable explanation for the routing suggestion.
+    fn explain_choice(tool: &str, prompt: &str, busy: bool) -> String {
+        let truncated = if prompt.len() > 60 {
+            format!("{}...", &prompt[..60])
+        } else {
+            prompt.to_string()
+        };
+
+        if busy {
+            format!(
+                "{} is recommended for '{}' but is currently busy",
+                tool, truncated
+            )
+        } else {
+            format!(
+                "{} is recommended for '{}'",
+                tool, truncated
+            )
+        }
     }
 }
 
