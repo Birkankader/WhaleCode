@@ -174,6 +174,28 @@ async listWorktrees(projectDir: string) : Promise<Result<string[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Suggest the best tool for a given prompt based on keyword heuristics and tool availability.
+ */
+async suggestTool(prompt: string) : Promise<Result<RoutingSuggestion, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("suggest_tool", { prompt }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Dispatch a task to the specified tool (claude or gemini).
+ */
+async dispatchTask(prompt: string, projectDir: string, toolName: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dispatch_task", { prompt, projectDir, toolName, onEvent }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -188,6 +210,7 @@ async listWorktrees(projectDir: string) : Promise<Result<string[], string>> {
 /** user-defined types **/
 
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
+export interface RoutingSuggestion { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }
 export interface WorktreeEntry { task_id: string; worktree_name: string; branch_name: string; path: string; created_at: string }
 export interface ConflictFile { path: string }
 export interface ConflictReport { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }

@@ -23,6 +23,9 @@ pub enum ProcessStatus {
 pub struct ProcessEntry {
     pub pgid: i32,
     pub status: ProcessStatus,
+    pub tool_name: String,
+    pub task_description: String,
+    pub started_at: i64,
 }
 
 #[derive(Default)]

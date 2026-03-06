@@ -2,6 +2,7 @@ pub mod claude;
 pub mod gemini;
 pub mod context;
 pub mod process;
+pub mod router;
 pub mod worktree;
 
 use tauri::ipc::Channel;
@@ -19,6 +20,7 @@ pub use gemini::{
 };
 pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
+pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
     check_worktree_conflicts, cleanup_worktrees, create_worktree, list_worktrees, merge_worktree,
 };

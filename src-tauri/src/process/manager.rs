@@ -70,6 +70,9 @@ pub async fn spawn_with_env(
             ProcessEntry {
                 pgid: pid,
                 status: ProcessStatus::Running,
+                tool_name: "test".to_string(),
+                task_description: "".to_string(),
+                started_at: chrono::Utc::now().timestamp_millis(),
             },
         );
     }
