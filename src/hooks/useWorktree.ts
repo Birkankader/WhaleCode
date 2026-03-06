@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { commands } from '../bindings';
-import type { ConflictReport } from '../bindings';
+import type { ConflictReport, WorktreeDiffReport } from '../bindings';
 
 /**
  * React hook for managing git worktrees via IPC.
@@ -11,6 +11,7 @@ import type { ConflictReport } from '../bindings';
 export function useWorktree(projectDir: string) {
   const [worktrees, setWorktrees] = useState<string[]>([]);
   const [conflicts, setConflicts] = useState<ConflictReport | null>(null);
+  const [diffReport, setDiffReport] = useState<WorktreeDiffReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,6 +76,53 @@ export function useWorktree(projectDir: string) {
     [projectDir, refreshWorktrees],
   );
 
+  const getWorktreeDiff = useCallback(
+    async (branchName: string): Promise<WorktreeDiffReport | null> => {
+      if (!projectDir) return null;
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await commands.getWorktreeDiff(projectDir, branchName);
+        if (result.status === 'ok') {
+          setDiffReport(result.data);
+          return result.data;
+        } else {
+          setError(result.error);
+          return null;
+        }
+      } catch (err) {
+        setError('Failed to get worktree diff');
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [projectDir],
+  );
+
+  const selectiveMerge = useCallback(
+    async (branchName: string, acceptedFiles: string[]) => {
+      if (!projectDir) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await commands.mergeWorktree(projectDir, branchName, acceptedFiles);
+        if (result.status === 'ok') {
+          setConflicts(null);
+          setDiffReport(null);
+          await refreshWorktrees();
+        } else {
+          setError(result.error);
+        }
+      } catch (err) {
+        setError('Failed to merge selected files');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [projectDir, refreshWorktrees],
+  );
+
   const cleanupWorktrees = useCallback(async () => {
     if (!projectDir) return;
     setLoading(true);
@@ -103,11 +151,14 @@ export function useWorktree(projectDir: string) {
   return {
     worktrees,
     conflicts,
+    diffReport,
     loading,
     error,
     refreshWorktrees,
     checkConflicts,
     mergeWorktree,
+    getWorktreeDiff,
+    selectiveMerge,
     cleanupWorktrees,
   };
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 export type ToolName = 'claude' | 'gemini';
-export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting';
+export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review';
 
 export interface TaskEntry {
   taskId: string;
