@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 06-03-PLAN.md
-last_updated: "2026-03-06T10:00:30.649Z"
-last_activity: 2026-03-06 — Completed 06-03 ToolAdapter trait gap closure (polymorphic adapter dispatch)
+status: in-progress
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-03-06T11:06:25Z"
+last_activity: 2026-03-06 — Completed 07-01 Task router engine with keyword heuristics and unified dispatch
 progress:
   total_phases: 9
   completed_phases: 6
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** Multiple AI coding tools working in parallel on the same project, fully aware of each other's changes and sharing a unified context
-**Current focus:** Phase 6 complete — Gemini CLI Adapter fully integrated (backend + frontend)
+**Current focus:** Phase 7 in progress — Task router engine with keyword heuristics and unified dispatch
 
 ## Current Position
 
-Phase: 6 of 9 (Gemini CLI Adapter) -- COMPLETE
-Plan: 3 of 3 in current phase (all complete, including gap closure)
-Status: phase-complete
-Last activity: 2026-03-06 — Completed 06-03 ToolAdapter trait gap closure (polymorphic adapter dispatch)
+Phase: 7 of 9 (Task Router & Parallel Execution)
+Plan: 1 of 2 in current phase
+Status: in-progress
+Last activity: 2026-03-06 — Completed 07-01 Task router engine with keyword heuristics and unified dispatch
 
 Progress: [██████████] 100%
 
@@ -67,6 +67,7 @@ Progress: [██████████] 100%
 | Phase 06 P01 | 4min | 2 tasks | 7 files |
 | Phase 06 P02 | 2min | 2 tasks | 4 files |
 | Phase 06 P03 | 2min | 2 tasks | 5 files |
+| Phase 07 P01 | 4min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -133,6 +134,8 @@ Recent decisions affecting current work:
 - [Phase 06-02]: Gemini error detection via dedicated error event type (not is_error flag)
 - [Phase 06-02]: ApiKeySettings uses per-tab independent state for input preservation across tab switches
 - [Phase 06-03]: ToolAdapter trait uses &self methods with zero-cost unit structs for polymorphic adapter dispatch
+- [Phase 07-01]: Availability bonus pattern gives available tool score+0.1 when busy tool has positive score but available has 0
+- [Phase 07-01]: ProcessEntry tool_name defaults to "test" for backwards-compatible spawn_with_env calls
 
 ### Pending Todos
 
@@ -147,6 +150,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-06T09:56:47.044Z
-Stopped at: Completed 06-03-PLAN.md
+Last session: 2026-03-06T11:06:25Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None

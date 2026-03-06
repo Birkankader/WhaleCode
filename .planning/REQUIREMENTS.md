@@ -17,7 +17,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **PROC-01**: User can spawn a Claude Code subprocess in headless mode and see streaming output in real-time
 - [x] **PROC-02**: User can spawn a Gemini CLI subprocess in headless mode and see streaming output in real-time
-- [ ] **PROC-03**: User can run two tool processes in parallel on the same project
+- [x] **PROC-03**: User can run two tool processes in parallel on the same project
 - [x] **PROC-04**: Each tool process runs in its own git worktree, isolated from other tools
 - [x] **PROC-05**: User can cancel a running tool process without affecting other running processes
 - [x] **PROC-06**: User can pause and resume a tool process
@@ -41,10 +41,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Task Routing
 
-- [ ] **ROUT-01**: App suggests which tool should handle a given task based on task type
+- [x] **ROUT-01**: App suggests which tool should handle a given task based on task type
 - [ ] **ROUT-02**: User can override the suggested tool assignment
-- [ ] **ROUT-03**: Routing considers tool strengths (Claude for refactoring/architecture, Gemini for large context reads)
-- [ ] **ROUT-04**: Routing considers current tool availability (busy/idle status)
+- [x] **ROUT-03**: Routing considers tool strengths (Claude for refactoring/architecture, Gemini for large context reads)
+- [x] **ROUT-04**: Routing considers current tool availability (busy/idle status)
 
 ### Review & Safety
 
@@ -110,7 +110,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUN-03 | Phase 1 | Complete |
 | PROC-01 | Phase 3 | Complete |
 | PROC-02 | Phase 6 | Complete |
-| PROC-03 | Phase 7 | Pending |
+| PROC-03 | Phase 7 | Complete |
 | PROC-04 | Phase 5 | Complete |
 | PROC-05 | Phase 2 | Complete |
 | PROC-06 | Phase 2 | Complete |
@@ -125,10 +125,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PMPT-02 | Phase 8 | Pending |
 | PMPT-03 | Phase 8 | Pending |
 | PMPT-04 | Phase 8 | Pending |
-| ROUT-01 | Phase 7 | Pending |
+| ROUT-01 | Phase 7 | Complete |
 | ROUT-02 | Phase 7 | Pending |
-| ROUT-03 | Phase 7 | Pending |
-| ROUT-04 | Phase 7 | Pending |
+| ROUT-03 | Phase 7 | Complete |
+| ROUT-04 | Phase 7 | Complete |
 | SAFE-01 | Phase 9 | Pending |
 | SAFE-02 | Phase 9 | Pending |
 | SAFE-03 | Phase 5 | Complete |
