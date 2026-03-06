@@ -148,7 +148,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+1. Use local CLI tools instead of API keys (general) — 2026-03-06
 
 ### Blockers/Concerns
 
