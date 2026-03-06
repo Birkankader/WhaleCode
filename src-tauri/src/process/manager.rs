@@ -16,7 +16,7 @@ pub async fn spawn(
     channel: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    spawn_with_env(cmd, args, cwd, &[], channel, state).await
+    spawn_with_env(cmd, args, cwd, &[], channel, state, None).await
 }
 
 /// Spawn a subprocess with custom environment variables and pgid isolation,
@@ -31,8 +31,9 @@ pub async fn spawn_with_env(
     env_vars: &[(&str, &str)],
     channel: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
+    existing_task_id: Option<String>,
 ) -> Result<String, String> {
-    let task_id = Uuid::new_v4().to_string();
+    let task_id = existing_task_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let mut command = Command::new(cmd);
     command

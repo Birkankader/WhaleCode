@@ -103,6 +103,7 @@ pub async fn spawn_claude_task(
         &env_refs,
         on_event,
         state,
+        Some(task_id),
     )
     .await
 }
