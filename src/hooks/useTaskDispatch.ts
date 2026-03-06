@@ -112,9 +112,10 @@ export function useTaskDispatch() {
           );
 
           // Update task store status
+          // Successful tasks go to 'review' so user can inspect diffs before merge
           useTaskStore.getState().updateTaskStatus(
             tempId,
-            code === 0 ? 'completed' : 'failed',
+            code === 0 ? 'review' : 'failed',
           );
 
           // Emit the exit event
