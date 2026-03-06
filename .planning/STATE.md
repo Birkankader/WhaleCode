@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 07-01-PLAN.md
-last_updated: "2026-03-06T11:06:25Z"
-last_activity: 2026-03-06 — Completed 07-01 Task router engine with keyword heuristics and unified dispatch
+stopped_at: Completed 07-02-PLAN.md
+last_updated: "2026-03-06T11:12:30.203Z"
+last_activity: 2026-03-06 — Completed 07-02 Frontend task dispatch and status panel
 progress:
   total_phases: 9
-  completed_phases: 6
-  total_plans: 19
-  completed_plans: 19
+  completed_phases: 7
+  total_plans: 21
+  completed_plans: 21
   percent: 100
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 7 of 9 (Task Router & Parallel Execution)
-Plan: 1 of 2 in current phase
+Plan: 2 of 2 in current phase
 Status: in-progress
-Last activity: 2026-03-06 — Completed 07-01 Task router engine with keyword heuristics and unified dispatch
+Last activity: 2026-03-06 — Completed 07-02 Frontend task dispatch and status panel
 
 Progress: [██████████] 100%
 
@@ -68,6 +68,7 @@ Progress: [██████████] 100%
 | Phase 06 P02 | 2min | 2 tasks | 4 files |
 | Phase 06 P03 | 2min | 2 tasks | 5 files |
 | Phase 07 P01 | 4min | 2 tasks | 8 files |
+| Phase 07 P02 | 4min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -136,6 +137,9 @@ Recent decisions affecting current work:
 - [Phase 06-03]: ToolAdapter trait uses &self methods with zero-cost unit structs for polymorphic adapter dispatch
 - [Phase 07-01]: Availability bonus pattern gives available tool score+0.1 when busy tool has positive score but available has 0
 - [Phase 07-01]: ProcessEntry tool_name defaults to "test" for backwards-compatible spawn_with_env calls
+- [Phase 07-02]: useTaskDispatch composes existing hook patterns but calls dispatch_task directly, preserving useClaudeTask/useGeminiTask unchanged
+- [Phase 07-02]: StatusPanel conditional mount only when tasks exist; 1s interval for elapsed time with cleanup on unmount
+- [Phase 07-02]: Tool override uses two side-by-side buttons (Claude/Gemini) rather than dropdown for faster interaction
 
 ### Pending Todos
 
@@ -150,6 +154,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-06T11:06:25Z
-Stopped at: Completed 07-01-PLAN.md
+Last session: 2026-03-06T11:12:30.202Z
+Stopped at: Completed 07-02-PLAN.md
 Resume file: None

@@ -42,7 +42,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Task Routing
 
 - [x] **ROUT-01**: App suggests which tool should handle a given task based on task type
-- [ ] **ROUT-02**: User can override the suggested tool assignment
+- [x] **ROUT-02**: User can override the suggested tool assignment
 - [x] **ROUT-03**: Routing considers tool strengths (Claude for refactoring/architecture, Gemini for large context reads)
 - [x] **ROUT-04**: Routing considers current tool availability (busy/idle status)
 
@@ -52,8 +52,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **SAFE-02**: User can accept or reject changes at file level
 - [x] **SAFE-03**: App detects when two tools have modified the same file and alerts the user
 - [x] **SAFE-04**: Conflict detection happens before merge back to main branch
-- [ ] **SAFE-05**: Live status panel shows each tool's state (idle, running, completed, failed)
-- [ ] **SAFE-06**: Status panel shows current task description and progress for each tool
+- [x] **SAFE-05**: Live status panel shows each tool's state (idle, running, completed, failed)
+- [x] **SAFE-06**: Status panel shows current task description and progress for each tool
 
 ### Integration
 
@@ -126,15 +126,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PMPT-03 | Phase 8 | Pending |
 | PMPT-04 | Phase 8 | Pending |
 | ROUT-01 | Phase 7 | Complete |
-| ROUT-02 | Phase 7 | Pending |
+| ROUT-02 | Phase 7 | Complete |
 | ROUT-03 | Phase 7 | Complete |
 | ROUT-04 | Phase 7 | Complete |
 | SAFE-01 | Phase 9 | Pending |
 | SAFE-02 | Phase 9 | Pending |
 | SAFE-03 | Phase 5 | Complete |
 | SAFE-04 | Phase 5 | Complete |
-| SAFE-05 | Phase 7 | Pending |
-| SAFE-06 | Phase 7 | Pending |
+| SAFE-05 | Phase 7 | Complete |
+| SAFE-06 | Phase 7 | Complete |
 | INTG-01 | Phase 3 | Complete |
 | INTG-02 | Phase 6 | Complete |
 | INTG-03 | Phase 6 | Complete |
