@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Worktree Isolation + Conflict Detection** - Git worktree per task, file-lock registry, conflict alerts (completed 2026-03-06)
 - [x] **Phase 6: Gemini CLI Adapter** - Second tool adapter, output validation, quota tracking, both adapters proven (completed 2026-03-06)
 - [x] **Phase 7: Task Router + Parallel Execution** - Rule-based routing, DAG dispatch, parallel tool status panel (completed 2026-03-06)
-- [ ] **Phase 8: Prompt Engine** - Per-tool prompt optimization, context injection, preview before send
+- [x] **Phase 8: Prompt Engine** - Per-tool prompt optimization, context injection, preview before send (completed 2026-03-06)
 - [ ] **Phase 9: Review UI + Safety Controls** - Diff review, file-level accept/reject, status panel polish
 
 ## Phase Details
@@ -173,5 +173,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
 | 6. Gemini CLI Adapter | 3/3 | Complete   | 2026-03-06 |
 | 7. Task Router + Parallel Execution | 2/2 | Complete   | 2026-03-06 |
-| 8. Prompt Engine | 0/2 | Not started | - |
+| 8. Prompt Engine | 2/2 | Complete   | 2026-03-06 |
 | 9. Review UI + Safety Controls | 0/TBD | Not started | - |

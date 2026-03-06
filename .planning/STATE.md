@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-03-06T11:49:00.408Z"
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-03-06T19:46:04.743Z"
 last_activity: 2026-03-06 — Completed 08-01 Prompt engine core with IPC command
 progress:
   total_phases: 9
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 23
-  completed_plans: 22
+  completed_plans: 23
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** Multiple AI coding tools working in parallel on the same project, fully aware of each other's changes and sharing a unified context
-**Current focus:** Phase 8 in progress — Prompt engine with per-tool optimization and context injection
+**Current focus:** Phase 8 complete — Prompt engine with per-tool optimization, context injection, and preview UI
 
 ## Current Position
 
 Phase: 8 of 9 (Prompt Engine)
-Plan: 1 of 1 in current phase
+Plan: 2 of 2 in current phase (COMPLETE)
 Status: in-progress
-Last activity: 2026-03-06 — Completed 08-01 Prompt engine core with IPC command
+Last activity: 2026-03-06 — Completed 08-02 Prompt preview UI with human verification
 
 Progress: [██████████] 100%
 
@@ -70,6 +70,7 @@ Progress: [██████████] 100%
 | Phase 07 P01 | 4min | 2 tasks | 8 files |
 | Phase 07 P02 | 4min | 2 tasks | 5 files |
 | Phase 08 P01 | 4min | 2 tasks | 9 files |
+| Phase 08 P02 | 3min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,7 @@ Recent decisions affecting current work:
 - [Phase 07-02]: Tool override uses two side-by-side buttons (Claude/Gemini) rather than dropdown for faster interaction
 - [Phase 08]: Context injection centralized in dispatch_task via PromptEngine, removed from individual spawn functions
 - [Phase 08]: Claude template uses structured markdown sections; Gemini uses flat context-first format; 8000 char max
+- [Phase 08-02]: PromptPreview fetches fresh data on every open (no caching) to prevent stale prompt display
 
 ### Pending Todos
 
@@ -157,6 +159,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-06T11:49:00.406Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-03-06T19:46:04.742Z
+Stopped at: Completed 08-02-PLAN.md
 Resume file: None
