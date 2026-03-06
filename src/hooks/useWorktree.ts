@@ -59,7 +59,7 @@ export function useWorktree(projectDir: string) {
       setLoading(true);
       setError(null);
       try {
-        const result = await commands.mergeWorktree(projectDir, branchName);
+        const result = await commands.mergeWorktree(projectDir, branchName, null);
         if (result.status === 'ok') {
           setConflicts(null);
           await refreshWorktrees();

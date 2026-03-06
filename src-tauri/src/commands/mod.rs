@@ -24,7 +24,8 @@ pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
-    check_worktree_conflicts, cleanup_worktrees, create_worktree, list_worktrees, merge_worktree,
+    check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,
+    list_worktrees, merge_worktree,
 };
 
 #[tauri::command]

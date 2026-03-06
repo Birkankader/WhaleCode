@@ -1,6 +1,7 @@
 use crate::worktree::conflict;
+use crate::worktree::diff;
 use crate::worktree::manager::WorktreeManager;
-use crate::worktree::models::{ConflictReport, WorktreeEntry};
+use crate::worktree::models::{ConflictReport, WorktreeDiffReport, WorktreeEntry};
 
 /// Create an isolated git worktree for a task.
 ///
@@ -68,6 +69,34 @@ pub async fn check_worktree_conflicts(
     .map_err(|e| format!("Conflict check task failed: {}", e))?
 }
 
+/// Generate per-file unified diffs between a worktree branch and the default branch.
+///
+/// Auto-commits any uncommitted changes in the worktree before generating diffs
+/// to capture all tool changes.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_worktree_diff(
+    project_dir: String,
+    branch_name: String,
+) -> Result<WorktreeDiffReport, String> {
+    let project_path = std::path::PathBuf::from(project_dir);
+    tokio::task::spawn_blocking(move || {
+        // Auto-commit pending changes in the worktree before diffing
+        let manager = WorktreeManager::new(project_path.clone());
+        let base_dir = manager.worktree_base_dir();
+        if let Some(prefix) = branch_name.strip_prefix("whalecode/task/") {
+            let wt_path = base_dir.join(format!("whalecode-{}", prefix));
+            if wt_path.exists() {
+                let _ = conflict::auto_commit_worktree(&wt_path);
+            }
+        }
+
+        diff::generate_worktree_diff(&project_path, &branch_name)
+    })
+    .await
+    .map_err(|e| format!("Diff task failed: {}", e))?
+}
+
 /// Merge a worktree branch into the main/default branch.
 ///
 /// SAFE-04: Pre-merge conflict gate — checks for conflicts against the default branch
@@ -78,6 +107,7 @@ pub async fn check_worktree_conflicts(
 pub async fn merge_worktree(
     project_dir: String,
     branch_name: String,
+    accepted_files: Option<Vec<String>>,
 ) -> Result<(), String> {
     let project_path = std::path::PathBuf::from(project_dir);
     tokio::task::spawn_blocking(move || {
@@ -127,46 +157,52 @@ pub async fn merge_worktree(
             }
         }
 
-        // Perform fast-forward merge into default branch
-        let branch_commit = repo
-            .revparse_single(&branch_name)
-            .map_err(|e| format!("Failed to resolve '{}': {}", branch_name, e))?
-            .peel_to_commit()
-            .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_name, e))?;
+        // Choose merge strategy based on accepted_files
+        if let Some(ref files) = accepted_files {
+            // Selective merge: only apply accepted files
+            diff::selective_merge(&project_path, &branch_name, files)?;
+        } else {
+            // Full fast-forward merge (original behavior)
+            let branch_commit = repo
+                .revparse_single(&branch_name)
+                .map_err(|e| format!("Failed to resolve '{}': {}", branch_name, e))?
+                .peel_to_commit()
+                .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_name, e))?;
 
-        let default_ref_name = format!("refs/heads/{}", default_branch);
-        let mut default_ref = repo
-            .find_reference(&default_ref_name)
-            .map_err(|e| format!("Failed to find ref '{}': {}", default_ref_name, e))?;
+            let default_ref_name = format!("refs/heads/{}", default_branch);
+            let mut default_ref = repo
+                .find_reference(&default_ref_name)
+                .map_err(|e| format!("Failed to find ref '{}': {}", default_ref_name, e))?;
 
-        // Check if fast-forward is possible
-        let default_commit = default_ref
-            .peel_to_commit()
-            .map_err(|e| format!("Failed to get default branch commit: {}", e))?;
+            // Check if fast-forward is possible
+            let default_commit = default_ref
+                .peel_to_commit()
+                .map_err(|e| format!("Failed to get default branch commit: {}", e))?;
 
-        let is_ancestor = repo
-            .merge_base(default_commit.id(), branch_commit.id())
-            .map(|base| base == default_commit.id())
-            .unwrap_or(false);
+            let is_ancestor = repo
+                .merge_base(default_commit.id(), branch_commit.id())
+                .map(|base| base == default_commit.id())
+                .unwrap_or(false);
 
-        if !is_ancestor {
-            return Err(format!(
-                "Cannot fast-forward: {} has diverged from {}",
-                default_branch, branch_name
-            ));
+            if !is_ancestor {
+                return Err(format!(
+                    "Cannot fast-forward: {} has diverged from {}",
+                    default_branch, branch_name
+                ));
+            }
+
+            // Fast-forward the default branch reference
+            default_ref
+                .set_target(
+                    branch_commit.id(),
+                    &format!("whalecode: merge {} into {}", branch_name, default_branch),
+                )
+                .map_err(|e| format!("Failed to fast-forward merge: {}", e))?;
+
+            // Update working directory to match new HEAD
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                .map_err(|e| format!("Failed to update working directory: {}", e))?;
         }
-
-        // Fast-forward the default branch reference
-        default_ref
-            .set_target(
-                branch_commit.id(),
-                &format!("whalecode: merge {} into {}", branch_name, default_branch),
-            )
-            .map_err(|e| format!("Failed to fast-forward merge: {}", e))?;
-
-        // Update working directory to match new HEAD
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-            .map_err(|e| format!("Failed to update working directory: {}", e))?;
 
         // Clean up the worktree after successful merge
         if let Some(prefix) = branch_name.strip_prefix("whalecode/task/") {

@@ -58,6 +58,7 @@ async resumeProcess(taskId: string) : Promise<Result<null, string>> {
  * 
  * Retrieves the API key from the macOS Keychain, builds the Claude CLI command,
  * and spawns it through the process manager with secure env var injection.
+ * The prompt is expected to be already optimized by the prompt engine (dispatch_task handles this).
  * 
  * Returns the task_id for tracking the process.
  */
@@ -96,7 +97,7 @@ async hasClaudeApiKey() : Promise<Result<boolean, string>> {
 },
 /**
  * Validate a Claude Code result JSON for silent failures.
- *
+ * 
  * Parses the result JSON line with `parse_stream_line`, then validates via
  * `validate_result` — checking is_error, empty result, zero turns, and status.
  */
@@ -120,7 +121,43 @@ async deleteClaudeApiKey() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Record a task completion event with file changes.
+ */
+async recordTaskCompletionCmd(taskId: string, toolName: string, eventType: string, prompt: string | null, summary: string | null, projectDir: string, durationMs: number | null, costUsd: number | null, filesJson: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("record_task_completion_cmd", { taskId, toolName, eventType, prompt, summary, projectDir, durationMs, costUsd, filesJson }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get recent file changes for a project.
+ */
+async getRecentChanges(projectDir: string, limit: number) : Promise<Result<FileChangeRecord[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_recent_changes", { projectDir, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get a summary of recent context events with their file paths.
+ */
+async getContextSummary(projectDir: string, limit: number) : Promise<Result<ContextEventWithFiles[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_context_summary", { projectDir, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Create an isolated git worktree for a task.
+ * 
+ * Creates a new branch and worktree directory in a sibling `.whalecode-worktrees/` folder.
+ * Returns the WorktreeEntry for frontend tracking.
  */
 async createWorktree(taskId: string, projectDir: string) : Promise<Result<WorktreeEntry, string>> {
     try {
@@ -132,6 +169,9 @@ async createWorktree(taskId: string, projectDir: string) : Promise<Result<Worktr
 },
 /**
  * Check for file-level conflicts between two worktree branches.
+ * 
+ * Auto-commits any uncommitted changes in both worktrees before running
+ * the three-way merge conflict detection.
  */
 async checkWorktreeConflicts(projectDir: string, branchA: string, branchB: string) : Promise<Result<ConflictReport, string>> {
     try {
@@ -142,12 +182,32 @@ async checkWorktreeConflicts(projectDir: string, branchA: string, branchB: strin
 }
 },
 /**
- * Merge a worktree branch into the main/default branch.
- * SAFE-04: Pre-merge conflict gate.
+ * Generate per-file unified diffs between a worktree branch and the default branch.
+ *
+ * Auto-commits any uncommitted changes in the worktree before generating diffs
+ * to capture all tool changes.
  */
-async mergeWorktree(projectDir: string, branchName: string) : Promise<Result<null, string>> {
+async getWorktreeDiff(projectDir: string, branchName: string) : Promise<Result<WorktreeDiffReport, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("merge_worktree", { projectDir, branchName }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_worktree_diff", { projectDir, branchName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Merge a worktree branch into the main/default branch.
+ *
+ * SAFE-04: Pre-merge conflict gate — checks for conflicts against the default branch
+ * and all other active whalecode branches before merging. If any conflicts are detected,
+ * the merge is blocked and an error is returned.
+ *
+ * When acceptedFiles is provided, performs selective merge (only accepted files).
+ * When acceptedFiles is null, performs full fast-forward merge (backward compatible).
+ */
+async mergeWorktree(projectDir: string, branchName: string, acceptedFiles: string[] | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("merge_worktree", { projectDir, branchName, acceptedFiles }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -155,6 +215,8 @@ async mergeWorktree(projectDir: string, branchName: string) : Promise<Result<nul
 },
 /**
  * Clean up stale/invalid worktrees from previous crashed sessions.
+ * 
+ * Returns the names of worktrees that were cleaned up.
  */
 async cleanupWorktrees(projectDir: string) : Promise<Result<string[], string>> {
     try {
@@ -176,7 +238,78 @@ async listWorktrees(projectDir: string) : Promise<Result<string[], string>> {
 }
 },
 /**
+ * Spawn a Gemini CLI subprocess in headless streaming mode.
+ * 
+ * Retrieves the API key from the macOS Keychain, builds the Gemini CLI command,
+ * and spawns it through the process manager with secure env var injection.
+ * The prompt is expected to be already optimized by the prompt engine (dispatch_task handles this).
+ * 
+ * Returns the task_id for tracking the process.
+ */
+async spawnGeminiTask(prompt: string, projectDir: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("spawn_gemini_task", { prompt, projectDir, onEvent }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Store a Gemini API key in the macOS Keychain.
+ * 
+ * Validates that the key is non-empty and has reasonable length (> 10 chars).
+ * NOTE: Gemini API keys have no known prefix pattern (unlike Claude's sk-ant-).
+ * SECURITY: The key is never logged or included in error messages.
+ */
+async setGeminiApiKey(key: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_gemini_api_key", { key }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Check whether a Gemini API key is stored in the macOS Keychain.
+ */
+async hasGeminiApiKey() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("has_gemini_api_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Validate a Gemini CLI result JSON for silent failures.
+ * 
+ * Parses the result JSON line with `parse_stream_line`, then validates via
+ * `validate_result` — checking empty response, error status, and error events.
+ */
+async validateGeminiResult(resultJson: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_gemini_result", { resultJson }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the stored Gemini API key from the macOS Keychain.
+ */
+async deleteGeminiApiKey() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_gemini_api_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Suggest the best tool for a given prompt based on keyword heuristics and tool availability.
+ * 
+ * Checks which tools currently have running processes to determine busyness,
+ * then delegates to TaskRouter::suggest for the routing decision.
  */
 async suggestTool(prompt: string) : Promise<Result<RoutingSuggestion, string>> {
     try {
@@ -188,6 +321,9 @@ async suggestTool(prompt: string) : Promise<Result<RoutingSuggestion, string>> {
 },
 /**
  * Dispatch a task to the specified tool (claude or gemini).
+ * 
+ * Enforces max 1 running process per tool. Routes to the correct spawn function
+ * based on tool_name, then updates the ProcessEntry with tool metadata.
  */
 async dispatchTask(prompt: string, projectDir: string, toolName: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
     try {
@@ -199,6 +335,9 @@ async dispatchTask(prompt: string, projectDir: string, toolName: string, onEvent
 },
 /**
  * Preview optimized prompts for all supported tools without dispatching.
+ * 
+ * Returns a Vec<OptimizedPrompt> showing how the prompt would be transformed
+ * for each tool (claude, gemini). Used by frontend for prompt preview UI.
  */
 async optimizePrompt(prompt: string, projectDir: string) : Promise<Result<OptimizedPrompt[], string>> {
     try {
@@ -220,12 +359,28 @@ async optimizePrompt(prompt: string, projectDir: string) : Promise<Result<Optimi
 
 /** user-defined types **/
 
+export type ConflictFile = { path: string }
+export type ConflictReport = { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
+export type FileDiff = { path: string; status: string; old_path: string | null; patch: string; additions: number; deletions: number }
+export type WorktreeDiffReport = { branch_name: string; default_branch: string; files: FileDiff[]; total_additions: number; total_deletions: number }
+/**
+ * A context event with its associated file paths, suitable for IPC return.
+ */
+export type ContextEventWithFiles = { id: number; task_id: string; tool_name: string; event_type: string; prompt: string | null; summary: string | null; project_dir: string; metadata: string | null; duration_ms: number | null; cost_usd: number | null; created_at: string; files: string[] }
+export type FileChangeRecord = { file_path: string; change_type: string; tool_name: string; summary: string | null; created_at: string }
+/**
+ * An optimized prompt for a specific tool, ready for IPC export.
+ */
+export type OptimizedPrompt = { tool_name: string; original_prompt: string; optimized_prompt: string }
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
-export interface RoutingSuggestion { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }
-export interface WorktreeEntry { task_id: string; worktree_name: string; branch_name: string; path: string; created_at: string }
-export interface ConflictFile { path: string }
-export interface ConflictReport { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
-export interface OptimizedPrompt { tool_name: string; original_prompt: string; optimized_prompt: string }
+export type RoutingSuggestion = { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }
+export type TAURI_CHANNEL<TSend> = null
+export type WorktreeEntry = { task_id: string; worktree_name: string; branch_name: string; path: string; 
+/**
+ * ISO 8601 timestamp string (specta does not implement Type for chrono::DateTime)
+ */
+created_at: string }
+
 /** tauri-specta globals **/
 
 import {
