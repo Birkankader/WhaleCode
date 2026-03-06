@@ -196,6 +196,17 @@ async dispatchTask(prompt: string, projectDir: string, toolName: string, onEvent
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Preview optimized prompts for all supported tools without dispatching.
+ */
+async optimizePrompt(prompt: string, projectDir: string) : Promise<Result<OptimizedPrompt[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("optimize_prompt", { prompt, projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -214,6 +225,7 @@ export interface RoutingSuggestion { suggested_tool: string; confidence: number;
 export interface WorktreeEntry { task_id: string; worktree_name: string; branch_name: string; path: string; created_at: string }
 export interface ConflictFile { path: string }
 export interface ConflictReport { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
+export interface OptimizedPrompt { tool_name: string; original_prompt: string; optimized_prompt: string }
 /** tauri-specta globals **/
 
 import {

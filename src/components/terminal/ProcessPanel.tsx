@@ -4,6 +4,7 @@ import { useTaskDispatch } from '../../hooks/useTaskDispatch';
 import type { RoutingSuggestion } from '../../bindings';
 import type { ToolName } from '../../stores/taskStore';
 import { OutputConsole } from './OutputConsole';
+import { PromptPreview } from '../prompt/PromptPreview';
 
 function statusColor(status: ProcessStatus): string {
   switch (status) {
@@ -51,6 +52,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
   const [suggestion, setSuggestion] = useState<RoutingSuggestion | null>(null);
   const [selectedTool, setSelectedTool] = useState<ToolName | null>(null);
   const [isDispatching, setIsDispatching] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
 
   const handleSpawnTest = useCallback(async () => {
     await spawnProcess(
@@ -150,6 +152,12 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
               }}
             />
             <button
+              onClick={() => setShowPreview(!showPreview)}
+              className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700 rounded px-2 py-1 transition-colors"
+            >
+              Preview
+            </button>
+            <button
               onClick={handleDispatch}
               disabled={isDispatching || !taskPrompt.trim() || !projectDir.trim() || toolBusy}
               className="px-4 py-1.5 text-xs rounded bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -209,6 +217,14 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
               {effectiveTool === 'claude' ? 'Claude Code' : 'Gemini CLI'} is currently busy. Wait for it to finish or select the other tool.
             </div>
           )}
+
+          {/* Prompt preview panel */}
+          <PromptPreview
+            prompt={taskPrompt}
+            projectDir={projectDir}
+            visible={showPreview}
+            onClose={() => setShowPreview(false)}
+          />
         </div>
       )}
 
