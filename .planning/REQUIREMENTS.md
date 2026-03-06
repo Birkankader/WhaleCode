@@ -48,8 +48,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Review & Safety
 
-- [ ] **SAFE-01**: User can view unified diff of all changes made by a tool before committing
-- [ ] **SAFE-02**: User can accept or reject changes at file level
+- [x] **SAFE-01**: User can view unified diff of all changes made by a tool before committing
+- [x] **SAFE-02**: User can accept or reject changes at file level
 - [x] **SAFE-03**: App detects when two tools have modified the same file and alerts the user
 - [x] **SAFE-04**: Conflict detection happens before merge back to main branch
 - [x] **SAFE-05**: Live status panel shows each tool's state (idle, running, completed, failed)
@@ -129,8 +129,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ROUT-02 | Phase 7 | Complete |
 | ROUT-03 | Phase 7 | Complete |
 | ROUT-04 | Phase 7 | Complete |
-| SAFE-01 | Phase 9 | Pending |
-| SAFE-02 | Phase 9 | Pending |
+| SAFE-01 | Phase 9 | Complete |
+| SAFE-02 | Phase 9 | Complete |
 | SAFE-03 | Phase 5 | Complete |
 | SAFE-04 | Phase 5 | Complete |
 | SAFE-05 | Phase 7 | Complete |
