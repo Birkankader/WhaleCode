@@ -4,6 +4,7 @@ mod credentials;
 mod ipc;
 mod process;
 mod context;
+mod prompt;
 mod router;
 mod worktree;
 mod state;
