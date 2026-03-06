@@ -120,7 +120,7 @@ Plans:
 **Depends on**: Phase 6
 **Requirements**: PROC-03, ROUT-01, ROUT-02, ROUT-03, ROUT-04, SAFE-05, SAFE-06
 **Success Criteria** (what must be TRUE):
-  1. When a user submits a task, the app suggests which tool should handle it based on task type (e.g., architecture refactor → Claude, large codebase read → Gemini)
+  1. When a user submits a task, the app suggests which tool should handle it based on task type (e.g., architecture refactor -> Claude, large codebase read -> Gemini)
   2. User can override the suggested tool assignment before dispatching
   3. Two tasks run simultaneously on the same project without interfering with each other's worktrees
   4. Live status panel shows each tool's real-time state (idle, running, completed, failed) with current task description and elapsed time
@@ -153,16 +153,15 @@ Plans:
   2. User can accept or reject individual files from the diff view; rejected files are not merged back to main
   3. No changes are automatically committed — every merge requires explicit user action in the UI
   4. The status panel clearly distinguishes active vs. idle tools; conflict alerts appear in human-readable language, not raw file paths
-**Plans**: 3 plans
+**Plans**: 2 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 09-01-PLAN.md — Backend diff generation, selective merge, IPC commands
+- [ ] 09-02-PLAN.md — Frontend DiffReview UI, file accept/reject, AppShell integration, end-to-end verification
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -174,4 +173,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 6. Gemini CLI Adapter | 3/3 | Complete   | 2026-03-06 |
 | 7. Task Router + Parallel Execution | 2/2 | Complete   | 2026-03-06 |
 | 8. Prompt Engine | 2/2 | Complete   | 2026-03-06 |
-| 9. Review UI + Safety Controls | 0/TBD | Not started | - |
+| 9. Review UI + Safety Controls | 0/2 | Not started | - |
