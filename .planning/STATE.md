@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 9 of 9 (Review UI Safety Controls)
-Plan: 1 of 2 in current phase
+Plan: 2 of 2 in current phase
 Status: in-progress
-Last activity: 2026-03-06 — Completed 09-01 Backend diff and selective merge
+Last activity: 2026-03-06 — Completed 09-02 Diff review UI (awaiting human verify)
 
-Progress: [██████████] 96%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -72,6 +72,7 @@ Progress: [██████████] 96%
 | Phase 08 P01 | 4min | 2 tasks | 9 files |
 | Phase 08 P02 | 3min | 2 tasks | 3 files |
 | Phase 09 P01 | 5min | 2 tasks | 8 files |
+| Phase 09 P02 | 3min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -148,6 +149,9 @@ Recent decisions affecting current work:
 - [Phase 08-02]: PromptPreview fetches fresh data on every open (no caching) to prevent stale prompt display
 - [Phase 09]: In-memory git2::Index for selective merge instead of TreeBuilder (handles nested paths)
 - [Phase 09]: 50KB patch truncation per file to prevent UI overload
+- [Phase 09-02]: DiffReview integration at route level (index.tsx) since projectDir and ProcessPanel live there
+- [Phase 09-02]: FileDiffView checks multi-char header prefixes (--- /+++ ) before single-char (+/-) for correct coloring
+- [Phase 09-02]: Review gate pattern: successful tasks -> 'review' status -> user must explicitly merge/discard
 
 ### Pending Todos
 
@@ -162,6 +166,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-03-06T20:23:36.730Z
-Stopped at: Completed 09-01-PLAN.md
+Last session: 2026-03-06T20:27:30Z
+Stopped at: Completed 09-02-PLAN.md (checkpoint: human-verify pending)
 Resume file: None
