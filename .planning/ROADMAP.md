@@ -125,11 +125,10 @@ Plans:
   3. Two tasks run simultaneously on the same project without interfering with each other's worktrees
   4. Live status panel shows each tool's real-time state (idle, running, completed, failed) with current task description and elapsed time
   5. A task that depends on another tool's output waits for that tool to finish before dispatching
-**Plans**: 3 plans
+**Plans**: 2 plans
 Plans:
-- [ ] 01-01-PLAN.md — Tauri scaffold, pinned deps, window config, test infrastructure
-- [ ] 01-02-PLAN.md — Rust AppState, OutputEvent, Channel command, tauri-specta bindings
-- [ ] 01-03-PLAN.md — React AppShell, xterm.js terminal, Channel wiring, AppShell tests
+- [ ] 07-01-PLAN.md — Backend: TaskRouter module, routing heuristics, dispatch_task IPC, extended ProcessEntry
+- [ ] 07-02-PLAN.md — Frontend: unified task dispatch hook, live StatusPanel, ProcessPanel unification
 
 ### Phase 8: Prompt Engine
 **Goal**: Users write one prompt; the app automatically rewrites it for each target tool's conventions and injects relevant project context; users can preview the optimized prompt before sending
@@ -173,7 +172,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
 | 4. Context Store | 3/3 | Complete   | 2026-03-06 |
 | 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
-| 6. Gemini CLI Adapter | 2/3 | In progress   | 2026-03-06 |
-| 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
+| 6. Gemini CLI Adapter | 3/3 | Complete   | 2026-03-06 |
+| 7. Task Router + Parallel Execution | 0/2 | Not started | - |
 | 8. Prompt Engine | 0/TBD | Not started | - |
 | 9. Review UI + Safety Controls | 0/TBD | Not started | - |
