@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Routes, Route } from 'react-router';
 import { AppShell } from '../components/layout/AppShell';
 import { ProcessPanel } from '../components/terminal/ProcessPanel';
+import { StatusPanel } from '../components/status/StatusPanel';
 import { WorktreeStatus } from '../components/WorktreeStatus';
 
 export function AppRoutes() {
@@ -32,9 +33,12 @@ export function AppRoutes() {
                 />
               </div>
 
+              {/* Status panel - shows when any task exists */}
+              <StatusPanel className="shrink-0 px-3 py-2 border-b border-zinc-800 bg-zinc-900/40" />
+
               {/* Main process panel */}
               <div className="flex-1 min-h-0">
-                <ProcessPanel />
+                <ProcessPanel projectDir={projectDir} />
               </div>
 
               {/* Worktree status panel */}
