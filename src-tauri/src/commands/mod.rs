@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod gemini;
 pub mod context;
 pub mod process;
 pub mod worktree;
@@ -11,6 +12,10 @@ use crate::state::AppState;
 pub use claude::{
     delete_claude_api_key, has_claude_api_key, set_claude_api_key, spawn_claude_task,
     validate_claude_result,
+};
+pub use gemini::{
+    delete_gemini_api_key, has_gemini_api_key, set_gemini_api_key, spawn_gemini_task,
+    validate_gemini_result,
 };
 pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
