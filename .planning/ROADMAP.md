@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Process Core** - Subprocess lifecycle management, zombie cleanup, streaming output console (completed 2026-03-05)
 - [x] **Phase 3: Claude Code Adapter** - Tool trait, headless NDJSON execution, silent failure detection, API key security (completed 2026-03-05)
 - [x] **Phase 4: Context Store** - SQLite write-ahead log of file changes and decisions, persistent project memory (completed 2026-03-06)
-- [ ] **Phase 5: Worktree Isolation + Conflict Detection** - Git worktree per task, file-lock registry, conflict alerts
+- [x] **Phase 5: Worktree Isolation + Conflict Detection** - Git worktree per task, file-lock registry, conflict alerts (completed 2026-03-06)
 - [ ] **Phase 6: Gemini CLI Adapter** - Second tool adapter, output validation, quota tracking, both adapters proven
 - [ ] **Phase 7: Task Router + Parallel Execution** - Rule-based routing, DAG dispatch, parallel tool status panel
 - [ ] **Phase 8: Prompt Engine** - Per-tool prompt optimization, context injection, preview before send
@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Process Core | 2/2 | Complete   | 2026-03-05 |
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
 | 4. Context Store | 3/3 | Complete   | 2026-03-06 |
-| 5. Worktree Isolation + Conflict Detection | 3/4 | In Progress | - |
+| 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
 | 6. Gemini CLI Adapter | 0/TBD | Not started | - |
 | 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
 | 8. Prompt Engine | 0/TBD | Not started | - |
