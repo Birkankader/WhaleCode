@@ -1,83 +1,152 @@
 import { useState, useEffect, useCallback } from 'react';
 import { commands } from '../../bindings';
 
+type TabId = 'claude' | 'gemini';
+
+interface TabConfig {
+  label: string;
+  placeholder: string;
+  hasKey: () => Promise<{ status: 'ok'; data: boolean } | { status: 'error'; error: string }>;
+  setKey: (key: string) => Promise<{ status: 'ok'; data: null } | { status: 'error'; error: string }>;
+  deleteKey: () => Promise<{ status: 'ok'; data: null } | { status: 'error'; error: string }>;
+}
+
+const TAB_CONFIGS: Record<TabId, TabConfig> = {
+  claude: {
+    label: 'Claude',
+    placeholder: 'sk-ant-...',
+    hasKey: () => commands.hasClaudeApiKey(),
+    setKey: (key: string) => commands.setClaudeApiKey(key),
+    deleteKey: () => commands.deleteClaudeApiKey(),
+  },
+  gemini: {
+    label: 'Gemini',
+    placeholder: 'AI...',
+    hasKey: () => commands.hasGeminiApiKey(),
+    setKey: (key: string) => commands.setGeminiApiKey(key),
+    deleteKey: () => commands.deleteGeminiApiKey(),
+  },
+};
+
 /**
- * API key settings component for Claude Code integration.
+ * API key settings component for Claude Code and Gemini CLI integration.
  *
- * Provides:
- * - Password input for the API key (masked)
- * - Save button that stores key via setClaudeApiKey IPC
+ * Provides tabbed interface to manage both API keys independently:
+ * - Password input for each key (masked)
+ * - Save button that stores key via respective IPC command
  * - Status indicator: "Key stored" (green) or "No key" (red)
  * - Delete button to clear the stored key
  */
 export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
-  const [keyInput, setKeyInput] = useState('');
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('claude');
 
-  const checkKey = useCallback(async () => {
+  // Per-tab state
+  const [claudeKeyInput, setClaudeKeyInput] = useState('');
+  const [claudeHasKey, setClaudeHasKey] = useState<boolean | null>(null);
+  const [claudeSaving, setClaudeSaving] = useState(false);
+  const [claudeMessage, setClaudeMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [geminiHasKey, setGeminiHasKey] = useState<boolean | null>(null);
+  const [geminiSaving, setGeminiSaving] = useState(false);
+  const [geminiMessage, setGeminiMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const checkClaudeKey = useCallback(async () => {
     try {
       const result = await commands.hasClaudeApiKey();
       if (result.status === 'ok') {
-        setHasKey(result.data);
+        setClaudeHasKey(result.data);
       } else {
-        setHasKey(false);
+        setClaudeHasKey(false);
       }
     } catch {
-      setHasKey(false);
+      setClaudeHasKey(false);
+    }
+  }, []);
+
+  const checkGeminiKey = useCallback(async () => {
+    try {
+      const result = await commands.hasGeminiApiKey();
+      if (result.status === 'ok') {
+        setGeminiHasKey(result.data);
+      } else {
+        setGeminiHasKey(false);
+      }
+    } catch {
+      setGeminiHasKey(false);
     }
   }, []);
 
   useEffect(() => {
-    checkKey();
-  }, [checkKey]);
+    checkClaudeKey();
+    checkGeminiKey();
+  }, [checkClaudeKey, checkGeminiKey]);
 
-  const handleSave = async () => {
+  const handleSave = async (tab: TabId) => {
+    const config = TAB_CONFIGS[tab];
+    const keyInput = tab === 'claude' ? claudeKeyInput : geminiKeyInput;
+    const setSaving = tab === 'claude' ? setClaudeSaving : setGeminiSaving;
+    const setMessage = tab === 'claude' ? setClaudeMessage : setGeminiMessage;
+    const setKeyInput = tab === 'claude' ? setClaudeKeyInput : setGeminiKeyInput;
+    const setHasKey = tab === 'claude' ? setClaudeHasKey : setGeminiHasKey;
+
     if (!keyInput.trim()) return;
 
     setSaving(true);
     setMessage(null);
 
     try {
-      const result = await commands.setClaudeApiKey(keyInput.trim());
+      const result = await config.setKey(keyInput.trim());
       if (result.status === 'ok') {
-        setMessage({ type: 'success', text: 'API key saved to Keychain' });
+        setMessage({ type: 'success', text: `${config.label} API key saved to Keychain` });
         setKeyInput('');
         setHasKey(true);
       } else {
         setMessage({ type: 'error', text: result.error });
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to save API key' });
+    } catch {
+      setMessage({ type: 'error', text: `Failed to save ${config.label} API key` });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async () => {
+  const handleDelete = async (tab: TabId) => {
+    const config = TAB_CONFIGS[tab];
+    const setSaving = tab === 'claude' ? setClaudeSaving : setGeminiSaving;
+    const setMessage = tab === 'claude' ? setClaudeMessage : setGeminiMessage;
+    const setHasKey = tab === 'claude' ? setClaudeHasKey : setGeminiHasKey;
+
     setSaving(true);
     setMessage(null);
 
     try {
-      const result = await commands.deleteClaudeApiKey();
+      const result = await config.deleteKey();
       if (result.status === 'ok') {
         setHasKey(false);
-        setMessage({ type: 'success', text: 'API key removed from Keychain' });
+        setMessage({ type: 'success', text: `${config.label} API key removed from Keychain` });
       } else {
         setMessage({ type: 'error', text: 'Failed to delete: ' + result.error });
       }
     } catch {
-      setMessage({ type: 'error', text: 'Failed to delete API key' });
+      setMessage({ type: 'error', text: `Failed to delete ${config.label} API key` });
     } finally {
       setSaving(false);
     }
   };
 
+  // Active tab state
+  const keyInput = activeTab === 'claude' ? claudeKeyInput : geminiKeyInput;
+  const setKeyInput = activeTab === 'claude' ? setClaudeKeyInput : setGeminiKeyInput;
+  const hasKey = activeTab === 'claude' ? claudeHasKey : geminiHasKey;
+  const saving = activeTab === 'claude' ? claudeSaving : geminiSaving;
+  const message = activeTab === 'claude' ? claudeMessage : geminiMessage;
+  const config = TAB_CONFIGS[activeTab];
+
   return (
     <div className="p-6 max-w-md">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-zinc-100">Claude API Key</h2>
+        <h2 className="text-lg font-semibold text-zinc-100">API Keys</h2>
         {onClose && (
           <button
             onClick={onClose}
@@ -90,6 +159,23 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
             </svg>
           </button>
         )}
+      </div>
+
+      {/* Tab toggle */}
+      <div className="flex gap-1 mb-4 p-1 bg-zinc-800 rounded-lg">
+        {(Object.keys(TAB_CONFIGS) as TabId[]).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+              activeTab === tab
+                ? 'bg-zinc-700 text-zinc-100'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            {TAB_CONFIGS[tab].label}
+          </button>
+        ))}
       </div>
 
       {/* Status indicator */}
@@ -110,14 +196,14 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
           type="password"
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
-          placeholder="sk-ant-..."
+          placeholder={config.placeholder}
           className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
           disabled={saving}
         />
 
         <div className="flex gap-2">
           <button
-            onClick={handleSave}
+            onClick={() => handleSave(activeTab)}
             disabled={saving || !keyInput.trim()}
             className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -126,7 +212,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
 
           {hasKey && (
             <button
-              onClick={handleDelete}
+              onClick={() => handleDelete(activeTab)}
               disabled={saving}
               className="px-4 py-1.5 text-sm rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
@@ -150,7 +236,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       )}
 
       <p className="mt-4 text-xs text-zinc-600">
-        Your API key is stored securely in the macOS Keychain and is never logged or displayed.
+        Your API keys are stored securely in the macOS Keychain and are never logged or displayed.
       </p>
     </div>
   );
