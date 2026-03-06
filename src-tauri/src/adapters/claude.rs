@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 
+use super::{ToolAdapter, ToolCommand, RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy};
+
 // ---------------------------------------------------------------------------
 // NDJSON Event Types
 // ---------------------------------------------------------------------------
@@ -212,6 +214,54 @@ impl RetryPolicy {
     pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
         let delay = self.base_delay_ms.saturating_mul(2u64.saturating_pow(attempt));
         delay.min(self.max_delay_ms)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ToolAdapter Implementation
+// ---------------------------------------------------------------------------
+
+/// Zero-cost unit struct for polymorphic adapter dispatch.
+pub struct ClaudeAdapter;
+
+impl ToolAdapter for ClaudeAdapter {
+    fn build_command(&self, prompt: &str, cwd: &str, api_key: &str) -> ToolCommand {
+        let c = build_command(prompt, cwd, api_key);
+        ToolCommand {
+            cmd: c.cmd,
+            args: c.args,
+            env: c.env,
+            cwd: c.cwd,
+        }
+    }
+
+    fn parse_stream_line(&self, line: &str) -> Option<String> {
+        parse_stream_line(line).map(|_| line.trim().to_string())
+    }
+
+    fn validate_result_json(&self, result_json: &str) -> Result<(), String> {
+        let event = parse_stream_line(result_json)
+            .ok_or_else(|| "Failed to parse result JSON".to_string())?;
+        validate_result(&event)
+    }
+
+    fn detect_rate_limit(&self, line: &str) -> Option<SharedRateLimitInfo> {
+        detect_rate_limit(line).map(|info| SharedRateLimitInfo {
+            retry_after_secs: info.retry_after_secs,
+        })
+    }
+
+    fn retry_policy(&self) -> SharedRetryPolicy {
+        let p = RetryPolicy::default_claude();
+        SharedRetryPolicy {
+            max_retries: p.max_retries,
+            base_delay_ms: p.base_delay_ms,
+            max_delay_ms: p.max_delay_ms,
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Claude Code"
     }
 }
 

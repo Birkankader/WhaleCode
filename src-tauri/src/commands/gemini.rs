@@ -88,7 +88,8 @@ pub async fn spawn_gemini_task(
         .to_str()
         .ok_or_else(|| "Invalid worktree path".to_string())?
         .to_string();
-    let cmd = crate::adapters::gemini::build_command(&full_prompt, &worktree_cwd, &api_key);
+    let adapter = crate::adapters::gemini::GeminiAdapter;
+    let cmd = crate::adapters::ToolAdapter::build_command(&adapter, &full_prompt, &worktree_cwd, &api_key);
 
     // Convert env Vec<(String, String)> to slice-compatible format
     let env_refs: Vec<(&str, &str)> = cmd.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -148,9 +149,8 @@ pub async fn has_gemini_api_key() -> Result<bool, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn validate_gemini_result(result_json: String) -> Result<(), String> {
-    let event = crate::adapters::gemini::parse_stream_line(&result_json)
-        .ok_or_else(|| "Failed to parse Gemini result JSON".to_string())?;
-    crate::adapters::gemini::validate_result(&event)
+    let adapter = crate::adapters::gemini::GeminiAdapter;
+    crate::adapters::ToolAdapter::validate_result_json(&adapter, &result_json)
 }
 
 /// Delete the stored Gemini API key from the macOS Keychain.

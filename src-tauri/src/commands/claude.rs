@@ -89,7 +89,8 @@ pub async fn spawn_claude_task(
         .to_str()
         .ok_or_else(|| "Invalid worktree path".to_string())?
         .to_string();
-    let cmd = crate::adapters::claude::build_command(&full_prompt, &worktree_cwd, &api_key);
+    let adapter = crate::adapters::claude::ClaudeAdapter;
+    let cmd = crate::adapters::ToolAdapter::build_command(&adapter, &full_prompt, &worktree_cwd, &api_key);
 
     // Convert env Vec<(String, String)> to slice-compatible format
     let env_refs: Vec<(&str, &str)> = cmd.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -145,9 +146,8 @@ pub async fn has_claude_api_key() -> Result<bool, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn validate_claude_result(result_json: String) -> Result<(), String> {
-    let event = crate::adapters::claude::parse_stream_line(&result_json)
-        .ok_or_else(|| "Failed to parse result JSON".to_string())?;
-    crate::adapters::claude::validate_result(&event)
+    let adapter = crate::adapters::claude::ClaudeAdapter;
+    crate::adapters::ToolAdapter::validate_result_json(&adapter, &result_json)
 }
 
 /// Delete the stored Claude API key from the macOS Keychain.

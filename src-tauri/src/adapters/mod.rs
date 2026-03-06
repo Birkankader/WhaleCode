@@ -66,3 +66,57 @@ pub trait ToolAdapter {
     /// Human-readable name for this tool (e.g., "Claude Code", "Gemini CLI").
     fn name(&self) -> &str;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::claude::ClaudeAdapter;
+    use crate::adapters::gemini::GeminiAdapter;
+
+    #[test]
+    fn test_claude_adapter_implements_tool_trait() {
+        let adapter = ClaudeAdapter;
+        assert_eq!(adapter.name(), "Claude Code");
+        let cmd = adapter.build_command("test prompt", "/tmp", "sk-ant-key");
+        assert_eq!(cmd.cmd, "claude");
+        assert!(!cmd.args.is_empty());
+        let policy = adapter.retry_policy();
+        assert_eq!(policy.max_retries, 3);
+    }
+
+    #[test]
+    fn test_gemini_adapter_implements_tool_trait() {
+        let adapter = GeminiAdapter;
+        assert_eq!(adapter.name(), "Gemini CLI");
+        let cmd = adapter.build_command("test prompt", "/tmp", "gemini-key");
+        assert_eq!(cmd.cmd, "gemini");
+        assert!(cmd.args.contains(&"--yolo".to_string()));
+        let policy = adapter.retry_policy();
+        assert_eq!(policy.max_retries, 3);
+    }
+
+    #[test]
+    fn test_adapters_are_interchangeable() {
+        // Both adapters can be used through the same trait reference
+        let adapters: Vec<Box<dyn ToolAdapter>> = vec![
+            Box::new(ClaudeAdapter),
+            Box::new(GeminiAdapter),
+        ];
+        for adapter in &adapters {
+            let cmd = adapter.build_command("hello", "/tmp", "key");
+            assert!(!cmd.cmd.is_empty());
+            assert!(!cmd.args.is_empty());
+            // Rate limit detection works through trait
+            assert!(adapter.detect_rate_limit("429 error").is_some());
+            assert!(adapter.detect_rate_limit("normal line").is_none());
+        }
+    }
+
+    #[test]
+    fn test_retry_policy_shared_behavior() {
+        let policy = RetryPolicy { max_retries: 3, base_delay_ms: 5_000, max_delay_ms: 60_000 };
+        assert_eq!(policy.delay_for_attempt(0), 5_000);
+        assert_eq!(policy.delay_for_attempt(1), 10_000);
+        assert_eq!(policy.delay_for_attempt(10), 60_000);
+    }
+}
