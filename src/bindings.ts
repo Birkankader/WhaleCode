@@ -191,8 +191,6 @@ export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr";
 export interface WorktreeEntry { task_id: string; worktree_name: string; branch_name: string; path: string; created_at: string }
 export interface ConflictFile { path: string }
 export interface ConflictReport { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
-export type TAURI_CHANNEL<TSend> = null
-
 /** tauri-specta globals **/
 
 import {
