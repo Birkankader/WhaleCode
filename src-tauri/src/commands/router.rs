@@ -2,6 +2,7 @@ use tauri::ipc::Channel;
 
 use crate::context::store::ContextStore;
 use crate::ipc::events::OutputEvent;
+use crate::prompt::{build_prompt_context, PromptEngine};
 use crate::router::TaskRouter;
 use crate::state::{AppState, ProcessStatus};
 
@@ -59,25 +60,37 @@ pub async fn dispatch_task(
         }
     }
 
-    // Route to the correct adapter's spawn function
+    // Optimize prompt using the prompt engine (context injection happens here, not in spawn functions)
+    let store = context_store.inner().clone();
+    let project_dir_for_ctx = project_dir.clone();
+    let tool_name_for_opt = tool_name.clone();
+    let prompt_for_opt = prompt.clone();
+    let optimized = tokio::task::spawn_blocking(move || {
+        let context = build_prompt_context(&store, &project_dir_for_ctx)?;
+        Ok::<_, String>(PromptEngine::optimize(&prompt_for_opt, &tool_name_for_opt, &context))
+    })
+    .await
+    .map_err(|e| format!("Prompt optimization failed: {}", e))??;
+
+    let optimized_prompt = optimized.optimized_prompt;
+
+    // Route to the correct adapter's spawn function (prompt is already optimized)
     let task_id = match tool_name.as_str() {
         "claude" => {
             super::claude::spawn_claude_task(
-                prompt.clone(),
+                optimized_prompt,
                 project_dir,
                 on_event,
                 state.clone(),
-                context_store,
             )
             .await?
         }
         "gemini" => {
             super::gemini::spawn_gemini_task(
-                prompt.clone(),
+                optimized_prompt,
                 project_dir,
                 on_event,
                 state.clone(),
-                context_store,
             )
             .await?
         }

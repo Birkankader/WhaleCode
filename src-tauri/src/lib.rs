@@ -13,9 +13,9 @@ use commands::{
     cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
     delete_claude_api_key, delete_gemini_api_key, dispatch_task, get_context_summary,
     get_recent_changes, get_task_count, has_claude_api_key, has_gemini_api_key, list_worktrees,
-    merge_worktree, pause_process, record_task_completion_cmd, resume_process, set_claude_api_key,
-    set_gemini_api_key, spawn_claude_task, spawn_gemini_task, spawn_process, start_stream,
-    suggest_tool, validate_claude_result, validate_gemini_result,
+    merge_worktree, optimize_prompt, pause_process, record_task_completion_cmd, resume_process,
+    set_claude_api_key, set_gemini_api_key, spawn_claude_task, spawn_gemini_task, spawn_process,
+    start_stream, suggest_tool, validate_claude_result, validate_gemini_result,
 };
 use state::AppState;
 use tauri::Manager;
@@ -50,6 +50,7 @@ pub fn run() {
         delete_gemini_api_key,
         suggest_tool,
         dispatch_task,
+        optimize_prompt,
     ]);
 
     #[cfg(debug_assertions)]

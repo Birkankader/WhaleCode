@@ -1,6 +1,5 @@
 use tauri::ipc::Channel;
 
-use crate::context::store::ContextStore;
 use crate::ipc::events::OutputEvent;
 use crate::state::AppState;
 
@@ -8,7 +7,7 @@ use crate::state::AppState;
 ///
 /// Retrieves the API key from the macOS Keychain, builds the Gemini CLI command,
 /// and spawns it through the process manager with secure env var injection.
-/// Automatically prepends recent project context to the prompt.
+/// The prompt is expected to be already optimized by the prompt engine (dispatch_task handles this).
 ///
 /// Returns the task_id for tracking the process.
 #[tauri::command]
@@ -18,7 +17,6 @@ pub async fn spawn_gemini_task(
     project_dir: String,
     on_event: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
-    context_store: tauri::State<'_, ContextStore>,
 ) -> Result<String, String> {
     // Clean up stale worktrees from previous crashed sessions (best-effort, non-blocking)
     {
@@ -51,22 +49,8 @@ pub async fn spawn_gemini_task(
     .await
     .map_err(|e| format!("Failed to retrieve Gemini API key: {}", e))??;
 
-    // Build context preamble from recent project history
-    let context_store_clone = context_store.inner().clone();
-    let project_dir_clone = project_dir.clone();
-    let context_preamble = tokio::task::spawn_blocking(move || {
-        context_store_clone.with_conn(|conn| {
-            crate::context::injection::build_context_preamble(conn, &project_dir_clone, 5, 2000)
-        })
-    })
-    .await
-    .map_err(|e| format!("Context injection failed: {}", e))??;
-
-    let full_prompt = if context_preamble.is_empty() {
-        prompt
-    } else {
-        format!("{}\n\n---\nUser task:\n{}", context_preamble, prompt)
-    };
+    // Prompt is already optimized by dispatch_task's prompt engine — use directly
+    let full_prompt = prompt;
 
     // Generate task_id upfront so it can be used for both worktree creation and process tracking
     let task_id = uuid::Uuid::new_v4().to_string();
