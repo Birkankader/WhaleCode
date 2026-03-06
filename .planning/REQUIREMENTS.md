@@ -34,10 +34,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Prompt Engine
 
-- [ ] **PMPT-01**: User writes a single prompt for a task
-- [ ] **PMPT-02**: App automatically optimizes the prompt for each target tool's conventions and strengths
+- [x] **PMPT-01**: User writes a single prompt for a task
+- [x] **PMPT-02**: App automatically optimizes the prompt for each target tool's conventions and strengths
 - [ ] **PMPT-03**: User can preview the optimized prompt before sending
-- [ ] **PMPT-04**: Prompt optimization includes relevant project context and recent change history
+- [x] **PMPT-04**: Prompt optimization includes relevant project context and recent change history
 
 ### Task Routing
 
@@ -121,10 +121,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CTXT-03 | Phase 4 | Complete |
 | CTXT-04 | Phase 4 | Complete |
 | CTXT-05 | Phase 4 | Complete |
-| PMPT-01 | Phase 8 | Pending |
-| PMPT-02 | Phase 8 | Pending |
+| PMPT-01 | Phase 8 | Complete |
+| PMPT-02 | Phase 8 | Complete |
 | PMPT-03 | Phase 8 | Pending |
-| PMPT-04 | Phase 8 | Pending |
+| PMPT-04 | Phase 8 | Complete |
 | ROUT-01 | Phase 7 | Complete |
 | ROUT-02 | Phase 7 | Complete |
 | ROUT-03 | Phase 7 | Complete |
