@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 05-04-PLAN.md (Phase 5 complete)
-last_updated: "2026-03-06T08:16:01.909Z"
-last_activity: 2026-03-06 — Completed 05-04 Gap closure (bindings, WorktreeStatus wiring, task_id unification)
+status: in-progress
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-03-06T09:08:20Z"
+last_activity: 2026-03-06 — Completed 06-01 Gemini backend (adapter, keychain, IPC commands)
 progress:
   total_phases: 9
   completed_phases: 5
-  total_plans: 16
-  completed_plans: 16
-  percent: 100
+  total_plans: 18
+  completed_plans: 17
+  percent: 94
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** Multiple AI coding tools working in parallel on the same project, fully aware of each other's changes and sharing a unified context
-**Current focus:** Phase 5 complete — Ready for Phase 6 (Gemini CLI Integration)
+**Current focus:** Phase 6 in progress — Gemini CLI Adapter (Plan 01 complete, Plan 02 remaining)
 
 ## Current Position
 
-Phase: 5 of 9 (Worktree Isolation) -- COMPLETE
-Plan: 4 of 4 in current phase (all complete)
-Status: phase-complete
-Last activity: 2026-03-06 — Completed 05-04 Gap closure (bindings, WorktreeStatus wiring, task_id unification)
+Phase: 6 of 9 (Gemini CLI Adapter)
+Plan: 1 of 2 in current phase
+Status: in-progress
+Last activity: 2026-03-06 — Completed 06-01 Gemini backend (adapter, keychain, IPC commands)
 
-Progress: [██████████] 100%
+Progress: [█████████░] 94%
 
 ## Performance Metrics
 
@@ -64,6 +64,7 @@ Progress: [██████████] 100%
 | Phase 05 P01 | 5min | 2 tasks | 5 files |
 | Phase 05 P02 | 3min | 2 tasks | 6 files |
 | Phase 05 P04 | 2min | 2 tasks | 4 files |
+| Phase 06 P01 | 4min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -122,6 +123,10 @@ Recent decisions affecting current work:
 - [05-02]: auto_commit uses IndexAddOption::DEFAULT with wildcard glob for staging all changes
 - [05-04]: Project directory input bar at route level for shared state between ProcessPanel and WorktreeStatus
 - [05-04]: Optional existing_task_id: Option<String> on spawn_with_env for backwards-compatible task_id unification
+- [06-01]: Gemini message content is plain String (not Vec<ContentBlock> like Claude)
+- [06-01]: No API key prefix validation for Gemini (unlike Claude's sk-ant-), only length > 10
+- [06-01]: Gemini rate limit patterns: 429, RESOURCE_EXHAUSTED, quota, Too Many Requests (case-insensitive)
+- [06-01]: --yolo flag required for headless Gemini CLI tool execution
 
 ### Pending Todos
 
@@ -136,6 +141,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-06T08:11:10Z
-Stopped at: Completed 05-04-PLAN.md (Phase 5 complete)
+Last session: 2026-03-06T09:08:20Z
+Stopped at: Completed 06-01-PLAN.md
 Resume file: None

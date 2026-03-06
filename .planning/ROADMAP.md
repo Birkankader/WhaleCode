@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
 | 4. Context Store | 3/3 | Complete   | 2026-03-06 |
 | 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
-| 6. Gemini CLI Adapter | 0/2 | Not started | - |
+| 6. Gemini CLI Adapter | 1/2 | In progress | - |
 | 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
 | 8. Prompt Engine | 0/TBD | Not started | - |
 | 9. Review UI + Safety Controls | 0/TBD | Not started | - |

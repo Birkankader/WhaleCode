@@ -58,9 +58,9 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Integration
 
 - [x] **INTG-01**: Claude Code adapter uses CLI subprocess with --output-format stream-json
-- [ ] **INTG-02**: Gemini CLI adapter uses CLI subprocess with JSON output mode
-- [ ] **INTG-03**: Each adapter validates output content (not just exit codes) for silent failures
-- [ ] **INTG-04**: Adapters handle API rate limits with backoff and user notification
+- [x] **INTG-02**: Gemini CLI adapter uses CLI subprocess with JSON output mode
+- [x] **INTG-03**: Each adapter validates output content (not just exit codes) for silent failures
+- [x] **INTG-04**: Adapters handle API rate limits with backoff and user notification
 
 ## v2 Requirements
 
@@ -136,9 +136,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SAFE-05 | Phase 7 | Pending |
 | SAFE-06 | Phase 7 | Pending |
 | INTG-01 | Phase 3 | Complete |
-| INTG-02 | Phase 6 | Pending |
-| INTG-03 | Phase 6 | Pending |
-| INTG-04 | Phase 6 | Pending |
+| INTG-02 | Phase 6 | Complete |
+| INTG-03 | Phase 6 | Complete |
+| INTG-04 | Phase 6 | Complete |
 
 **Coverage:**
 - v1 requirements: 34 total
