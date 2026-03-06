@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Claude Code Adapter** - Tool trait, headless NDJSON execution, silent failure detection, API key security (completed 2026-03-05)
 - [x] **Phase 4: Context Store** - SQLite write-ahead log of file changes and decisions, persistent project memory (completed 2026-03-06)
 - [x] **Phase 5: Worktree Isolation + Conflict Detection** - Git worktree per task, file-lock registry, conflict alerts (completed 2026-03-06)
-- [ ] **Phase 6: Gemini CLI Adapter** - Second tool adapter, output validation, quota tracking, both adapters proven
+- [x] **Phase 6: Gemini CLI Adapter** - Second tool adapter, output validation, quota tracking, both adapters proven (completed 2026-03-06)
 - [ ] **Phase 7: Task Router + Parallel Execution** - Rule-based routing, DAG dispatch, parallel tool status panel
 - [ ] **Phase 8: Prompt Engine** - Per-tool prompt optimization, context injection, preview before send
 - [ ] **Phase 9: Review UI + Safety Controls** - Diff review, file-level accept/reject, status panel polish
@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Claude Code Adapter | 4/4 | Complete   | 2026-03-05 |
 | 4. Context Store | 3/3 | Complete   | 2026-03-06 |
 | 5. Worktree Isolation + Conflict Detection | 4/4 | Complete   | 2026-03-06 |
-| 6. Gemini CLI Adapter | 1/2 | In progress | - |
+| 6. Gemini CLI Adapter | 2/2 | Complete   | 2026-03-06 |
 | 7. Task Router + Parallel Execution | 0/TBD | Not started | - |
 | 8. Prompt Engine | 0/TBD | Not started | - |
 | 9. Review UI + Safety Controls | 0/TBD | Not started | - |
