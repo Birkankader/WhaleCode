@@ -7,6 +7,8 @@ import { StatusPanel } from '../components/status/StatusPanel';
 import { WorktreeStatus } from '../components/WorktreeStatus';
 import { DiffReview } from '../components/review/DiffReview';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '../components/ui/resizable';
+import { Input } from '../components/ui/input';
+import { Button } from '../components/ui/button';
 import { useTaskStore, type TaskEntry } from '../stores/taskStore';
 
 export function AppRoutes() {
@@ -58,20 +60,17 @@ export function AppRoutes() {
                 >
                   Project:
                 </label>
-                <input
+                <Input
                   id="project-dir-input"
                   type="text"
                   value={projectDir}
                   onChange={(e) => setProjectDir(e.target.value)}
                   placeholder="/path/to/project"
-                  className="flex-1 px-2 py-1 text-xs font-mono rounded bg-zinc-800 text-zinc-300 border border-zinc-700 focus:border-zinc-500 focus:outline-none placeholder-zinc-600"
+                  className="flex-1 h-8 font-mono text-xs"
                 />
-                <button
-                  onClick={handleBrowse}
-                  className="px-2 py-1 text-xs rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-300 transition-colors whitespace-nowrap"
-                >
+                <Button variant="outline" size="sm" onClick={handleBrowse}>
                   Browse
-                </button>
+                </Button>
               </div>
 
               {/* Status panel - shows when any task exists */}
@@ -83,12 +82,9 @@ export function AppRoutes() {
                   <span className="text-xs text-amber-300">
                     Task ready for review: {reviewTask.description}
                   </span>
-                  <button
-                    onClick={() => setReviewTaskId(reviewTask.taskId)}
-                    className="ml-auto px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors"
-                  >
+                  <Button size="sm" onClick={() => setReviewTaskId(reviewTask.taskId)} className="ml-auto">
                     Review Changes
-                  </button>
+                  </Button>
                 </div>
               )}
 
