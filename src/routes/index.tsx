@@ -1,15 +1,24 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Routes, Route } from 'react-router';
+import { open } from '@tauri-apps/plugin-dialog';
 import { AppShell } from '../components/layout/AppShell';
 import { ProcessPanel } from '../components/terminal/ProcessPanel';
 import { StatusPanel } from '../components/status/StatusPanel';
 import { WorktreeStatus } from '../components/WorktreeStatus';
 import { DiffReview } from '../components/review/DiffReview';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '../components/ui/resizable';
 import { useTaskStore, type TaskEntry } from '../stores/taskStore';
 
 export function AppRoutes() {
   const [projectDir, setProjectDir] = useState('');
   const [reviewTaskId, setReviewTaskId] = useState<string | null>(null);
+
+  const handleBrowse = useCallback(async () => {
+    const selected = await open({ directory: true, multiple: false });
+    if (selected) {
+      setProjectDir(selected);
+    }
+  }, []);
 
   // Find any task in 'review' status
   const tasks = useTaskStore((s) => s.tasks);
@@ -57,6 +66,12 @@ export function AppRoutes() {
                   placeholder="/path/to/project"
                   className="flex-1 px-2 py-1 text-xs font-mono rounded bg-zinc-800 text-zinc-300 border border-zinc-700 focus:border-zinc-500 focus:outline-none placeholder-zinc-600"
                 />
+                <button
+                  onClick={handleBrowse}
+                  className="px-2 py-1 text-xs rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-300 transition-colors whitespace-nowrap"
+                >
+                  Browse
+                </button>
               </div>
 
               {/* Status panel - shows when any task exists */}
@@ -77,24 +92,29 @@ export function AppRoutes() {
                 </div>
               )}
 
-              {/* Main content: DiffReview or ProcessPanel */}
-              <div className="flex-1 min-h-0">
-                {reviewTaskId && reviewBranchName && projectDir ? (
-                  <DiffReview
-                    projectDir={projectDir}
-                    branchName={reviewBranchName}
-                    taskId={reviewTaskId}
-                    onClose={handleReviewClose}
-                  />
-                ) : (
+              {/* Main content + worktree panel (resizable when project selected) */}
+              {projectDir ? (
+                <ResizablePanelGroup orientation="vertical" className="flex-1 min-h-0">
+                  <ResizablePanel defaultSize={80} minSize={40}>
+                    {reviewTaskId && reviewBranchName && projectDir ? (
+                      <DiffReview
+                        projectDir={projectDir}
+                        branchName={reviewBranchName}
+                        taskId={reviewTaskId}
+                        onClose={handleReviewClose}
+                      />
+                    ) : (
+                      <ProcessPanel projectDir={projectDir} />
+                    )}
+                  </ResizablePanel>
+                  <ResizableHandle withHandle />
+                  <ResizablePanel defaultSize={20} minSize={8} maxSize={40} collapsible collapsedSize={0}>
+                    <WorktreeStatus projectDir={projectDir} />
+                  </ResizablePanel>
+                </ResizablePanelGroup>
+              ) : (
+                <div className="flex-1 min-h-0">
                   <ProcessPanel projectDir={projectDir} />
-                )}
-              </div>
-
-              {/* Worktree status panel */}
-              {projectDir && (
-                <div className="shrink-0 border-t border-zinc-800 p-3">
-                  <WorktreeStatus projectDir={projectDir} />
                 </div>
               )}
             </div>
