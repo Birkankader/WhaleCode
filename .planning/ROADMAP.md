@@ -21,6 +21,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 7: Task Router + Parallel Execution** - Rule-based routing, DAG dispatch, parallel tool status panel (completed 2026-03-06)
 - [x] **Phase 8: Prompt Engine** - Per-tool prompt optimization, context injection, preview before send (completed 2026-03-06)
 - [x] **Phase 9: Review UI + Safety Controls** - Diff review, file-level accept/reject, status panel polish (completed 2026-03-06)
+- [ ] **Phase 10: UI Polish & Bug Fixes** - Resizable worktree panel, conditional review UI, session reuse, Codex fix, sidebar cleanup, modern design
 
 ## Phase Details
 
@@ -161,7 +162,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -174,3 +175,16 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 | 7. Task Router + Parallel Execution | 2/2 | Complete   | 2026-03-06 |
 | 8. Prompt Engine | 2/2 | Complete   | 2026-03-06 |
 | 9. Review UI + Safety Controls | 2/2 | Complete   | 2026-03-06 |
+| 10. UI Polish & Bug Fixes | 0/3 | Not Started | - |
+
+### Phase 10: UI Polish & Bug Fixes
+
+**Goal:** Shrink and make Active Worktrees panel resizable, hide review buttons when no changes exist, reuse session context across tasks until threshold, fix Codex CLI integration, remove dead Claude Code sidebar button, and modernize the overall UI design
+**Requirements**: POLISH-01, POLISH-02, POLISH-03, POLISH-04, POLISH-05, POLISH-06
+**Depends on:** Phase 9
+**Plans:** 3 plans
+
+Plans:
+- [ ] 10-01-PLAN.md — Backend: session context cache, Codex CLI dispatch verification
+- [ ] 10-02-PLAN.md — Frontend: resizable worktree panel, conditional review controls, sidebar cleanup
+- [ ] 10-03-PLAN.md — UI modernization: shadcn components across all surfaces, visual verification
