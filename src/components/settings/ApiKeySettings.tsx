@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
+import { X } from 'lucide-react';
 import { commands } from '../../bindings';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 
-type TabId = 'claude' | 'gemini';
+type TabId = 'claude' | 'gemini' | 'codex';
 
 interface TabConfig {
   label: string;
@@ -25,6 +28,13 @@ const TAB_CONFIGS: Record<TabId, TabConfig> = {
     hasKey: () => commands.hasGeminiApiKey(),
     setKey: (key: string) => commands.setGeminiApiKey(key),
     deleteKey: () => commands.deleteGeminiApiKey(),
+  },
+  codex: {
+    label: 'Codex',
+    placeholder: 'sk-...',
+    hasKey: () => commands.hasCodexApiKey(),
+    setKey: (key: string) => commands.setCodexApiKey(key),
+    deleteKey: () => commands.deleteCodexApiKey(),
   },
 };
 
@@ -50,6 +60,11 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
   const [geminiHasKey, setGeminiHasKey] = useState<boolean | null>(null);
   const [geminiSaving, setGeminiSaving] = useState(false);
   const [geminiMessage, setGeminiMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [codexKeyInput, setCodexKeyInput] = useState('');
+  const [codexHasKey, setCodexHasKey] = useState<boolean | null>(null);
+  const [codexSaving, setCodexSaving] = useState(false);
+  const [codexMessage, setCodexMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const checkClaudeKey = useCallback(async () => {
     try {
@@ -77,18 +92,32 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
     }
   }, []);
 
+  const checkCodexKey = useCallback(async () => {
+    try {
+      const result = await commands.hasCodexApiKey();
+      if (result.status === 'ok') {
+        setCodexHasKey(result.data);
+      } else {
+        setCodexHasKey(false);
+      }
+    } catch {
+      setCodexHasKey(false);
+    }
+  }, []);
+
   useEffect(() => {
     checkClaudeKey();
     checkGeminiKey();
-  }, [checkClaudeKey, checkGeminiKey]);
+    checkCodexKey();
+  }, [checkClaudeKey, checkGeminiKey, checkCodexKey]);
 
   const handleSave = async (tab: TabId) => {
     const config = TAB_CONFIGS[tab];
-    const keyInput = tab === 'claude' ? claudeKeyInput : geminiKeyInput;
-    const setSaving = tab === 'claude' ? setClaudeSaving : setGeminiSaving;
-    const setMessage = tab === 'claude' ? setClaudeMessage : setGeminiMessage;
-    const setKeyInput = tab === 'claude' ? setClaudeKeyInput : setGeminiKeyInput;
-    const setHasKey = tab === 'claude' ? setClaudeHasKey : setGeminiHasKey;
+    const keyInput = tab === 'claude' ? claudeKeyInput : tab === 'gemini' ? geminiKeyInput : codexKeyInput;
+    const setSaving = tab === 'claude' ? setClaudeSaving : tab === 'gemini' ? setGeminiSaving : setCodexSaving;
+    const setMessage = tab === 'claude' ? setClaudeMessage : tab === 'gemini' ? setGeminiMessage : setCodexMessage;
+    const setKeyInput = tab === 'claude' ? setClaudeKeyInput : tab === 'gemini' ? setGeminiKeyInput : setCodexKeyInput;
+    const setHasKey = tab === 'claude' ? setClaudeHasKey : tab === 'gemini' ? setGeminiHasKey : setCodexHasKey;
 
     if (!keyInput.trim()) return;
 
@@ -113,9 +142,9 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
 
   const handleDelete = async (tab: TabId) => {
     const config = TAB_CONFIGS[tab];
-    const setSaving = tab === 'claude' ? setClaudeSaving : setGeminiSaving;
-    const setMessage = tab === 'claude' ? setClaudeMessage : setGeminiMessage;
-    const setHasKey = tab === 'claude' ? setClaudeHasKey : setGeminiHasKey;
+    const setSaving = tab === 'claude' ? setClaudeSaving : tab === 'gemini' ? setGeminiSaving : setCodexSaving;
+    const setMessage = tab === 'claude' ? setClaudeMessage : tab === 'gemini' ? setGeminiMessage : setCodexMessage;
+    const setHasKey = tab === 'claude' ? setClaudeHasKey : tab === 'gemini' ? setGeminiHasKey : setCodexHasKey;
 
     setSaving(true);
     setMessage(null);
@@ -136,11 +165,11 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
   };
 
   // Active tab state
-  const keyInput = activeTab === 'claude' ? claudeKeyInput : geminiKeyInput;
-  const setKeyInput = activeTab === 'claude' ? setClaudeKeyInput : setGeminiKeyInput;
-  const hasKey = activeTab === 'claude' ? claudeHasKey : geminiHasKey;
-  const saving = activeTab === 'claude' ? claudeSaving : geminiSaving;
-  const message = activeTab === 'claude' ? claudeMessage : geminiMessage;
+  const keyInput = activeTab === 'claude' ? claudeKeyInput : activeTab === 'gemini' ? geminiKeyInput : codexKeyInput;
+  const setKeyInput = activeTab === 'claude' ? setClaudeKeyInput : activeTab === 'gemini' ? setGeminiKeyInput : setCodexKeyInput;
+  const hasKey = activeTab === 'claude' ? claudeHasKey : activeTab === 'gemini' ? geminiHasKey : codexHasKey;
+  const saving = activeTab === 'claude' ? claudeSaving : activeTab === 'gemini' ? geminiSaving : codexSaving;
+  const message = activeTab === 'claude' ? claudeMessage : activeTab === 'gemini' ? geminiMessage : codexMessage;
   const config = TAB_CONFIGS[activeTab];
 
   return (
@@ -148,33 +177,34 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-zinc-100">API Keys</h2>
         {onClose && (
-          <button
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={onClose}
-            className="text-zinc-500 hover:text-zinc-300 transition-colors"
             aria-label="Close settings"
+            className="text-zinc-500 hover:text-zinc-300"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            <X className="size-4" />
+          </Button>
         )}
       </div>
 
       {/* Tab toggle */}
       <div className="flex gap-1 mb-4 p-1 bg-zinc-800 rounded-lg">
         {(Object.keys(TAB_CONFIGS) as TabId[]).map((tab) => (
-          <button
+          <Button
             key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+            variant={activeTab === tab ? 'secondary' : 'ghost'}
+            size="sm"
+            className={`flex-1 ${
               activeTab === tab
                 ? 'bg-zinc-700 text-zinc-100'
                 : 'text-zinc-500 hover:text-zinc-300'
             }`}
+            onClick={() => setActiveTab(tab)}
           >
             {TAB_CONFIGS[tab].label}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -192,32 +222,30 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
 
       {/* Input form */}
       <div className="space-y-3">
-        <input
+        <Input
           type="password"
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
           placeholder={config.placeholder}
-          className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
           disabled={saving}
         />
 
         <div className="flex gap-2">
-          <button
+          <Button
             onClick={() => handleSave(activeTab)}
             disabled={saving || !keyInput.trim()}
-            className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? 'Saving...' : 'Save'}
-          </button>
+          </Button>
 
           {hasKey && (
-            <button
+            <Button
+              variant="destructive"
               onClick={() => handleDelete(activeTab)}
               disabled={saving}
-              className="px-4 py-1.5 text-sm rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Delete Key
-            </button>
+            </Button>
           )}
         </div>
       </div>

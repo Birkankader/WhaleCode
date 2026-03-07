@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTaskStore, type ToolName, type TaskEntry } from '../../stores/taskStore';
+import { Badge } from '../ui/badge';
 
 function formatElapsed(startedAt: number | null): string {
   if (!startedAt) return '';
@@ -9,18 +10,20 @@ function formatElapsed(startedAt: number | null): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
-function statusDotColor(status: TaskEntry['status']): string {
+function statusBadgeProps(status: TaskEntry['status']): { variant: 'default' | 'secondary' | 'destructive' | 'outline'; className?: string } {
   switch (status) {
     case 'running':
-      return 'bg-green-500';
+      return { variant: 'default', className: 'bg-green-600/30 text-green-400 border-green-600/30' };
     case 'pending':
     case 'routing':
     case 'waiting':
-      return 'bg-yellow-500';
+      return { variant: 'outline', className: 'text-yellow-400 border-yellow-600/30' };
     case 'completed':
-      return 'bg-zinc-500';
+      return { variant: 'secondary' };
+    case 'review':
+      return { variant: 'outline', className: 'text-amber-400 border-amber-600/30' };
     case 'failed':
-      return 'bg-red-500';
+      return { variant: 'destructive' };
   }
 }
 
@@ -58,37 +61,26 @@ function ToolStatusRow({
 
   return (
     <div className="flex items-center gap-2 text-xs font-mono">
-      <span
-        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-          latestTask ? statusDotColor(latestTask.status) : 'bg-zinc-600'
-        }`}
-      />
       <span className="text-zinc-400 w-20 shrink-0">{displayName}</span>
       {latestTask && isActive ? (
         <>
           <span className="text-zinc-300 truncate flex-1">
             {latestTask.description}
           </span>
-          {latestTask.status === 'running' && latestTask.startedAt && (
-            <span className="text-zinc-500 shrink-0">
-              {formatElapsed(latestTask.startedAt)}
-            </span>
-          )}
-          {latestTask.status === 'waiting' && (
-            <span className="text-yellow-500 shrink-0">waiting</span>
-          )}
-          {latestTask.status === 'pending' && (
-            <span className="text-yellow-500 shrink-0">pending</span>
-          )}
+          <Badge {...statusBadgeProps(latestTask.status)}>
+            {latestTask.status === 'running' && latestTask.startedAt
+              ? formatElapsed(latestTask.startedAt)
+              : latestTask.status}
+          </Badge>
         </>
-      ) : latestTask && (latestTask.status === 'completed' || latestTask.status === 'failed') ? (
+      ) : latestTask && (latestTask.status === 'completed' || latestTask.status === 'failed' || latestTask.status === 'review') ? (
         <>
           <span className="text-zinc-500 truncate flex-1">
             {latestTask.description}
           </span>
-          <span className={`shrink-0 ${latestTask.status === 'completed' ? 'text-zinc-500' : 'text-red-400'}`}>
+          <Badge {...statusBadgeProps(latestTask.status)}>
             {latestTask.status}
-          </span>
+          </Badge>
         </>
       ) : (
         <span className="text-zinc-600 italic">Idle</span>
@@ -109,6 +101,7 @@ export function StatusPanel({ className }: { className?: string }) {
       <div className="space-y-1.5">
         <ToolStatusRow toolName="claude" displayName="Claude Code" />
         <ToolStatusRow toolName="gemini" displayName="Gemini CLI" />
+        <ToolStatusRow toolName="codex" displayName="Codex CLI" />
       </div>
     </div>
   );
