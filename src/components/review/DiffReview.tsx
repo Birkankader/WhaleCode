@@ -240,33 +240,35 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
         </div>
       </div>
 
-      {/* Bottom bar */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-t border-zinc-800 bg-zinc-900/60">
-        <span className="text-xs text-zinc-400">
-          {acceptedCount} file{acceptedCount !== 1 ? 's' : ''} accepted
-          {rejectedCount > 0 && (
-            <span className="text-zinc-500">
-              , {rejectedCount} rejected
-            </span>
-          )}
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleDiscard}
-            disabled={merging}
-            className="px-3 py-1.5 text-xs rounded bg-zinc-800 text-red-400 hover:bg-zinc-700 hover:text-red-300 disabled:opacity-50 transition-colors"
-          >
-            Discard All
-          </button>
-          <button
-            onClick={handleMerge}
-            disabled={merging}
-            className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
-          >
-            {merging ? 'Merging...' : 'Merge Accepted'}
-          </button>
+      {/* Bottom bar - only shown when there are files to review */}
+      {files.length > 0 && (
+        <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-t border-zinc-800 bg-zinc-900/60">
+          <span className="text-xs text-zinc-400">
+            {acceptedCount} file{acceptedCount !== 1 ? 's' : ''} accepted
+            {rejectedCount > 0 && (
+              <span className="text-zinc-500">
+                , {rejectedCount} rejected
+              </span>
+            )}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDiscard}
+              disabled={merging}
+              className="px-3 py-1.5 text-xs rounded bg-zinc-800 text-red-400 hover:bg-zinc-700 hover:text-red-300 disabled:opacity-50 transition-colors"
+            >
+              Discard All
+            </button>
+            <button
+              onClick={handleMerge}
+              disabled={merging}
+              className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+            >
+              {merging ? 'Merging...' : 'Merge Accepted'}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

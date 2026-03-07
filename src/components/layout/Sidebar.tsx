@@ -13,12 +13,7 @@ export function Sidebar() {
         <h1 className="text-lg font-semibold text-zinc-100">WhaleCode</h1>
       </div>
       <nav className="flex-1 px-2">
-        <button
-          type="button"
-          className="w-full text-left px-3 py-2 rounded text-sm text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition-colors"
-        >
-          Claude Code
-        </button>
+        {/* Navigation items added as features grow */}
       </nav>
 
       {/* Settings button at bottom */}

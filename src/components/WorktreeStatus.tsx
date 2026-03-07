@@ -149,16 +149,18 @@ export function WorktreeStatus({ projectDir }: { projectDir: string }) {
         )}
       </div>
 
-      {/* Cleanup button */}
-      <div className="px-4 py-3 border-t border-zinc-800">
-        <button
-          onClick={cleanupWorktrees}
-          disabled={loading}
-          className="px-3 py-1.5 text-xs rounded bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50 transition-colors"
-        >
-          Cleanup Stale Worktrees
-        </button>
-      </div>
+      {/* Cleanup button - only shown when worktrees exist */}
+      {worktrees.length > 0 && (
+        <div className="px-4 py-3 border-t border-zinc-800">
+          <button
+            onClick={cleanupWorktrees}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs rounded bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50 transition-colors"
+          >
+            Cleanup Stale Worktrees
+          </button>
+        </div>
+      )}
     </div>
   );
 }
