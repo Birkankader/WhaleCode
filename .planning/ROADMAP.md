@@ -175,14 +175,14 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 7. Task Router + Parallel Execution | 2/2 | Complete   | 2026-03-06 |
 | 8. Prompt Engine | 2/2 | Complete   | 2026-03-06 |
 | 9. Review UI + Safety Controls | 2/2 | Complete   | 2026-03-06 |
-| 10. UI Polish & Bug Fixes | 1/3 | In Progress|  |
+| 10. UI Polish & Bug Fixes | 2/3 | In Progress|  |
 
 ### Phase 10: UI Polish & Bug Fixes
 
 **Goal:** Shrink and make Active Worktrees panel resizable, hide review buttons when no changes exist, reuse session context across tasks until threshold, fix Codex CLI integration, remove dead Claude Code sidebar button, and modernize the overall UI design
 **Requirements**: POLISH-01, POLISH-02, POLISH-03, POLISH-04, POLISH-05, POLISH-06
 **Depends on:** Phase 9
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 - [ ] 10-01-PLAN.md — Backend: session context cache, Codex CLI dispatch verification
