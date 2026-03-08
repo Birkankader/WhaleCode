@@ -458,6 +458,28 @@ async cleanupCompletedProcesses() : Promise<Result<number, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Back up orchestration context to context.md and kill all agent processes.
+ */
+async clearOrchestrationContext(planId: string, projectDir: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_orchestration_context", { planId, projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send user's answer to the master agent's pending question.
+ */
+async answerUserQuestion(planId: string, answer: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("answer_user_question", { planId, answer }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
