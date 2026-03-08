@@ -33,6 +33,7 @@ pub struct OrchestrationPlan {
     pub phase: OrchestrationPhase,
     pub decomposition: Option<DecompositionResult>,
     pub worker_results: Vec<WorkerResult>,
+    pub master_process_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -49,6 +50,7 @@ pub struct AgentContextInfo {
 pub enum OrchestrationPhase {
     Decomposing,
     Executing,
+    WaitingForInput,
     Reviewing,
     Completed,
     Failed,
@@ -74,6 +76,12 @@ pub struct WorkerResult {
     pub output_summary: String, // last N lines of output
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingQuestion {
+    pub question: crate::adapters::Question,
+    pub worker_task_id: String,
+}
+
 pub struct Orchestrator;
 
 impl Orchestrator {
@@ -88,6 +96,7 @@ impl Orchestrator {
             phase: OrchestrationPhase::Decomposing,
             decomposition: None,
             worker_results: Vec::new(),
+            master_process_id: None,
         }
     }
 
@@ -252,5 +261,35 @@ mod tests {
         assert!(prompt.contains("fix bugs"));
         assert!(prompt.contains("gemini"));
         assert!(prompt.contains("Analysis complete"));
+    }
+
+    #[test]
+    fn test_orchestration_phase_has_waiting_for_input() {
+        let phase = OrchestrationPhase::WaitingForInput;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert!(json.contains("WaitingForInput"));
+    }
+
+    #[test]
+    fn test_orchestration_plan_has_master_process_id() {
+        let config = OrchestratorConfig {
+            agents: vec![],
+            master_agent: "claude".to_string(),
+        };
+        let plan = Orchestrator::create_plan("test prompt", &config);
+        assert!(plan.master_process_id.is_none());
+    }
+
+    #[test]
+    fn test_pending_question_struct() {
+        let entry = PendingQuestion {
+            question: crate::adapters::Question {
+                source_agent: "codex".to_string(),
+                content: "Which DB?".to_string(),
+                question_type: crate::adapters::QuestionType::Clarification,
+            },
+            worker_task_id: "task-123".to_string(),
+        };
+        assert_eq!(entry.worker_task_id, "task-123");
     }
 }

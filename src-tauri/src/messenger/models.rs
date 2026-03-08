@@ -17,6 +17,10 @@ pub enum MessageType {
     MasterDecision,
     DecompositionResult,
     ReviewResult,
+    QuestionForUser,
+    UserAnswer,
+    ContextBackup,
+    ContextRestore,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -49,6 +53,25 @@ impl MessengerMessage {
             content,
             message_type,
             plan_id: plan_id.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_message_types_serialize() {
+        let types = vec![
+            MessageType::QuestionForUser,
+            MessageType::UserAnswer,
+            MessageType::ContextBackup,
+            MessageType::ContextRestore,
+        ];
+        for t in types {
+            let json = serde_json::to_string(&t).unwrap();
+            assert!(!json.is_empty());
         }
     }
 }

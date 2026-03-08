@@ -486,8 +486,8 @@ export type FileDiff = { path: string; status: string; old_path: string | null; 
  * An optimized prompt for a specific tool, ready for IPC export.
  */
 export type OptimizedPrompt = { tool_name: string; original_prompt: string; optimized_prompt: string }
-export type OrchestrationPhase = "Decomposing" | "Executing" | "Reviewing" | "Completed" | "Failed"
-export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string; phase: OrchestrationPhase; decomposition: DecompositionResult | null; worker_results: WorkerResult[] }
+export type OrchestrationPhase = "Decomposing" | "Executing" | "WaitingForInput" | "Reviewing" | "Completed" | "Failed"
+export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string; phase: OrchestrationPhase; decomposition: DecompositionResult | null; worker_results: WorkerResult[]; master_process_id: string | null }
 export type OrchestratorConfig = { agents: AgentConfig[]; master_agent: string }
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
 export type RoutingSuggestion = { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }

@@ -77,6 +77,7 @@ pub struct AppStateInner {
     pub processes: HashMap<TaskId, ProcessEntry>,
     pub orchestration_plans: HashMap<TaskId, crate::router::orchestrator::OrchestrationPlan>,
     pub cached_prompt_context: Option<CachedPromptContext>,
+    pub question_queue: Vec<crate::router::orchestrator::PendingQuestion>,
 }
 
 pub type AppState = Arc<Mutex<AppStateInner>>;
