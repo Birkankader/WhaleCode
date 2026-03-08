@@ -54,6 +54,13 @@ function statusText(status: ProcessStatus): string {
   }
 }
 
+export const DISPLAY_LINE_STYLES: Record<string, string> = {
+  AgentThinking: 'text-zinc-500 italic',
+  ToolExecution: 'font-mono bg-zinc-900 px-2 py-0.5 text-emerald-400',
+  Result: 'text-zinc-200',
+  Info: 'text-blue-400',
+};
+
 interface MultiAgentOutputProps {
   taskIds: Map<ToolName, string>; // toolName -> processId mapping
 }

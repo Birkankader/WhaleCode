@@ -5,6 +5,7 @@ import { commands } from '../../bindings';
 import type { RoutingSuggestion } from '../../bindings';
 import type { ToolName, OrchestratorConfig, AgentContextInfo } from '../../stores/taskStore';
 import { useTaskStore } from '../../stores/taskStore';
+import { useMessengerStore } from '../../stores/messengerStore';
 import { OutputConsole } from './OutputConsole';
 import { PromptPreview } from '../prompt/PromptPreview';
 import { AgentSelector } from '../orchestration/AgentSelector';
@@ -73,6 +74,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
   const [isDispatching, setIsDispatching] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [activeView, setActiveView] = useState<'process' | 'messenger'>('process');
+  const [isClearing, setIsClearing] = useState(false);
 
   // Orchestration state
   const [orchestratorConfig, setOrchestratorConfig] = useState<OrchestratorConfig>(DEFAULT_ORCHESTRATOR_CONFIG);
@@ -124,8 +126,30 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
     setSelectedTool(null);
   }, [taskPrompt, suggestTool]);
 
+  const handleClear = useCallback(async () => {
+    const plan = useTaskStore.getState().activePlan;
+    if (!plan?.task_id) return;
+    setIsClearing(true);
+    try {
+      await commands.clearOrchestrationContext(plan.task_id, projectDir);
+      useMessengerStore.getState().clearMessages();
+      useTaskStore.getState().setActivePlan(null);
+      useTaskStore.getState().setOrchestrationPlan(null);
+    } catch (err) {
+      console.error('Clear failed:', err);
+    } finally {
+      setIsClearing(false);
+    }
+  }, [projectDir]);
+
   const handleSubmit = useCallback(async () => {
     if (!taskPrompt.trim()) return;
+
+    if (taskPrompt.trim() === '/clear') {
+      await handleClear();
+      setTaskPrompt('');
+      return;
+    }
 
     if (hasActiveRunningProcess) {
       // Send to active process stdin
@@ -165,7 +189,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
       setSuggestion(null);
       setSelectedTool(null);
     }
-  }, [taskPrompt, projectDir, selectedTool, dispatchTask, dispatchOrchestratedTask, isMultiAgent, orchestratorConfig, hasActiveRunningProcess, activeProcessId, multiAgentTaskIds, processes]);
+  }, [taskPrompt, projectDir, selectedTool, dispatchTask, dispatchOrchestratedTask, isMultiAgent, orchestratorConfig, hasActiveRunningProcess, activeProcessId, multiAgentTaskIds, processes, handleClear]);
 
   const effectiveTool: ToolName = selectedTool ?? orchestratorConfig.agents[0]?.toolName ?? (suggestion?.suggested_tool as ToolName) ?? 'claude';
   const toolBusy = isMultiAgent
@@ -303,6 +327,13 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
               </Button>
             </>
           )}
+        </div>
+      )}
+
+      {/* Clearing state */}
+      {isClearing && (
+        <div className="text-center text-zinc-400 py-2 animate-pulse">
+          Backing up context...
         </div>
       )}
 

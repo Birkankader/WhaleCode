@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { listen } from '@tauri-apps/api/event';
+import { useTaskStore } from './taskStore';
 
 export interface MessengerMessage {
   id: string;
@@ -64,6 +65,16 @@ export async function initMessengerListener() {
       planId: raw.plan_id as string,
     };
     useMessengerStore.getState().addMessage(normalized);
+
+    if (normalized.messageType === 'QuestionForUser') {
+      useTaskStore.getState().setPendingQuestion({
+        questionId: normalized.id,
+        sourceAgent: typeof normalized.source === 'object' && 'name' in normalized.source
+          ? normalized.source.name : 'master',
+        content: normalized.content,
+        planId: normalized.planId,
+      });
+    }
   });
 }
 

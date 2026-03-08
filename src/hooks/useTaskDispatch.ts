@@ -266,6 +266,11 @@ export function useTaskDispatch() {
           for (const subTask of plan.sub_tasks) {
             results.set(subTask.assigned_agent as ToolName, subTask.id);
           }
+          // Store active plan for /clear command
+          useTaskStore.getState().setActivePlan({
+            task_id: plan.task_id,
+            master_agent: plan.master_agent,
+          });
           // Mark orchestration complete
           useProcessStore.getState()._updateStatus(orchestrationId, 'completed', 0);
         } else {

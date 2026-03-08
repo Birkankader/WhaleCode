@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMessengerStore, initMessengerListener } from '../../stores/messengerStore';
 import type { MessengerMessage } from '../../stores/messengerStore';
+import { useTaskStore } from '../../stores/taskStore';
+import { commands } from '../../bindings';
 
 const SOURCE_COLORS: Record<string, string> = {
   System: 'text-zinc-400',
@@ -37,6 +39,16 @@ function formatTime(timestamp: number): string {
 export function MessengerPanel() {
   const messages = useMessengerStore((s) => s.messages);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pendingQuestion = useTaskStore((s) => s.pendingQuestion);
+  const setPendingQuestion = useTaskStore((s) => s.setPendingQuestion);
+  const [answer, setAnswer] = useState('');
+
+  const handleAnswer = async () => {
+    if (!pendingQuestion || !answer.trim()) return;
+    await commands.answerUserQuestion(pendingQuestion.planId, answer.trim());
+    setPendingQuestion(null);
+    setAnswer('');
+  };
 
   useEffect(() => {
     initMessengerListener();
@@ -72,6 +84,28 @@ export function MessengerPanel() {
           </div>
         </div>
       ))}
+
+      {pendingQuestion && (
+        <div className="border-t border-zinc-700 p-3">
+          <div className="text-sm text-yellow-400 mb-2">
+            {pendingQuestion.sourceAgent} is asking:
+          </div>
+          <div className="text-sm text-zinc-300 mb-2">{pendingQuestion.content}</div>
+          <div className="flex gap-2">
+            <input
+              value={answer}
+              onChange={e => setAnswer(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAnswer()}
+              className="flex-1 bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm text-zinc-200"
+              placeholder="Type your answer..."
+              autoFocus
+            />
+            <button onClick={handleAnswer} className="px-3 py-1 bg-blue-600 rounded text-sm text-white">
+              Send
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
