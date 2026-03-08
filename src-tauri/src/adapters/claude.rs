@@ -2,7 +2,11 @@
 
 use serde::Deserialize;
 
-use super::{ToolAdapter, ToolCommand, RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy};
+use super::{
+    ToolAdapter, ToolCommand,
+    RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy,
+    Question, QuestionType, DisplayLine, DisplayLineType,
+};
 
 // ---------------------------------------------------------------------------
 // NDJSON Event Types
@@ -265,6 +269,115 @@ impl ToolAdapter for ClaudeAdapter {
     fn name(&self) -> &str {
         "Claude Code"
     }
+
+    fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
+        let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+        if !api_key.is_empty() {
+            env.push(("ANTHROPIC_API_KEY".to_string(), api_key.to_string()));
+        }
+        ToolCommand {
+            cmd: "claude".to_string(),
+            args: vec![
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--verbose".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+            env,
+            cwd: cwd.to_string(),
+        }
+    }
+
+    fn detect_question(&self, line: &str) -> Option<Question> {
+        let event = parse_stream_line(line)?;
+        match event {
+            ClaudeStreamEvent::Message { content, .. } => {
+                let blocks = content?;
+                for block in &blocks {
+                    if let Some(ref text) = block.text {
+                        if text.contains("[QUESTION]") || text.contains("[ASK]") {
+                            // Determine question type from content
+                            let qtype = if text.contains("permission") || text.contains("Permission") {
+                                QuestionType::Permission
+                            } else if text.contains("clarif") || text.contains("Clarif") {
+                                QuestionType::Clarification
+                            } else {
+                                QuestionType::Technical
+                            };
+                            return Some(Question {
+                                source_agent: "claude".to_string(),
+                                content: text.clone(),
+                                question_type: qtype,
+                            });
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_display_output(&self, line: &str) -> Option<DisplayLine> {
+        let event = parse_stream_line(line)?;
+        match event {
+            ClaudeStreamEvent::Message { content, .. } => {
+                let blocks = content?;
+                let text_parts: Vec<String> = blocks
+                    .iter()
+                    .filter_map(|b| b.text.clone())
+                    .collect();
+                if text_parts.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content: text_parts.join(""),
+                    line_type: DisplayLineType::AgentThinking,
+                })
+            }
+            ClaudeStreamEvent::ToolUse { name, input, .. } => {
+                let tool_name = name.unwrap_or_else(|| "unknown".to_string());
+                let input_str = input
+                    .map(|v| serde_json::to_string(&v).unwrap_or_default())
+                    .unwrap_or_default();
+                Some(DisplayLine {
+                    content: format!("[{}] {}", tool_name, input_str),
+                    line_type: DisplayLineType::ToolExecution,
+                })
+            }
+            ClaudeStreamEvent::ToolResult { output, .. } => {
+                Some(DisplayLine {
+                    content: output.unwrap_or_default(),
+                    line_type: DisplayLineType::Result,
+                })
+            }
+            ClaudeStreamEvent::Result { result, .. } => {
+                Some(DisplayLine {
+                    content: result.unwrap_or_default(),
+                    line_type: DisplayLineType::Result,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn extract_result(&self, output_lines: &[String]) -> Option<String> {
+        for line in output_lines.iter().rev() {
+            if let Some(event) = parse_stream_line(line) {
+                if let ClaudeStreamEvent::Result { result, .. } = event {
+                    return result;
+                }
+            }
+        }
+        None
+    }
+
+    fn is_turn_complete(&self, line: &str) -> bool {
+        match parse_stream_line(line) {
+            Some(ClaudeStreamEvent::Result { .. }) => true,
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -495,5 +608,201 @@ mod tests {
         let policy = super::RetryPolicy::default_claude();
         let d10 = policy.delay_for_attempt(10); // would be huge, capped at 60000
         assert_eq!(d10, 60_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // New Trait Method Tests
+    // -----------------------------------------------------------------------
+
+    use super::super::ToolAdapter;
+
+    #[test]
+    fn test_build_interactive_command_no_prompt_flag() {
+        let adapter = super::ClaudeAdapter;
+        let cmd = adapter.build_interactive_command("/tmp/project", "sk-ant-key");
+        assert_eq!(cmd.cmd, "claude");
+        // Must NOT contain -p (no prompt in interactive mode)
+        assert!(!cmd.args.contains(&"-p".to_string()));
+        // Must contain streaming/verbose flags
+        assert!(cmd.args.contains(&"--output-format".to_string()));
+        assert!(cmd.args.contains(&"stream-json".to_string()));
+        assert!(cmd.args.contains(&"--verbose".to_string()));
+        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn test_build_interactive_command_env() {
+        let adapter = super::ClaudeAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "sk-ant-key123");
+        let key_env = cmd.env.iter().find(|(k, _)| k == "ANTHROPIC_API_KEY");
+        assert!(key_env.is_some());
+        assert_eq!(key_env.unwrap().1, "sk-ant-key123");
+        assert_eq!(cmd.cwd, "/tmp");
+    }
+
+    #[test]
+    fn test_build_interactive_command_empty_key() {
+        let adapter = super::ClaudeAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "");
+        let key_env = cmd.env.iter().find(|(k, _)| k == "ANTHROPIC_API_KEY");
+        assert!(key_env.is_none(), "Empty key should not be in env");
+    }
+
+    #[test]
+    fn test_detect_question_with_question_tag() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"[QUESTION] Which database schema should I use?"}]}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+        let q = q.unwrap();
+        assert_eq!(q.source_agent, "claude");
+        assert!(q.content.contains("[QUESTION]"));
+        assert!(matches!(q.question_type, super::super::QuestionType::Technical));
+    }
+
+    #[test]
+    fn test_detect_question_with_ask_tag() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"[ASK] Need clarification on the API design"}]}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+        let q = q.unwrap();
+        assert!(q.content.contains("[ASK]"));
+    }
+
+    #[test]
+    fn test_detect_question_with_permission_keyword() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"[QUESTION] Do I have permission to delete these files?"}]}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+        assert!(matches!(q.unwrap().question_type, super::super::QuestionType::Permission));
+    }
+
+    #[test]
+    fn test_detect_question_with_clarification_keyword() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"[QUESTION] I need clarification on the requirement"}]}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+        assert!(matches!(q.unwrap().question_type, super::super::QuestionType::Clarification));
+    }
+
+    #[test]
+    fn test_detect_question_no_tag_returns_none() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"I will implement the feature now."}]}"#;
+        assert!(adapter.detect_question(line).is_none());
+    }
+
+    #[test]
+    fn test_detect_question_tool_use_returns_none() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"tool_use","name":"Bash","input":{"command":"ls"}}"#;
+        assert!(adapter.detect_question(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_display_output_message() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"Analyzing the code..."}]}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert_eq!(dl.content, "Analyzing the code...");
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::AgentThinking));
+    }
+
+    #[test]
+    fn test_parse_display_output_tool_use() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"tool_use","name":"Bash","input":{"command":"ls"}}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert!(dl.content.contains("[Bash]"));
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::ToolExecution));
+    }
+
+    #[test]
+    fn test_parse_display_output_tool_result() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"tool_result","output":"file.txt\nother.txt"}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::Result));
+    }
+
+    #[test]
+    fn test_parse_display_output_result_event() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"result","status":"success","result":"All done","num_turns":2}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert_eq!(dl.content, "All done");
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::Result));
+    }
+
+    #[test]
+    fn test_parse_display_output_init_returns_none() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"init","session_id":"abc"}"#;
+        assert!(adapter.parse_display_output(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_display_output_non_json_returns_none() {
+        let adapter = super::ClaudeAdapter;
+        assert!(adapter.parse_display_output("Starting Claude Code...").is_none());
+    }
+
+    #[test]
+    fn test_extract_result_finds_last_result() {
+        let adapter = super::ClaudeAdapter;
+        let lines = vec![
+            r#"{"type":"init","session_id":"abc"}"#.to_string(),
+            r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"Working..."}]}"#.to_string(),
+            r#"{"type":"result","status":"success","result":"Task completed","num_turns":2}"#.to_string(),
+        ];
+        let result = adapter.extract_result(&lines);
+        assert_eq!(result, Some("Task completed".to_string()));
+    }
+
+    #[test]
+    fn test_extract_result_empty_lines_returns_none() {
+        let adapter = super::ClaudeAdapter;
+        assert!(adapter.extract_result(&[]).is_none());
+    }
+
+    #[test]
+    fn test_extract_result_no_result_event_returns_none() {
+        let adapter = super::ClaudeAdapter;
+        let lines = vec![
+            r#"{"type":"init","session_id":"abc"}"#.to_string(),
+            r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"Working..."}]}"#.to_string(),
+        ];
+        assert!(adapter.extract_result(&lines).is_none());
+    }
+
+    #[test]
+    fn test_is_turn_complete_result_event() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"result","status":"success","result":"Done","num_turns":1}"#;
+        assert!(adapter.is_turn_complete(line));
+    }
+
+    #[test]
+    fn test_is_turn_complete_message_event() {
+        let adapter = super::ClaudeAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"Still working"}]}"#;
+        assert!(!adapter.is_turn_complete(line));
+    }
+
+    #[test]
+    fn test_is_turn_complete_non_json() {
+        let adapter = super::ClaudeAdapter;
+        assert!(!adapter.is_turn_complete("Starting Claude Code..."));
     }
 }
