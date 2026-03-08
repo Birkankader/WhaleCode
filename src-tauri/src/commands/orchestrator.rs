@@ -942,4 +942,79 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().tasks.len(), 1);
     }
+
+    // === Integration tests: adapter extract_result + cross-module flows ===
+
+    #[test]
+    fn test_adapter_extract_result_claude() {
+        use crate::adapters::ToolAdapter;
+        let adapter = crate::adapters::claude::ClaudeAdapter;
+        let lines = vec![
+            r#"{"type":"result","result":"answer text here","is_error":false}"#.to_string(),
+        ];
+        let result = adapter.extract_result(&lines);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "answer text here");
+    }
+
+    #[test]
+    fn test_adapter_extract_result_gemini() {
+        use crate::adapters::ToolAdapter;
+        let adapter = crate::adapters::gemini::GeminiAdapter;
+        let lines = vec![
+            r#"{"type":"result","response":"gemini answer","is_error":false}"#.to_string(),
+        ];
+        let result = adapter.extract_result(&lines);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "gemini answer");
+    }
+
+    #[test]
+    fn test_adapter_extract_result_codex() {
+        use crate::adapters::ToolAdapter;
+        let adapter = crate::adapters::codex::CodexAdapter;
+        let lines = vec![
+            r#"{"type":"result","response":"codex answer","is_error":false}"#.to_string(),
+        ];
+        let result = adapter.extract_result(&lines);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "codex answer");
+    }
+
+    #[test]
+    fn test_adapter_extract_result_empty_lines() {
+        use crate::adapters::ToolAdapter;
+        let adapter = crate::adapters::claude::ClaudeAdapter;
+        let lines: Vec<String> = vec![];
+        assert!(adapter.extract_result(&lines).is_none());
+    }
+
+    #[test]
+    fn test_all_adapters_resolve() {
+        assert!(get_adapter("claude").is_ok());
+        assert!(get_adapter("gemini").is_ok());
+        assert!(get_adapter("codex").is_ok());
+        assert!(get_adapter("gpt").is_err());
+    }
+
+    #[test]
+    fn test_parse_multi_task_decomposition() {
+        let json = r#"{"tasks": [
+            {"agent": "claude", "prompt": "fix auth", "description": "Fix authentication"},
+            {"agent": "gemini", "prompt": "add tests", "description": "Add unit tests"},
+            {"agent": "codex", "prompt": "refactor db", "description": "Refactor database layer"}
+        ]}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert_eq!(result.tasks.len(), 3);
+        assert_eq!(result.tasks[0].agent, "claude");
+        assert_eq!(result.tasks[1].agent, "gemini");
+        assert_eq!(result.tasks[2].agent, "codex");
+    }
+
+    #[test]
+    fn test_truncate_edge_cases() {
+        assert_eq!(truncate("", 10), "");
+        assert_eq!(truncate("ab", 2), "ab");
+        assert_eq!(truncate("abc", 2), "ab...");
+    }
 }

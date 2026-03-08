@@ -355,4 +355,94 @@ mod tests {
         assert!(prompt.contains("new task"));
         assert!(prompt.contains("Previous session context"));
     }
+
+    // === Integration tests: cross-module data structure verification ===
+
+    #[test]
+    fn test_full_plan_lifecycle() {
+        let config = OrchestratorConfig {
+            agents: vec![
+                AgentConfig {
+                    tool_name: "claude".to_string(),
+                    sub_agent_count: 1,
+                    is_master: true,
+                },
+                AgentConfig {
+                    tool_name: "gemini".to_string(),
+                    sub_agent_count: 1,
+                    is_master: false,
+                },
+            ],
+            master_agent: "claude".to_string(),
+        };
+        let plan = Orchestrator::create_plan("optimize code", &config);
+        assert!(plan.master_process_id.is_none());
+        assert_eq!(plan.phase, OrchestrationPhase::Decomposing);
+        assert!(plan.sub_tasks.is_empty());
+        assert!(plan.decomposition.is_none());
+        assert!(plan.worker_results.is_empty());
+        assert_eq!(plan.master_agent, "claude");
+    }
+
+    #[test]
+    fn test_decomposition_result_parsing() {
+        let json = r#"{"tasks":[{"agent":"codex","prompt":"analyze","description":"analyze code"}]}"#;
+        let result: DecompositionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].agent, "codex");
+        assert_eq!(result.tasks[0].prompt, "analyze");
+        assert_eq!(result.tasks[0].description, "analyze code");
+    }
+
+    #[test]
+    fn test_ask_user_response_parsing() {
+        use crate::adapters::AskUserResponse;
+        let json = r#"{"ask_user": "Which database schema?"}"#;
+        let resp: AskUserResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.ask_user, "Which database schema?");
+    }
+
+    #[test]
+    fn test_all_prompt_builders_combined() {
+        let q = Orchestrator::build_question_relay_prompt("codex", "Which DB?");
+        assert!(q.contains("codex") && q.contains("ask_user"));
+
+        let b = Orchestrator::build_context_backup_prompt();
+        assert!(b.contains("context_backup"));
+
+        let r = Orchestrator::build_context_restore_prompt("old context", "new task");
+        assert!(r.contains("old context") && r.contains("new task"));
+
+        let agents = vec![
+            AgentConfig { tool_name: "claude".to_string(), sub_agent_count: 1, is_master: true },
+            AgentConfig { tool_name: "gemini".to_string(), sub_agent_count: 1, is_master: false },
+        ];
+        let d = Orchestrator::build_decompose_prompt("fix auth", &agents);
+        assert!(d.contains("fix auth") && d.contains("JSON"));
+
+        let results = vec![WorkerResult {
+            task_id: "t1".to_string(),
+            agent: "gemini".to_string(),
+            exit_code: 0,
+            output_summary: "Done".to_string(),
+        }];
+        let rv = Orchestrator::build_review_prompt("fix auth", &results);
+        assert!(rv.contains("fix auth") && rv.contains("Done"));
+    }
+
+    #[test]
+    fn test_pending_question_with_adapter_question() {
+        let pq = PendingQuestion {
+            question: crate::adapters::Question {
+                source_agent: "gemini".to_string(),
+                content: "Need clarification".to_string(),
+                question_type: crate::adapters::QuestionType::Clarification,
+            },
+            worker_task_id: "worker-1".to_string(),
+        };
+        assert_eq!(pq.worker_task_id, "worker-1");
+        assert_eq!(pq.question.source_agent, "gemini");
+        assert_eq!(pq.question.content, "Need clarification");
+        assert!(matches!(pq.question.question_type, crate::adapters::QuestionType::Clarification));
+    }
 }
