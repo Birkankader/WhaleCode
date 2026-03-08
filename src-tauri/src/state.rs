@@ -31,6 +31,8 @@ pub struct ProcessEntry {
     pub started_at: i64,
     pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub output_lines: Vec<String>,
+    /// Signals when the process exits. Clone the receiver, drop the lock, then await.
+    pub completion_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Cache TTL in seconds (5 minutes).

@@ -16,7 +16,7 @@ pub async fn spawn(
     channel: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    spawn_with_env(cmd, args, cwd, &[], channel, state, None).await
+    spawn_with_env(cmd, args, cwd, &[], channel, state, None, None).await
 }
 
 /// Spawn a subprocess with custom environment variables and pgid isolation,
@@ -32,6 +32,7 @@ pub async fn spawn_with_env(
     channel: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
     existing_task_id: Option<String>,
+    initial_stdin: Option<&[u8]>,
 ) -> Result<String, String> {
     let task_id = existing_task_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
@@ -64,13 +65,16 @@ pub async fn spawn_with_env(
 
     let mut child = command.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
 
+    let initial_bytes = initial_stdin.map(|b| b.to_vec());
     let stdin_tx = if let Some(mut stdin) = child.stdin.take() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         tauri::async_runtime::spawn(async move {
             use tokio::io::AsyncWriteExt;
-            // Auto-answer initial CLI prompts
-            let _ = stdin.write_all(b"1\ny\n").await;
+            // Send adapter-specific initial stdin bytes (e.g., auto-answer prompts)
+            if let Some(bytes) = initial_bytes {
+                let _ = stdin.write_all(&bytes).await;
+            }
 
             // Then listen for user input
             while let Some(text) = rx.recv().await {
@@ -91,6 +95,9 @@ pub async fn spawn_with_env(
     // pgid = pid since we called setpgid(0, 0)
     let pid = child.id().ok_or("Failed to get child pid")? as i32;
 
+    // Completion notification channel — waiter task signals when process exits
+    let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
+
     // Register in state
     {
         let mut inner = state.lock().map_err(|e| e.to_string())?;
@@ -104,6 +111,7 @@ pub async fn spawn_with_env(
                 started_at: chrono::Utc::now().timestamp_millis(),
                 stdin_tx,
                 output_lines: Vec::new(),
+                completion_rx,
             },
         );
     }
@@ -182,6 +190,9 @@ pub async fn spawn_with_env(
                 entry.output_lines.shrink_to_fit();
             }
         }
+
+        // Signal completion — wakes any wait_for_process_completion callers
+        completion_tx.send(true).ok();
 
         exit_channel.send(OutputEvent::Exit(exit_code)).ok();
     });

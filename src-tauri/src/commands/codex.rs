@@ -51,6 +51,7 @@ pub async fn spawn_codex_task(
         on_event,
         state,
         Some(task_id),
+        None, // Codex --full-auto bypasses prompts
     )
     .await
 }

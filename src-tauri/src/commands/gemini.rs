@@ -51,6 +51,7 @@ pub async fn spawn_gemini_task(
         on_event,
         state,
         Some(task_id),
+        None, // Gemini --yolo bypasses prompts
     )
     .await
 }

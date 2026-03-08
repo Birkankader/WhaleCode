@@ -378,28 +378,47 @@ async fn run_agent_and_collect_output(
     Ok(output)
 }
 
-/// Wait for a process to complete by polling its status.
+/// Wait for a process to complete by awaiting its completion watch channel.
 async fn wait_for_process_completion(
     task_id: &str,
     state: tauri::State<'_, AppState>,
 ) -> i32 {
-    loop {
-        {
-            let inner = match state.lock() {
-                Ok(inner) => inner,
-                Err(_) => return -1,
-            };
-            if let Some(entry) = inner.processes.get(task_id) {
+    // Clone the watch receiver while holding the lock, then drop the lock before awaiting
+    let mut rx = {
+        let inner = match state.lock() {
+            Ok(inner) => inner,
+            Err(_) => return -1,
+        };
+        match inner.processes.get(task_id) {
+            Some(entry) => {
                 match &entry.status {
                     ProcessStatus::Completed(code) => return *code,
                     ProcessStatus::Failed(_) => return -1,
-                    _ => {}
+                    _ => entry.completion_rx.clone(),
                 }
-            } else {
-                return -1;
             }
+            None => return -1,
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+
+    // Await completion signal (lock is dropped, no polling)
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            return -1; // Sender dropped without signaling
+        }
+    }
+
+    // Re-check final status
+    let inner = match state.lock() {
+        Ok(inner) => inner,
+        Err(_) => return -1,
+    };
+    match inner.processes.get(task_id) {
+        Some(entry) => match &entry.status {
+            ProcessStatus::Completed(code) => *code,
+            _ => -1,
+        },
+        None => -1,
     }
 }
 

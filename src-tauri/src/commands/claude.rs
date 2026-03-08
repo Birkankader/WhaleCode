@@ -51,6 +51,7 @@ pub async fn spawn_claude_task(
         on_event,
         state,
         Some(task_id),
+        Some(b"1\ny\n"), // Auto-answer Claude CLI trust/agreement prompts
     )
     .await
 }
