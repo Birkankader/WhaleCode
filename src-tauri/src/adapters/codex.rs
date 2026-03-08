@@ -92,6 +92,16 @@ pub struct CodexCommand {
     pub cwd: String,
 }
 
+/// Build the environment variable list for Codex CLI.
+/// Always includes NO_COLOR=1; adds OPENAI_API_KEY when non-empty.
+fn build_env(api_key: &str) -> Vec<(String, String)> {
+    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+    if !api_key.is_empty() {
+        env.push(("OPENAI_API_KEY".to_string(), api_key.to_string()));
+    }
+    env
+}
+
 /// Build the CLI command for spawning Codex CLI in non-interactive mode.
 ///
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
@@ -100,10 +110,6 @@ pub struct CodexCommand {
 /// Uses `codex exec --full-auto` for headless tool execution (no confirmation prompts).
 /// Codex CLI does not support `--output-format`; output is plain text on stdout.
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> CodexCommand {
-    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-    if !api_key.is_empty() {
-        env.push(("OPENAI_API_KEY".to_string(), api_key.to_string()));
-    }
     CodexCommand {
         cmd: "codex".to_string(),
         args: vec![
@@ -111,7 +117,7 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> CodexCommand {
             "--full-auto".to_string(),
             prompt.to_string(),
         ],
-        env,
+        env: build_env(api_key),
         cwd: cwd.to_string(),
     }
 }
@@ -280,16 +286,12 @@ impl ToolAdapter for CodexAdapter {
     }
 
     fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
-        let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-        if !api_key.is_empty() {
-            env.push(("OPENAI_API_KEY".to_string(), api_key.to_string()));
-        }
         ToolCommand {
             cmd: "codex".to_string(),
             args: vec![
                 "--full-auto".to_string(),
             ],
-            env,
+            env: build_env(api_key),
             cwd: cwd.to_string(),
         }
     }
@@ -300,13 +302,7 @@ impl ToolAdapter for CodexAdapter {
             CodexStreamEvent::Message { content, .. } => {
                 let text = content?;
                 if text.contains("[QUESTION]") || text.contains("[ASK]") {
-                    let qtype = if text.contains("permission") || text.contains("Permission") {
-                        QuestionType::Permission
-                    } else if text.contains("clarif") || text.contains("Clarif") {
-                        QuestionType::Clarification
-                    } else {
-                        QuestionType::Technical
-                    };
+                    let qtype = QuestionType::from_text(&text);
                     return Some(Question {
                         source_agent: "codex".to_string(),
                         content: text,
@@ -343,14 +339,22 @@ impl ToolAdapter for CodexAdapter {
                 })
             }
             CodexStreamEvent::ToolResult { output, .. } => {
+                let content = output.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
                 Some(DisplayLine {
-                    content: output.unwrap_or_default(),
+                    content,
                     line_type: DisplayLineType::Result,
                 })
             }
             CodexStreamEvent::Result { response, .. } => {
+                let content = response.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
                 Some(DisplayLine {
-                    content: response.unwrap_or_default(),
+                    content,
                     line_type: DisplayLineType::Result,
                 })
             }
@@ -370,10 +374,7 @@ impl ToolAdapter for CodexAdapter {
     }
 
     fn is_turn_complete(&self, line: &str) -> bool {
-        match parse_stream_line(line) {
-            Some(CodexStreamEvent::Result { .. }) => true,
-            _ => false,
-        }
+        matches!(parse_stream_line(line), Some(CodexStreamEvent::Result { .. }))
     }
 }
 

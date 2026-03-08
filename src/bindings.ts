@@ -448,6 +448,9 @@ async sendToProcess(taskId: string, text: string) : Promise<Result<null, string>
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Remove completed/failed processes older than 5 minutes from state.
+ */
 async cleanupCompletedProcesses() : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cleanup_completed_processes") };

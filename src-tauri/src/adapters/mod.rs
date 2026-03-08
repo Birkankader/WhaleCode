@@ -57,6 +57,20 @@ pub enum QuestionType {
     Permission,
 }
 
+impl QuestionType {
+    /// Classify question type from text content using case-insensitive matching.
+    pub fn from_text(text: &str) -> Self {
+        let lower = text.to_lowercase();
+        if lower.contains("permission") {
+            QuestionType::Permission
+        } else if lower.contains("clarif") {
+            QuestionType::Clarification
+        } else {
+            QuestionType::Technical
+        }
+    }
+}
+
 /// Normalized display line for uniform agent output rendering.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct DisplayLine {
@@ -268,6 +282,29 @@ mod tests {
         assert_eq!(parsed.source_agent, "claude");
         assert_eq!(parsed.content, "Should I use async?");
         assert!(matches!(parsed.question_type, QuestionType::Technical));
+    }
+
+    #[test]
+    fn test_question_type_from_text_case_insensitive() {
+        // Permission variants
+        assert!(matches!(QuestionType::from_text("Do I have permission?"), QuestionType::Permission));
+        assert!(matches!(QuestionType::from_text("PERMISSION denied"), QuestionType::Permission));
+        assert!(matches!(QuestionType::from_text("need Permission to proceed"), QuestionType::Permission));
+
+        // Clarification variants
+        assert!(matches!(QuestionType::from_text("need clarification"), QuestionType::Clarification));
+        assert!(matches!(QuestionType::from_text("CLARIFY this please"), QuestionType::Clarification));
+        assert!(matches!(QuestionType::from_text("Could you Clarify?"), QuestionType::Clarification));
+
+        // Technical (default)
+        assert!(matches!(QuestionType::from_text("Which database to use?"), QuestionType::Technical));
+        assert!(matches!(QuestionType::from_text(""), QuestionType::Technical));
+
+        // Permission takes priority over clarification
+        assert!(matches!(
+            QuestionType::from_text("Need clarification on permission"),
+            QuestionType::Permission
+        ));
     }
 
     #[test]

@@ -82,15 +82,21 @@ pub struct ClaudeCommand {
     pub cwd: String,
 }
 
+/// Build the environment variable list for Claude Code.
+/// Always includes NO_COLOR=1; adds ANTHROPIC_API_KEY when non-empty.
+fn build_env(api_key: &str) -> Vec<(String, String)> {
+    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+    if !api_key.is_empty() {
+        env.push(("ANTHROPIC_API_KEY".to_string(), api_key.to_string()));
+    }
+    env
+}
+
 /// Build the CLI command for spawning Claude Code in headless streaming mode.
 ///
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
 /// in args or logged.
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
-    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-    if !api_key.is_empty() {
-        env.push(("ANTHROPIC_API_KEY".to_string(), api_key.to_string()));
-    }
     ClaudeCommand {
         cmd: "claude".to_string(),
         args: vec![
@@ -101,7 +107,7 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
             "--verbose".to_string(),
             "--dangerously-skip-permissions".to_string(),
         ],
-        env,
+        env: build_env(api_key),
         cwd: cwd.to_string(),
     }
 }
@@ -271,10 +277,6 @@ impl ToolAdapter for ClaudeAdapter {
     }
 
     fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
-        let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-        if !api_key.is_empty() {
-            env.push(("ANTHROPIC_API_KEY".to_string(), api_key.to_string()));
-        }
         ToolCommand {
             cmd: "claude".to_string(),
             args: vec![
@@ -283,7 +285,7 @@ impl ToolAdapter for ClaudeAdapter {
                 "--verbose".to_string(),
                 "--dangerously-skip-permissions".to_string(),
             ],
-            env,
+            env: build_env(api_key),
             cwd: cwd.to_string(),
         }
     }
@@ -296,18 +298,10 @@ impl ToolAdapter for ClaudeAdapter {
                 for block in &blocks {
                     if let Some(ref text) = block.text {
                         if text.contains("[QUESTION]") || text.contains("[ASK]") {
-                            // Determine question type from content
-                            let qtype = if text.contains("permission") || text.contains("Permission") {
-                                QuestionType::Permission
-                            } else if text.contains("clarif") || text.contains("Clarif") {
-                                QuestionType::Clarification
-                            } else {
-                                QuestionType::Technical
-                            };
                             return Some(Question {
                                 source_agent: "claude".to_string(),
                                 content: text.clone(),
-                                question_type: qtype,
+                                question_type: QuestionType::from_text(text),
                             });
                         }
                     }
@@ -346,14 +340,22 @@ impl ToolAdapter for ClaudeAdapter {
                 })
             }
             ClaudeStreamEvent::ToolResult { output, .. } => {
+                let content = output.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
                 Some(DisplayLine {
-                    content: output.unwrap_or_default(),
+                    content,
                     line_type: DisplayLineType::Result,
                 })
             }
             ClaudeStreamEvent::Result { result, .. } => {
+                let content = result.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
                 Some(DisplayLine {
-                    content: result.unwrap_or_default(),
+                    content,
                     line_type: DisplayLineType::Result,
                 })
             }
@@ -373,10 +375,7 @@ impl ToolAdapter for ClaudeAdapter {
     }
 
     fn is_turn_complete(&self, line: &str) -> bool {
-        match parse_stream_line(line) {
-            Some(ClaudeStreamEvent::Result { .. }) => true,
-            _ => false,
-        }
+        matches!(parse_stream_line(line), Some(ClaudeStreamEvent::Result { .. }))
     }
 }
 

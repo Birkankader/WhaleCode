@@ -88,6 +88,16 @@ pub struct GeminiCommand {
     pub cwd: String,
 }
 
+/// Build the environment variable list for Gemini CLI.
+/// Always includes NO_COLOR=1; adds GEMINI_API_KEY when non-empty.
+fn build_env(api_key: &str) -> Vec<(String, String)> {
+    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+    if !api_key.is_empty() {
+        env.push(("GEMINI_API_KEY".to_string(), api_key.to_string()));
+    }
+    env
+}
+
 /// Build the CLI command for spawning Gemini CLI in headless streaming mode.
 ///
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
@@ -95,10 +105,6 @@ pub struct GeminiCommand {
 ///
 /// The `--yolo` flag is required for headless tool execution (no confirmation prompts).
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> GeminiCommand {
-    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-    if !api_key.is_empty() {
-        env.push(("GEMINI_API_KEY".to_string(), api_key.to_string()));
-    }
     GeminiCommand {
         cmd: "gemini".to_string(),
         args: vec![
@@ -108,7 +114,7 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> GeminiCommand {
             "stream-json".to_string(),
             "--yolo".to_string(),
         ],
-        env,
+        env: build_env(api_key),
         cwd: cwd.to_string(),
     }
 }
@@ -279,10 +285,6 @@ impl ToolAdapter for GeminiAdapter {
     }
 
     fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
-        let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-        if !api_key.is_empty() {
-            env.push(("GEMINI_API_KEY".to_string(), api_key.to_string()));
-        }
         ToolCommand {
             cmd: "gemini".to_string(),
             args: vec![
@@ -290,7 +292,7 @@ impl ToolAdapter for GeminiAdapter {
                 "stream-json".to_string(),
                 "--yolo".to_string(),
             ],
-            env,
+            env: build_env(api_key),
             cwd: cwd.to_string(),
         }
     }
@@ -301,13 +303,7 @@ impl ToolAdapter for GeminiAdapter {
             GeminiStreamEvent::Message { content, .. } => {
                 let text = content?;
                 if text.contains("[QUESTION]") || text.contains("[ASK]") {
-                    let qtype = if text.contains("permission") || text.contains("Permission") {
-                        QuestionType::Permission
-                    } else if text.contains("clarif") || text.contains("Clarif") {
-                        QuestionType::Clarification
-                    } else {
-                        QuestionType::Technical
-                    };
+                    let qtype = QuestionType::from_text(&text);
                     return Some(Question {
                         source_agent: "gemini".to_string(),
                         content: text,
@@ -344,14 +340,22 @@ impl ToolAdapter for GeminiAdapter {
                 })
             }
             GeminiStreamEvent::ToolResult { output, .. } => {
+                let content = output.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
                 Some(DisplayLine {
-                    content: output.unwrap_or_default(),
+                    content,
                     line_type: DisplayLineType::Result,
                 })
             }
             GeminiStreamEvent::Result { response, .. } => {
+                let content = response.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
                 Some(DisplayLine {
-                    content: response.unwrap_or_default(),
+                    content,
                     line_type: DisplayLineType::Result,
                 })
             }
@@ -371,10 +375,7 @@ impl ToolAdapter for GeminiAdapter {
     }
 
     fn is_turn_complete(&self, line: &str) -> bool {
-        match parse_stream_line(line) {
-            Some(GeminiStreamEvent::Result { .. }) => true,
-            _ => false,
-        }
+        matches!(parse_stream_line(line), Some(GeminiStreamEvent::Result { .. }))
     }
 }
 
