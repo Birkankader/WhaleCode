@@ -182,6 +182,46 @@ impl Orchestrator {
             prompt
         )
     }
+
+    /// Prompt sent to master when a worker asks a question.
+    pub fn build_question_relay_prompt(worker_agent: &str, question: &str) -> String {
+        format!(
+            r#"Worker agent "{}" is asking the following question:
+
+{}
+
+If you can answer this confidently, respond with just your answer.
+If you need the user's input, respond with exactly this JSON format:
+{{"ask_user": "<your question for the user>"}}"#,
+            worker_agent, question
+        )
+    }
+
+    /// Prompt sent to master for context backup before /clear.
+    pub fn build_context_backup_prompt() -> String {
+        r#"Back up all context from this session. Write a comprehensive summary including:
+- Original task and sub-tasks assigned
+- What each worker agent accomplished and their results
+- Which files were changed
+- Open questions or remaining work
+- Key decisions and their rationale
+
+Respond with exactly this JSON format:
+{"context_backup": "<your markdown summary>"}"#.to_string()
+    }
+
+    /// Prompt sent to new master to restore context after /clear.
+    pub fn build_context_restore_prompt(context_md: &str, new_prompt: &str) -> String {
+        format!(
+            r#"Previous session context is below. Read and remember it, then proceed to the new task.
+
+{}
+
+---
+New task: {}"#,
+            context_md, new_prompt
+        )
+    }
 }
 
 #[cfg(test)]
@@ -291,5 +331,28 @@ mod tests {
             worker_task_id: "task-123".to_string(),
         };
         assert_eq!(entry.worker_task_id, "task-123");
+    }
+
+    #[test]
+    fn test_build_question_relay_prompt() {
+        let prompt = Orchestrator::build_question_relay_prompt("codex", "Which DB?");
+        assert!(prompt.contains("codex"));
+        assert!(prompt.contains("Which DB?"));
+        assert!(prompt.contains("ask_user"));
+    }
+
+    #[test]
+    fn test_build_context_backup_prompt() {
+        let prompt = Orchestrator::build_context_backup_prompt();
+        assert!(prompt.contains("context_backup"));
+        assert!(prompt.contains("comprehensive summary"));
+    }
+
+    #[test]
+    fn test_build_context_restore_prompt() {
+        let prompt = Orchestrator::build_context_restore_prompt("prev context here", "new task");
+        assert!(prompt.contains("prev context here"));
+        assert!(prompt.contains("new task"));
+        assert!(prompt.contains("Previous session context"));
     }
 }
