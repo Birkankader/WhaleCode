@@ -29,6 +29,8 @@ pub struct ProcessEntry {
     pub tool_name: String,
     pub task_description: String,
     pub started_at: i64,
+    pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub output_lines: Vec<String>,
 }
 
 /// Cache TTL in seconds (5 minutes).

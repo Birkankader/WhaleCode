@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod cleanup;
 pub mod codex;
 pub mod gemini;
 pub mod context;
@@ -6,6 +7,7 @@ pub mod orchestrator;
 pub mod process;
 pub mod prompt;
 pub mod router;
+pub mod stdin;
 pub mod worktree;
 
 use std::path::PathBuf;
@@ -51,6 +53,8 @@ pub use worktree::{
     check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,
     list_worktrees, merge_worktree,
 };
+pub use stdin::send_to_process;
+pub use cleanup::cleanup_completed_processes;
 
 #[tauri::command]
 #[specta::specta]

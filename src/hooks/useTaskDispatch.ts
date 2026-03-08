@@ -63,19 +63,22 @@ export function useTaskDispatch() {
         if (depProcess && depProcess.status === 'running') {
           useTaskStore.getState().updateTaskStatus(tempId, 'waiting');
 
-          // Wait for dependency to complete
-          const completed = await new Promise<boolean>((resolve) => {
-            const unsub = useProcessStore.subscribe((state) => {
-              const dep = state.processes.get(dependsOn);
-              if (!dep || dep.status === 'completed') {
-                unsub();
-                resolve(true);
-              } else if (dep.status === 'failed') {
-                unsub();
-                resolve(false);
-              }
-            });
-          });
+          // Wait for dependency to complete (with 5-minute timeout)
+          const completed = await Promise.race([
+            new Promise<boolean>((resolve) => {
+              const unsub = useProcessStore.subscribe((state) => {
+                const dep = state.processes.get(dependsOn);
+                if (!dep || dep.status === 'completed') {
+                  unsub();
+                  resolve(true);
+                } else if (dep.status === 'failed') {
+                  unsub();
+                  resolve(false);
+                }
+              });
+            }),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300_000)),
+          ]);
 
           if (!completed) {
             useTaskStore.getState().updateTaskStatus(tempId, 'failed');
@@ -163,8 +166,6 @@ export function useTaskDispatch() {
         });
 
         // Update task store with real taskId and running status
-        useTaskStore.getState().updateTaskStatus(tempId, 'running');
-        // Update startedAt
         const taskState = useTaskStore.getState();
         const task = taskState.tasks.get(tempId);
         if (task) {
@@ -207,21 +208,78 @@ export function useTaskDispatch() {
       orchestratorConfig: OrchestratorConfig,
     ): Promise<Map<ToolName, string>> => {
       const results = new Map<ToolName, string>();
-      const dispatches = orchestratorConfig.agents.map(async (agentConfig) => {
-        const taskId = await dispatchTask(
-          prompt,
-          projectDir,
-          agentConfig.toolName,
-        );
-        if (taskId) {
-          results.set(agentConfig.toolName, taskId);
+
+      // Create channel for orchestration output (all phases stream through this)
+      const channel = new Channel<OutputEvent>();
+      const orchestrationId = crypto.randomUUID();
+
+      channel.onmessage = (msg: OutputEvent) => {
+        if (msg.event === 'exit') {
+          const code = Number(msg.data);
+          useProcessStore.getState()._updateStatus(
+            orchestrationId,
+            code === 0 ? 'completed' : 'failed',
+            code,
+          );
+          emitProcessOutput(orchestrationId, msg);
+          return;
         }
+        emitProcessOutput(orchestrationId, msg);
+      };
+
+      // Register orchestration as a single process in frontend
+      const store = useProcessStore.getState();
+      const newProcesses = new Map(store.processes);
+      const description = prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
+      newProcesses.set(orchestrationId, {
+        taskId: orchestrationId,
+        cmd: `orchestration: ${description}`,
+        status: 'running',
+        channel,
+      });
+      useProcessStore.setState({
+        processes: newProcesses,
+        activeProcessId: orchestrationId,
       });
 
-      await Promise.allSettled(dispatches);
+      try {
+        // Convert frontend config format (camelCase) to backend format (snake_case)
+        const backendConfig = {
+          agents: orchestratorConfig.agents.map(a => ({
+            tool_name: a.toolName,
+            sub_agent_count: a.subAgentCount,
+            is_master: a.isMaster,
+          })),
+          master_agent: orchestratorConfig.masterAgent,
+        };
+
+        const result = await commands.dispatchOrchestratedTask(
+          prompt,
+          projectDir,
+          backendConfig,
+          channel,
+        );
+
+        if (result.status === 'ok') {
+          const plan = result.data;
+          // Map sub-task agents to their IDs for tracking
+          for (const subTask of plan.sub_tasks) {
+            results.set(subTask.assigned_agent as ToolName, subTask.id);
+          }
+          // Mark orchestration complete
+          useProcessStore.getState()._updateStatus(orchestrationId, 'completed', 0);
+        } else {
+          console.error('Orchestration failed:', result.error);
+          useProcessStore.getState()._updateStatus(orchestrationId, 'failed', -1);
+        }
+      } catch (e) {
+        console.error('Orchestration error:', e);
+        useProcessStore.getState()._updateStatus(orchestrationId, 'failed', -1);
+      }
+
       return results;
     },
-    [dispatchTask],
+    [],
   );
 
   return { suggestTool, dispatchTask, dispatchOrchestratedTask, isToolBusy };

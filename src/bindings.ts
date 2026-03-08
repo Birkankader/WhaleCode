@@ -398,11 +398,11 @@ async dispatchTask(prompt: string, projectDir: string, toolName: string, taskId:
 }
 },
 /**
- * Dispatch an orchestrated multi-agent task.
+ * Dispatch an orchestrated multi-agent task using two-phase orchestration.
  * 
- * Creates an orchestration plan from the prompt and config, then dispatches
- * each sub-task to its assigned agent. Each sub-task gets its own worktree
- * for isolation. Returns the plan for frontend tracking.
+ * Phase 1 (Decompose): Master agent analyzes task, returns JSON sub-task assignments.
+ * Phase 2 (Execute): Each sub-task dispatched to assigned agent in parallel.
+ * Phase 3 (Review): Master agent reviews all worker results and provides summary.
  */
 async dispatchOrchestratedTask(prompt: string, projectDir: string, config: OrchestratorConfig, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<OrchestrationPlan, string>> {
     try {
@@ -414,9 +414,6 @@ async dispatchOrchestratedTask(prompt: string, projectDir: string, config: Orche
 },
 /**
  * Get context/token usage information for agents involved in a task.
- * 
- * Reads from the process state to gather context info per agent
- * associated with the given orchestration plan task_id.
  */
 async getAgentContextInfo(taskId: string) : Promise<Result<AgentContextInfo[], string>> {
     try {
@@ -435,6 +432,25 @@ async getAgentContextInfo(taskId: string) : Promise<Result<AgentContextInfo[], s
 async optimizePrompt(prompt: string, projectDir: string) : Promise<Result<OptimizedPrompt[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("optimize_prompt", { prompt, projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send text to a running process's stdin.
+ */
+async sendToProcess(taskId: string, text: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_to_process", { taskId, text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cleanupCompletedProcesses() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cleanup_completed_processes") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -460,18 +476,22 @@ export type ConflictReport = { has_conflicts: boolean; conflicting_files: Confli
  * A context event with its associated file paths, suitable for IPC return.
  */
 export type ContextEventWithFiles = { id: number; task_id: string; tool_name: string; event_type: string; prompt: string | null; summary: string | null; project_dir: string; metadata: string | null; duration_ms: number | null; cost_usd: number | null; created_at: string; files: string[] }
+export type DecompositionResult = { tasks: SubTaskDef[] }
 export type FileChangeRecord = { file_path: string; change_type: string; tool_name: string; summary: string | null; created_at: string }
 export type FileDiff = { path: string; status: string; old_path: string | null; patch: string; additions: number; deletions: number }
 /**
  * An optimized prompt for a specific tool, ready for IPC export.
  */
 export type OptimizedPrompt = { tool_name: string; original_prompt: string; optimized_prompt: string }
-export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string }
+export type OrchestrationPhase = "Decomposing" | "Executing" | "Reviewing" | "Completed" | "Failed"
+export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string; phase: OrchestrationPhase; decomposition: DecompositionResult | null; worker_results: WorkerResult[] }
 export type OrchestratorConfig = { agents: AgentConfig[]; master_agent: string }
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
 export type RoutingSuggestion = { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }
 export type SubTask = { id: string; prompt: string; assigned_agent: string; status: string; parent_task_id: string }
+export type SubTaskDef = { agent: string; prompt: string; description: string }
 export type TAURI_CHANNEL<TSend> = null
+export type WorkerResult = { task_id: string; agent: string; exit_code: number; output_summary: string }
 export type WorktreeDiffReport = { branch_name: string; default_branch: string; files: FileDiff[]; total_additions: number; total_deletions: number }
 export type WorktreeEntry = { task_id: string; worktree_name: string; branch_name: string; path: string; 
 /**

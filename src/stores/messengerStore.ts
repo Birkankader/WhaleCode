@@ -1,0 +1,74 @@
+import { create } from 'zustand';
+import { listen } from '@tauri-apps/api/event';
+
+export interface MessengerMessage {
+  id: string;
+  timestamp: number;
+  source: { type: 'System' } | { type: 'Agent'; name: string };
+  content: string;
+  messageType: string;
+  planId: string;
+}
+
+interface MessengerState {
+  messages: MessengerMessage[];
+  addMessage: (msg: MessengerMessage) => void;
+  clearMessages: () => void;
+  getMessagesForPlan: (planId: string) => MessengerMessage[];
+}
+
+export const useMessengerStore = create<MessengerState>((set, get) => ({
+  messages: [],
+
+  addMessage: (msg) => {
+    set((state) => {
+      const messages = [...state.messages, msg];
+      // Keep last 500 messages to prevent unbounded growth
+      return { messages: messages.length > 500 ? messages.slice(-500) : messages };
+    });
+  },
+
+  clearMessages: () => set({ messages: [] }),
+
+  getMessagesForPlan: (planId) => {
+    return get().messages.filter((m) => m.planId === planId);
+  },
+}));
+
+// Initialize Tauri event listener
+let listenerInitialized = false;
+let unlistenFn: (() => void) | null = null;
+
+export async function initMessengerListener() {
+  if (listenerInitialized) return;
+  listenerInitialized = true;
+
+  unlistenFn = await listen<Record<string, unknown>>('messenger-event', (event) => {
+    const raw = event.payload;
+    // Normalize source from Rust enum format
+    let source: MessengerMessage['source'];
+    if (typeof raw.source === 'string' && raw.source === 'System') {
+      source = { type: 'System' };
+    } else if (raw.source && typeof raw.source === 'object' && 'Agent' in (raw.source as Record<string, unknown>)) {
+      source = { type: 'Agent', name: (raw.source as { Agent: string }).Agent };
+    } else {
+      source = { type: 'System' };
+    }
+
+    const normalized: MessengerMessage = {
+      id: raw.id as string,
+      timestamp: raw.timestamp as number,
+      source,
+      content: raw.content as string,
+      messageType: raw.message_type as string,
+      planId: raw.plan_id as string,
+    };
+    useMessengerStore.getState().addMessage(normalized);
+  });
+}
+
+export function cleanupMessengerListener() {
+  unlistenFn?.();
+  unlistenFn = null;
+  listenerInitialized = false;
+}

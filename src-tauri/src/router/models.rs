@@ -12,5 +12,6 @@ pub struct RoutingSuggestion {
 
 // Re-export orchestrator types for convenience
 pub use super::orchestrator::{
-    AgentConfig, AgentContextInfo, OrchestratorConfig, OrchestrationPlan, SubTask,
+    AgentConfig, AgentContextInfo, DecompositionResult, OrchestrationPhase, OrchestrationPlan,
+    OrchestratorConfig, SubTask, SubTaskDef, WorkerResult,
 };

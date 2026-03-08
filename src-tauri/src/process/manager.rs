@@ -54,6 +54,7 @@ pub async fn spawn_with_env(
     }
 
     // Create new process group so we can kill the entire tree
+    // SAFETY: setpgid is async-signal-safe, safe to call in pre_exec context
     unsafe {
         command.pre_exec(|| {
             libc::setpgid(0, 0);
@@ -63,14 +64,29 @@ pub async fn spawn_with_env(
 
     let mut child = command.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-    // Auto-answer any CLI initialization prompts (e.g Claude Code asking to use ANTHROPIC_API_KEY)
-    if let Some(mut stdin) = child.stdin.take() {
+    let stdin_tx = if let Some(mut stdin) = child.stdin.take() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
         tauri::async_runtime::spawn(async move {
             use tokio::io::AsyncWriteExt;
-            // "1" to select "Yes", "y" to confirm overrides. Then drop.
+            // Auto-answer initial CLI prompts
             let _ = stdin.write_all(b"1\ny\n").await;
+
+            // Then listen for user input
+            while let Some(text) = rx.recv().await {
+                if stdin.write_all(text.as_bytes()).await.is_err() {
+                    break;
+                }
+                if stdin.write_all(b"\n").await.is_err() {
+                    break;
+                }
+            }
         });
-    }
+
+        Some(tx)
+    } else {
+        None
+    };
 
     // pgid = pid since we called setpgid(0, 0)
     let pid = child.id().ok_or("Failed to get child pid")? as i32;
@@ -83,9 +99,11 @@ pub async fn spawn_with_env(
             ProcessEntry {
                 pgid: pid,
                 status: ProcessStatus::Running,
-                tool_name: "test".to_string(),
+                tool_name: String::new(),
                 task_description: "".to_string(),
                 started_at: chrono::Utc::now().timestamp_millis(),
+                stdin_tx,
+                output_lines: Vec::new(),
             },
         );
     }
@@ -100,11 +118,23 @@ pub async fn spawn_with_env(
     // Spawn stdout reader
     if let Some(stdout) = stdout {
         let stdout_channel = channel.clone();
+        let state_for_output = (*state).clone();
+        let task_id_for_output = task_id.clone();
         tauri::async_runtime::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                stdout_channel.send(OutputEvent::Stdout(line)).ok();
+                stdout_channel.send(OutputEvent::Stdout(line.clone())).ok();
+                // Store output line for review phase summaries
+                if let Ok(mut inner) = state_for_output.lock() {
+                    if let Some(entry) = inner.processes.get_mut(&task_id_for_output) {
+                        entry.output_lines.push(line);
+                        // Keep only last 50 lines
+                        if entry.output_lines.len() > 50 {
+                            entry.output_lines.drain(0..entry.output_lines.len() - 50);
+                        }
+                    }
+                }
             }
         });
     }
@@ -145,6 +175,11 @@ pub async fn spawn_with_env(
                         entry.status = ProcessStatus::Failed(e.to_string());
                     }
                 }
+                // Drop stdin sender so the stdin writer task can exit
+                entry.stdin_tx = None;
+                // Free output buffer — no longer needed after exit
+                entry.output_lines.clear();
+                entry.output_lines.shrink_to_fit();
             }
         }
 
