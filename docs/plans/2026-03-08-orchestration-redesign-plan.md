@@ -2,38 +2,640 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Transform WhaleCode from a loose fan-out multi-agent system to a true two-phase master-agent orchestration with persistent input bar, stdin routing, and messenger view.
+**Goal:** Replace stateless 3-phase orchestration with interactive master agent that stays alive, handles worker questions, and supports context backup/restore via `/clear`.
 
-**Architecture:** Master agent decomposes tasks via CLI (Phase 1), backend parses JSON and dispatches sub-tasks to workers (Phase 2), master reviews results (Phase 3). Messenger tab shows orchestration events. Persistent input bar replaces the toggle-based "New Task" button and supports follow-up messages via stdin routing.
+**Architecture:** Master agent runs in interactive mode (no `-p` flag) with stdin/stdout multi-turn conversation. Workers run single-shot. Per-adapter output parsers normalize display. Question routing via FIFO queue. Context persisted to `context.md` in project root.
 
-**Tech Stack:** Tauri v2 (Rust), React 19, TypeScript, Zustand, Tailwind CSS 4, tauri-specta
+**Tech Stack:** Rust (Tauri v2), React 19, TypeScript, Zustand, tokio async
+
+**Design doc:** `docs/plans/2026-03-08-orchestration-redesign-design.md`
 
 ---
 
-### Task 1: Create Messenger Data Model (Rust)
+### Task 1: Add New Types to Adapter Module
 
 **Files:**
-- Create: `src-tauri/src/messenger/mod.rs`
-- Create: `src-tauri/src/messenger/models.rs`
-- Modify: `src-tauri/src/lib.rs:1-10` (add `mod messenger`)
+- Modify: `src-tauri/src/adapters/mod.rs:1-69`
 
-**Step 1: Create messenger models**
+**Step 1: Write failing tests for new types**
 
-Create `src-tauri/src/messenger/models.rs`:
+Add to `src-tauri/src/adapters/mod.rs` at the end of the test module (after line 136):
 
 ```rust
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use specta::Type;
-use uuid::Uuid;
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
-pub enum MessageSource {
-    System,
-    Agent(String), // tool_name: "claude" | "gemini" | "codex"
+#[test]
+fn test_question_type_debug() {
+    let q = Question {
+        source_agent: "codex".to_string(),
+        content: "Which schema to use?".to_string(),
+        question_type: QuestionType::Clarification,
+    };
+    assert_eq!(q.source_agent, "codex");
+    assert_eq!(q.content, "Which schema to use?");
+    assert!(matches!(q.question_type, QuestionType::Clarification));
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[test]
+fn test_display_line_types() {
+    let line = DisplayLine {
+        content: "Analyzing files...".to_string(),
+        line_type: DisplayLineType::AgentThinking,
+    };
+    assert_eq!(line.content, "Analyzing files...");
+    assert!(matches!(line.line_type, DisplayLineType::AgentThinking));
+}
+
+#[test]
+fn test_ask_user_response() {
+    let resp = AskUserResponse {
+        ask_user: "Which database schema?".to_string(),
+    };
+    let json = serde_json::to_string(&resp).unwrap();
+    assert!(json.contains("ask_user"));
+    let parsed: AskUserResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.ask_user, "Which database schema?");
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test adapter -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL — `Question`, `DisplayLine`, `AskUserResponse` not found
+
+**Step 3: Add new types before the `ToolAdapter` trait (after line 37, before line 43)**
+
+```rust
+/// A question detected from a worker agent's output stream.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct Question {
+    pub source_agent: String,
+    pub content: String,
+    pub question_type: QuestionType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub enum QuestionType {
+    Technical,
+    Clarification,
+    Permission,
+}
+
+/// Normalized display line for uniform agent output rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct DisplayLine {
+    pub content: String,
+    pub line_type: DisplayLineType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub enum DisplayLineType {
+    AgentThinking,
+    ToolExecution,
+    Result,
+    Info,
+}
+
+/// Structured response when master agent needs user input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserResponse {
+    pub ask_user: String,
+}
+```
+
+**Step 4: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test adapter -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src-tauri/src/adapters/mod.rs
+git commit -m "feat(adapters): add Question, DisplayLine, AskUserResponse types"
+```
+
+---
+
+### Task 2: Extend ToolAdapter Trait with New Methods
+
+**Files:**
+- Modify: `src-tauri/src/adapters/mod.rs:43-69` (ToolAdapter trait)
+
+**Step 1: Write failing test**
+
+Add to test module in `src-tauri/src/adapters/mod.rs`:
+
+```rust
+#[test]
+fn test_trait_has_interactive_command() {
+    let adapter = crate::adapters::claude::ClaudeAdapter;
+    let cmd = adapter.build_interactive_command("/tmp", "test-key");
+    assert!(!cmd.command.is_empty());
+}
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `cd src-tauri && cargo test test_trait_has_interactive_command 2>&1 | tail -20`
+Expected: FAIL — `build_interactive_command` not found on trait
+
+**Step 3: Add new methods to `ToolAdapter` trait (inside the trait block, after `name()`)**
+
+```rust
+    /// Build command for interactive mode (no -p flag, stdin/stdout multi-turn).
+    fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand;
+
+    /// Detect if a stream line contains a question from the agent.
+    fn detect_question(&self, line: &str) -> Option<Question>;
+
+    /// Parse a raw stream line into a normalized display line.
+    fn parse_display_output(&self, line: &str) -> Option<DisplayLine>;
+
+    /// Extract the final JSON result from collected output lines.
+    fn extract_result(&self, output_lines: &[String]) -> Option<String>;
+
+    /// Detect if a stream line signals that the agent's current turn is complete.
+    fn is_turn_complete(&self, line: &str) -> bool;
+```
+
+**Step 4: Compilation will fail until Tasks 3-5 implement these for all adapters. Proceed directly.**
+
+---
+
+### Task 3: Implement New Methods for ClaudeAdapter
+
+**Files:**
+- Modify: `src-tauri/src/adapters/claude.rs:229-268` (ClaudeAdapter impl)
+
+**Step 1: Write failing tests**
+
+Add to test module in `src-tauri/src/adapters/claude.rs`:
+
+```rust
+#[test]
+fn test_build_interactive_command_no_prompt_flag() {
+    let adapter = ClaudeAdapter;
+    let cmd = adapter.build_interactive_command("/tmp/project", "sk-test-key");
+    assert!(!cmd.args.iter().any(|a| a == "-p"));
+    assert!(cmd.args.iter().any(|a| a == "stream-json"));
+    assert_eq!(cmd.cwd, "/tmp/project");
+    assert!(cmd.env.iter().any(|(k, _)| k == "ANTHROPIC_API_KEY"));
+}
+
+#[test]
+fn test_detect_question_from_claude_stream() {
+    let adapter = ClaudeAdapter;
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I need to know: which framework?"}]}}"#;
+    let result = adapter.detect_question(line);
+    assert!(result.is_none()); // no [QUESTION] tag
+}
+
+#[test]
+fn test_parse_display_output_claude_message() {
+    let adapter = ClaudeAdapter;
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Analyzing the codebase..."}]}}"#;
+    let result = adapter.parse_display_output(line);
+    assert!(result.is_some());
+    let display = result.unwrap();
+    assert!(display.content.contains("Analyzing"));
+}
+
+#[test]
+fn test_parse_display_output_claude_tool_use() {
+    let adapter = ClaudeAdapter;
+    let line = r#"{"type":"tool_use","name":"bash","input":{"command":"ls -la"}}"#;
+    let result = adapter.parse_display_output(line);
+    assert!(result.is_some());
+    assert!(matches!(result.unwrap().line_type, DisplayLineType::ToolExecution));
+}
+
+#[test]
+fn test_extract_result_claude() {
+    let adapter = ClaudeAdapter;
+    let lines = vec![
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}"#.to_string(),
+        r#"{"type":"result","result":"final answer here","is_error":false,"num_turns":3}"#.to_string(),
+    ];
+    let result = adapter.extract_result(&lines);
+    assert!(result.is_some());
+    assert!(result.unwrap().contains("final answer"));
+}
+
+#[test]
+fn test_is_turn_complete_claude() {
+    let adapter = ClaudeAdapter;
+    assert!(adapter.is_turn_complete(r#"{"type":"result","result":"done","is_error":false}"#));
+    assert!(!adapter.is_turn_complete(r#"{"type":"assistant","message":{"content":[]}}"#));
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test claude -- --test-threads=1 2>&1 | tail -30`
+Expected: FAIL — methods not implemented
+
+**Step 3: Implement methods in `ClaudeAdapter` impl block**
+
+```rust
+fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
+    ToolCommand {
+        command: "claude".to_string(),
+        args: vec![
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ],
+        env: vec![("ANTHROPIC_API_KEY".to_string(), api_key.to_string())],
+        cwd: cwd.to_string(),
+    }
+}
+
+fn detect_question(&self, line: &str) -> Option<Question> {
+    let event: ClaudeStreamEvent = serde_json::from_str(line).ok()?;
+    match event {
+        ClaudeStreamEvent::Message { message } => {
+            let text: String = message.content
+                .iter()
+                .filter_map(|b| b.text.as_ref())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.contains("[QUESTION]") || text.contains("[ASK]") {
+                Some(Question {
+                    source_agent: "claude".to_string(),
+                    content: text,
+                    question_type: QuestionType::Clarification,
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_display_output(&self, line: &str) -> Option<DisplayLine> {
+    let event: ClaudeStreamEvent = serde_json::from_str(line).ok()?;
+    match event {
+        ClaudeStreamEvent::Message { message } => {
+            let text: String = message.content
+                .iter()
+                .filter_map(|b| b.text.as_ref())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.is_empty() { return None; }
+            Some(DisplayLine {
+                content: text,
+                line_type: DisplayLineType::AgentThinking,
+            })
+        }
+        ClaudeStreamEvent::ToolUse { name, input } => {
+            let desc = format!("[{}] {}", name.unwrap_or_default(),
+                input.map(|v| v.to_string()).unwrap_or_default());
+            Some(DisplayLine {
+                content: desc,
+                line_type: DisplayLineType::ToolExecution,
+            })
+        }
+        ClaudeStreamEvent::ToolResult { content } => {
+            Some(DisplayLine {
+                content: content.unwrap_or_default(),
+                line_type: DisplayLineType::Result,
+            })
+        }
+        ClaudeStreamEvent::Result { result, .. } => {
+            Some(DisplayLine {
+                content: result.unwrap_or_default(),
+                line_type: DisplayLineType::Result,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn extract_result(&self, output_lines: &[String]) -> Option<String> {
+    for line in output_lines.iter().rev() {
+        if let Ok(event) = serde_json::from_str::<ClaudeStreamEvent>(line) {
+            if let ClaudeStreamEvent::Result { result, .. } = event {
+                return result;
+            }
+        }
+    }
+    None
+}
+
+fn is_turn_complete(&self, line: &str) -> bool {
+    serde_json::from_str::<ClaudeStreamEvent>(line)
+        .map(|e| matches!(e, ClaudeStreamEvent::Result { .. }))
+        .unwrap_or(false)
+}
+```
+
+**Step 4: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test claude -- --test-threads=1 2>&1 | tail -30`
+Expected: PASS
+
+**Step 5: Do NOT commit yet — wait for Tasks 4 and 5**
+
+---
+
+### Task 4: Implement New Methods for GeminiAdapter
+
+**Files:**
+- Modify: `src-tauri/src/adapters/gemini.rs:237-276` (GeminiAdapter impl)
+
+**Step 1: Write failing tests**
+
+Add to test module in `src-tauri/src/adapters/gemini.rs`:
+
+```rust
+#[test]
+fn test_build_interactive_command_gemini() {
+    let adapter = GeminiAdapter;
+    let cmd = adapter.build_interactive_command("/tmp/project", "gemini-key");
+    assert!(!cmd.args.iter().any(|a| a == "-p"));
+    assert!(cmd.args.iter().any(|a| a == "stream-json"));
+    assert!(cmd.args.iter().any(|a| a == "--yolo"));
+}
+
+#[test]
+fn test_parse_display_output_gemini_message() {
+    let adapter = GeminiAdapter;
+    let line = r#"{"type":"message","content":"Looking at the code structure..."}"#;
+    let result = adapter.parse_display_output(line);
+    assert!(result.is_some());
+}
+
+#[test]
+fn test_extract_result_gemini() {
+    let adapter = GeminiAdapter;
+    let lines = vec![
+        r#"{"type":"message","content":"working..."}"#.to_string(),
+        r#"{"type":"result","result":"completed analysis","stats":{"total_tokens":1500}}"#.to_string(),
+    ];
+    let result = adapter.extract_result(&lines);
+    assert!(result.is_some());
+}
+
+#[test]
+fn test_is_turn_complete_gemini() {
+    let adapter = GeminiAdapter;
+    assert!(adapter.is_turn_complete(r#"{"type":"result","result":"done"}"#));
+    assert!(!adapter.is_turn_complete(r#"{"type":"message","content":"hi"}"#));
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test gemini -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL
+
+**Step 3: Implement methods in `GeminiAdapter` impl block**
+
+Follow same pattern as ClaudeAdapter. Key differences:
+- Interactive command: `gemini` binary with `--yolo` and `--output-format stream-json`
+- Message content is plain `String` (not `ContentBlock` array)
+- Question detection checks for `[QUESTION]`/`[ASK]` in message content
+- `extract_result` looks for `GeminiStreamEvent::Result`
+- `is_turn_complete` checks for `Result` event
+
+**Step 4: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test gemini -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
+
+**Step 5: Do NOT commit yet — wait for Task 5**
+
+---
+
+### Task 5: Implement New Methods for CodexAdapter
+
+**Files:**
+- Modify: `src-tauri/src/adapters/codex.rs:238-277` (CodexAdapter impl)
+
+**Step 1: Write failing tests**
+
+Add to test module in `src-tauri/src/adapters/codex.rs`:
+
+```rust
+#[test]
+fn test_build_interactive_command_codex() {
+    let adapter = CodexAdapter;
+    let cmd = adapter.build_interactive_command("/tmp/project", "openai-key");
+    assert!(!cmd.args.iter().any(|a| a == "-p"));
+    assert!(cmd.args.iter().any(|a| a == "--full-auto"));
+}
+
+#[test]
+fn test_parse_display_output_codex_tool_use() {
+    let adapter = CodexAdapter;
+    let line = r#"{"type":"tool_use","function_name":"shell","arguments":{"command":"ls"}}"#;
+    let result = adapter.parse_display_output(line);
+    assert!(result.is_some());
+    assert!(matches!(result.unwrap().line_type, DisplayLineType::ToolExecution));
+}
+
+#[test]
+fn test_extract_result_codex() {
+    let adapter = CodexAdapter;
+    let lines = vec![
+        r#"{"type":"message","content":"analyzing..."}"#.to_string(),
+        r#"{"type":"result","result":"done","stats":{"prompt_tokens":100}}"#.to_string(),
+    ];
+    let result = adapter.extract_result(&lines);
+    assert!(result.is_some());
+}
+
+#[test]
+fn test_is_turn_complete_codex() {
+    let adapter = CodexAdapter;
+    assert!(adapter.is_turn_complete(r#"{"type":"result","result":"done"}"#));
+    assert!(!adapter.is_turn_complete(r#"{"type":"message","content":"thinking"}"#));
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test codex -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL
+
+**Step 3: Implement methods in `CodexAdapter` impl block**
+
+Follow same pattern. Key differences:
+- Interactive command: `codex` binary with `--full-auto`
+- Uses `function_name` instead of `name` for tool use events
+- Stats use OpenAI naming: `prompt_tokens`/`completion_tokens`
+
+**Step 4: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test codex -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
+
+**Step 5: Commit all adapter changes together**
+
+```bash
+git add src-tauri/src/adapters/
+git commit -m "feat(adapters): extend ToolAdapter with interactive mode, question detection, display parsing"
+```
+
+---
+
+### Task 6: Update State and Orchestration Models
+
+**Files:**
+- Modify: `src-tauri/src/router/orchestrator.rs:49-75`
+- Modify: `src-tauri/src/state.rs:75-82`
+
+**Step 1: Write failing tests**
+
+Add to `src-tauri/src/router/orchestrator.rs` test module:
+
+```rust
+#[test]
+fn test_orchestration_phase_has_waiting_for_input() {
+    let phase = OrchestrationPhase::WaitingForInput;
+    let json = serde_json::to_string(&phase).unwrap();
+    assert!(json.contains("WaitingForInput"));
+}
+
+#[test]
+fn test_orchestration_plan_has_master_process_id() {
+    let plan = Orchestrator::create_plan("test-task", "test prompt", "claude", vec![]);
+    assert!(plan.master_process_id.is_none());
+}
+
+#[test]
+fn test_pending_question_struct() {
+    let entry = PendingQuestion {
+        question: crate::adapters::Question {
+            source_agent: "codex".to_string(),
+            content: "Which DB?".to_string(),
+            question_type: crate::adapters::QuestionType::Clarification,
+        },
+        worker_task_id: "task-123".to_string(),
+    };
+    assert_eq!(entry.worker_task_id, "task-123");
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test orchestrator -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL
+
+**Step 3: Add `WaitingForInput` to `OrchestrationPhase` (line 49)**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub enum OrchestrationPhase {
+    Decomposing,
+    Executing,
+    WaitingForInput,
+    Reviewing,
+    Completed,
+    Failed,
+}
+```
+
+**Step 4: Add `master_process_id` to `OrchestrationPlan` (line 28)**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct OrchestrationPlan {
+    pub task_id: String,
+    pub original_prompt: String,
+    pub sub_tasks: Vec<SubTask>,
+    pub master_agent: String,
+    pub phase: OrchestrationPhase,
+    pub decomposition: Option<DecompositionResult>,
+    pub worker_results: Vec<WorkerResult>,
+    pub master_process_id: Option<String>,
+}
+```
+
+**Step 5: Add `PendingQuestion` struct (after `WorkerResult`)**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingQuestion {
+    pub question: crate::adapters::Question,
+    pub worker_task_id: String,
+}
+```
+
+**Step 6: Update `Orchestrator::create_plan()` to initialize new field**
+
+Add `master_process_id: None,` to the struct initialization.
+
+**Step 7: Add question queue to `AppStateInner` (state.rs line 75)**
+
+```rust
+pub struct AppStateInner {
+    pub tasks: HashMap<TaskId, TaskInfo>,
+    pub processes: HashMap<TaskId, ProcessEntry>,
+    pub orchestration_plans: HashMap<TaskId, OrchestrationPlan>,
+    pub cached_prompt_context: Option<CachedPromptContext>,
+    pub question_queue: Vec<crate::router::orchestrator::PendingQuestion>,
+}
+```
+
+Initialize `question_queue: Vec::new()` in any constructors/Default impls.
+
+**Step 8: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test orchestrator state -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
+
+**Step 9: Commit**
+
+```bash
+git add src-tauri/src/router/orchestrator.rs src-tauri/src/state.rs
+git commit -m "feat(state): add WaitingForInput phase, master_process_id, question queue"
+```
+
+---
+
+### Task 7: Update Messenger Models
+
+**Files:**
+- Modify: `src-tauri/src/messenger/models.rs:11-20`
+
+**Step 1: Write failing test**
+
+Add test module to `src-tauri/src/messenger/models.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_message_types_serialize() {
+        let types = vec![
+            MessageType::QuestionForUser,
+            MessageType::UserAnswer,
+            MessageType::ContextBackup,
+            MessageType::ContextRestore,
+        ];
+        for t in types {
+            let json = serde_json::to_string(&t).unwrap();
+            assert!(!json.is_empty());
+        }
+    }
+}
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `cd src-tauri && cargo test messenger -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL
+
+**Step 3: Add new variants to `MessageType` enum (line 11)**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub enum MessageType {
     OrchestrationStarted,
     TaskAssigned,
@@ -43,1330 +645,1036 @@ pub enum MessageType {
     MasterDecision,
     DecompositionResult,
     ReviewResult,
-}
-
-#[derive(Debug, Clone, Serialize, Type)]
-pub struct MessengerMessage {
-    pub id: String,
-    pub timestamp: i64, // millis since epoch (for specta compat)
-    pub source: MessageSource,
-    pub content: String,
-    pub message_type: MessageType,
-    pub plan_id: String, // which orchestration plan this belongs to
-}
-
-impl MessengerMessage {
-    pub fn system(plan_id: &str, content: String, message_type: MessageType) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            timestamp: Utc::now().timestamp_millis(),
-            source: MessageSource::System,
-            content,
-            message_type,
-            plan_id: plan_id.to_string(),
-        }
-    }
-
-    pub fn agent(plan_id: &str, agent: &str, content: String, message_type: MessageType) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            timestamp: Utc::now().timestamp_millis(),
-            source: MessageSource::Agent(agent.to_string()),
-            content,
-            message_type,
-            plan_id: plan_id.to_string(),
-        }
-    }
+    QuestionForUser,
+    UserAnswer,
+    ContextBackup,
+    ContextRestore,
 }
 ```
 
-**Step 2: Create messenger module file**
+**Step 4: Run test to verify it passes**
 
-Create `src-tauri/src/messenger/mod.rs`:
-
-```rust
-pub mod models;
-pub use models::*;
-```
-
-**Step 3: Register module in lib.rs**
-
-Add `mod messenger;` after `mod ipc;` in `src-tauri/src/lib.rs:4`.
-
-**Step 4: Run tests to verify compilation**
-
-Run: `cd src-tauri && cargo check`
-Expected: Compiles without errors
+Run: `cd src-tauri && cargo test messenger -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/messenger/
-git commit -m "feat: add messenger data model for orchestration events"
+git commit -m "feat(messenger): add QuestionForUser, UserAnswer, ContextBackup, ContextRestore message types"
 ```
 
 ---
 
-### Task 2: Extend OrchestrationPlan with Phases and Decomposition (Rust)
-
-**Files:**
-- Modify: `src-tauri/src/router/orchestrator.rs`
-- Modify: `src-tauri/src/state.rs:71-76`
-
-**Step 1: Add new types to orchestrator.rs**
-
-Add before the `Orchestrator` struct (after line 43 in `src-tauri/src/router/orchestrator.rs`):
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
-pub enum OrchestrationPhase {
-    Decomposing,
-    Executing,
-    Reviewing,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DecompositionResult {
-    pub tasks: Vec<SubTaskDef>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct SubTaskDef {
-    pub agent: String,
-    pub prompt: String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct WorkerResult {
-    pub task_id: String,
-    pub agent: String,
-    pub exit_code: i32,
-    pub output_summary: String, // last N lines of output
-}
-```
-
-**Step 2: Add phase field to OrchestrationPlan**
-
-Modify the `OrchestrationPlan` struct to add `phase`, `decomposition`, and `worker_results`:
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct OrchestrationPlan {
-    pub task_id: String,
-    pub original_prompt: String,
-    pub sub_tasks: Vec<SubTask>,
-    pub master_agent: String,
-    pub phase: OrchestrationPhase,
-    pub decomposition: Option<DecompositionResult>,
-    pub worker_results: Vec<WorkerResult>,
-}
-```
-
-**Step 3: Update create_plan to set initial phase**
-
-In `Orchestrator::create_plan`, update the return value to include the new fields:
-
-```rust
-OrchestrationPlan {
-    task_id,
-    original_prompt: prompt.to_string(),
-    sub_tasks,
-    master_agent: config.master_agent.clone(),
-    phase: OrchestrationPhase::Decomposing,
-    decomposition: None,
-    worker_results: Vec::new(),
-}
-```
-
-**Step 4: Build the decomposition prompt**
-
-Add a new method `build_decompose_prompt` to `Orchestrator`:
-
-```rust
-/// Build a prompt that asks the master agent to decompose a task into sub-tasks
-/// and return strict JSON output.
-pub fn build_decompose_prompt(prompt: &str, available_agents: &[AgentConfig]) -> String {
-    let agent_list: Vec<String> = available_agents
-        .iter()
-        .map(|a| format!("- \"{}\"", a.tool_name))
-        .collect();
-
-    format!(
-        "You are a task orchestrator. Analyze the following task and decompose it into sub-tasks \
-         for the available agents. Return ONLY a JSON object with no other text.\n\n\
-         Available agents:\n{}\n\n\
-         Task: {}\n\n\
-         Return format (strict JSON, no markdown fences):\n\
-         {{\"tasks\": [{{\"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt for this agent>\", \"description\": \"<short description>\"}}]}}\n\n\
-         Rules:\n\
-         - Assign each sub-task to the most appropriate agent\n\
-         - Each agent can receive multiple tasks\n\
-         - Prompts should be self-contained and detailed\n\
-         - You may assign tasks to yourself",
-        agent_list.join("\n"),
-        prompt
-    )
-}
-
-/// Build a prompt for the master agent to review worker results.
-pub fn build_review_prompt(
-    original_prompt: &str,
-    worker_results: &[WorkerResult],
-) -> String {
-    let result_sections: Vec<String> = worker_results
-        .iter()
-        .map(|r| {
-            format!(
-                "### {} (exit code: {})\n{}",
-                r.agent, r.exit_code, r.output_summary
-            )
-        })
-        .collect();
-
-    format!(
-        "You are reviewing the results of a multi-agent task.\n\n\
-         Original task: {}\n\n\
-         Worker results:\n{}\n\n\
-         Please:\n\
-         1. Summarize what each worker accomplished\n\
-         2. Identify any conflicts or issues between outputs\n\
-         3. Provide a final integration summary\n\
-         4. Note any tasks that failed and suggest remediation",
-        original_prompt,
-        result_sections.join("\n\n")
-    )
-}
-```
-
-**Step 5: Fix existing tests**
-
-Update tests that construct `OrchestrationPlan` to include the new fields. Example fix for `create_plan_generates_subtasks`:
-
-The `create_plan` now returns with `phase: OrchestrationPhase::Decomposing`, so add assertions:
-
-```rust
-assert_eq!(plan.phase, OrchestrationPhase::Decomposing);
-assert!(plan.decomposition.is_none());
-assert!(plan.worker_results.is_empty());
-```
-
-**Step 6: Add new tests**
-
-```rust
-#[test]
-fn decompose_prompt_includes_agents_and_task() {
-    let agents = vec![
-        AgentConfig { tool_name: "claude".to_string(), sub_agent_count: 1, is_master: true },
-        AgentConfig { tool_name: "gemini".to_string(), sub_agent_count: 1, is_master: false },
-    ];
-    let prompt = Orchestrator::build_decompose_prompt("refactor auth", &agents);
-    assert!(prompt.contains("gemini"));
-    assert!(prompt.contains("claude"));
-    assert!(prompt.contains("refactor auth"));
-    assert!(prompt.contains("JSON"));
-}
-
-#[test]
-fn review_prompt_includes_worker_results() {
-    let results = vec![WorkerResult {
-        task_id: "t1".to_string(),
-        agent: "gemini".to_string(),
-        exit_code: 0,
-        output_summary: "Analysis complete".to_string(),
-    }];
-    let prompt = Orchestrator::build_review_prompt("fix bugs", &results);
-    assert!(prompt.contains("fix bugs"));
-    assert!(prompt.contains("gemini"));
-    assert!(prompt.contains("Analysis complete"));
-}
-```
-
-**Step 7: Run tests**
-
-Run: `cd src-tauri && cargo test`
-Expected: All tests pass
-
-**Step 8: Commit**
-
-```bash
-git add src-tauri/src/router/orchestrator.rs src-tauri/src/state.rs
-git commit -m "feat: extend OrchestrationPlan with phases, decomposition, and review prompts"
-```
-
----
-
-### Task 3: Add stdin Writing Support (Rust)
+### Task 8: Add Interactive Spawn to Process Manager
 
 **Files:**
 - Modify: `src-tauri/src/process/manager.rs`
-- Modify: `src-tauri/src/state.rs:26-32`
-- Create: `src-tauri/src/commands/stdin.rs`
-- Modify: `src-tauri/src/commands/mod.rs`
-- Modify: `src-tauri/src/lib.rs`
 
-**Step 1: Store stdin handle in ProcessEntry**
-
-Modify `src-tauri/src/state.rs` — add a stdin sender to ProcessEntry:
+**Step 1: Write failing test**
 
 ```rust
-use tokio::sync::mpsc;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Debug)]
-pub struct ProcessEntry {
-    pub pgid: i32,
-    pub status: ProcessStatus,
-    pub tool_name: String,
-    pub task_description: String,
-    pub started_at: i64,
-    pub stdin_tx: Option<mpsc::UnboundedSender<String>>,
+    #[test]
+    fn test_spawn_interactive_builds_correct_args() {
+        let adapter = crate::adapters::claude::ClaudeAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "test-key");
+        assert!(!cmd.args.iter().any(|a| a == "-p"));
+        assert!(cmd.args.contains(&"--output-format".to_string()));
+    }
 }
 ```
 
-**Step 2: Update spawn_with_env to keep stdin open**
+**Step 2: Run test to verify it fails**
 
-In `src-tauri/src/process/manager.rs`, replace the stdin auto-answer block (lines 67-73) with a channel-based approach:
+Run: `cd src-tauri && cargo test spawn_interactive -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL
+
+**Step 3: Add `spawn_interactive()` after `spawn_with_env()` (after line 201)**
 
 ```rust
-let stdin_tx = if let Some(mut stdin) = child.stdin.take() {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-    tauri::async_runtime::spawn(async move {
-        use tokio::io::AsyncWriteExt;
-        // Auto-answer initial CLI prompts
-        let _ = stdin.write_all(b"1\ny\n").await;
-
-        // Then listen for user input
-        while let Some(text) = rx.recv().await {
-            if stdin.write_all(text.as_bytes()).await.is_err() {
-                break;
-            }
-            if stdin.write_all(b"\n").await.is_err() {
-                break;
-            }
-        }
-    });
-
-    Some(tx)
-} else {
-    None
-};
+/// Spawn an agent in interactive mode for multi-turn conversation.
+/// Returns task_id. Use ProcessEntry.stdin_tx to send subsequent prompts.
+pub async fn spawn_interactive(
+    tool_command: ToolCommand,
+    task_description: &str,
+    tool_name: &str,
+    channel: Channel<OutputEvent>,
+    state: &AppState,
+    app_handle: &AppHandle,
+) -> Result<String, String> {
+    spawn_with_env(
+        &tool_command.command,
+        &tool_command.args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        &tool_command.cwd,
+        task_description,
+        tool_name,
+        &tool_command.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
+        None,
+        channel,
+        state,
+        app_handle,
+    ).await
+}
 ```
 
-Then include `stdin_tx` in the ProcessEntry registration (around line 81):
+**Step 4: Add `send_to_process()` helper**
 
 ```rust
-inner.processes.insert(
-    task_id.clone(),
-    ProcessEntry {
-        pgid: pid,
-        status: ProcessStatus::Running,
-        tool_name: "test".to_string(),
-        task_description: "".to_string(),
-        started_at: chrono::Utc::now().timestamp_millis(),
-        stdin_tx,
-    },
-);
-```
-
-**Step 3: Create stdin command**
-
-Create `src-tauri/src/commands/stdin.rs`:
-
-```rust
-use crate::state::AppState;
-
-/// Send text to a running process's stdin.
-#[tauri::command]
-#[specta::specta]
-pub async fn send_to_process(
-    task_id: String,
-    text: String,
-    state: tauri::State<'_, AppState>,
+/// Send a message to a running process's stdin channel.
+pub fn send_to_process(
+    state: &AppState,
+    task_id: &str,
+    message: &str,
 ) -> Result<(), String> {
-    let inner = state.lock().map_err(|e| e.to_string())?;
-    let entry = inner
-        .processes
-        .get(&task_id)
-        .ok_or_else(|| format!("Process not found: {}", task_id))?;
-
-    let tx = entry
-        .stdin_tx
-        .as_ref()
-        .ok_or("Process has no stdin channel")?;
-
-    tx.send(text).map_err(|e| format!("Failed to send to stdin: {}", e))
+    let state_guard = state.lock().map_err(|e| e.to_string())?;
+    let entry = state_guard.processes.get(task_id)
+        .ok_or_else(|| format!("Process {} not found", task_id))?;
+    let stdin_tx = entry.stdin_tx.as_ref()
+        .ok_or_else(|| format!("Process {} has no stdin channel", task_id))?;
+    stdin_tx.send(format!("{}\n", message))
+        .map_err(|e| format!("Failed to send to stdin: {}", e))
 }
 ```
 
-**Step 4: Register in commands/mod.rs**
+**Step 5: Run tests to verify they pass**
 
-Add `pub mod stdin;` and `pub use stdin::send_to_process;` to `src-tauri/src/commands/mod.rs`.
+Run: `cd src-tauri && cargo test process -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
 
-**Step 5: Register in lib.rs**
-
-Add `send_to_process` to the imports and `collect_commands!` macro in `src-tauri/src/lib.rs`.
-
-**Step 6: Run compilation check**
-
-Run: `cd src-tauri && cargo check`
-Expected: Compiles
-
-**Step 7: Commit**
+**Step 6: Commit**
 
 ```bash
-git add src-tauri/src/commands/stdin.rs src-tauri/src/commands/mod.rs src-tauri/src/process/manager.rs src-tauri/src/state.rs src-tauri/src/lib.rs
-git commit -m "feat: add send_to_process command for stdin routing"
+git add src-tauri/src/process/manager.rs
+git commit -m "feat(process): add spawn_interactive and send_to_process for multi-turn agents"
 ```
 
 ---
 
-### Task 4: Implement Two-Phase Orchestration Backend (Rust)
+### Task 9: Add New Prompt Builders to Orchestrator
 
 **Files:**
-- Modify: `src-tauri/src/commands/orchestrator.rs`
+- Modify: `src-tauri/src/router/orchestrator.rs` (after line 175)
 
-This is the core task. Replace the current `dispatch_orchestrated_task` with the three-phase flow.
+**Step 1: Write failing tests**
 
-**Step 1: Rewrite dispatch_orchestrated_task**
-
-Replace the entire `dispatch_orchestrated_task` function in `src-tauri/src/commands/orchestrator.rs`:
+Add to test module:
 
 ```rust
-use std::collections::HashMap;
-use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter};
+#[test]
+fn test_build_question_relay_prompt() {
+    let prompt = Orchestrator::build_question_relay_prompt("codex", "Which DB?");
+    assert!(prompt.contains("codex"));
+    assert!(prompt.contains("Which DB?"));
+    assert!(prompt.contains("ask_user"));
+}
 
-use crate::context::store::ContextStore;
-use crate::ipc::events::OutputEvent;
-use crate::messenger::models::{MessengerMessage, MessageType};
-use crate::router::orchestrator::{
-    AgentContextInfo, DecompositionResult, Orchestrator, OrchestratorConfig,
-    OrchestrationPlan, OrchestrationPhase, SubTaskDef, WorkerResult,
-};
-use crate::state::{AppState, ProcessStatus};
+#[test]
+fn test_build_context_backup_prompt() {
+    let prompt = Orchestrator::build_context_backup_prompt();
+    assert!(prompt.contains("context_backup"));
+}
 
-/// Dispatch an orchestrated multi-agent task using two-phase orchestration.
-///
-/// Phase 1 (Decompose): Master agent analyzes task, returns JSON sub-task assignments.
-/// Phase 2 (Execute): Each sub-task dispatched to assigned agent in parallel.
-/// Phase 3 (Review): Master agent reviews all worker results and provides summary.
-#[tauri::command]
-#[specta::specta]
-pub async fn dispatch_orchestrated_task(
-    prompt: String,
-    project_dir: String,
-    config: OrchestratorConfig,
-    on_event: Channel<OutputEvent>,
-    app_handle: AppHandle,
-    state: tauri::State<'_, AppState>,
-    context_store: tauri::State<'_, ContextStore>,
-) -> Result<OrchestrationPlan, String> {
-    let mut plan = Orchestrator::create_plan(&prompt, &config);
+#[test]
+fn test_build_context_restore_prompt() {
+    let prompt = Orchestrator::build_context_restore_prompt("prev context", "new task");
+    assert!(prompt.contains("prev context"));
+    assert!(prompt.contains("new task"));
+}
+```
 
-    // Store plan
-    {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
-        inner.orchestration_plans.insert(plan.task_id.clone(), plan.clone());
+**Step 2: Run tests to verify they fail**
+
+Run: `cd src-tauri && cargo test orchestrator -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL
+
+**Step 3: Add new prompt builders to `Orchestrator` impl**
+
+```rust
+pub fn build_question_relay_prompt(worker_agent: &str, question: &str) -> String {
+    format!(
+        r#"Worker agent "{}" is asking the following question:
+
+{}
+
+If you can answer this confidently, respond with just your answer.
+If you need the user's input, respond with exactly this JSON format:
+{{"ask_user": "<your question for the user>"}}"#,
+        worker_agent, question
+    )
+}
+
+pub fn build_context_backup_prompt() -> String {
+    r#"Back up all context from this session. Write a comprehensive summary including:
+- Original task and sub-tasks assigned
+- What each worker agent accomplished and their results
+- Which files were changed
+- Open questions or remaining work
+- Key decisions and their rationale
+
+Respond with exactly this JSON format:
+{"context_backup": "<your markdown summary>"}"#.to_string()
+}
+
+pub fn build_context_restore_prompt(context_md: &str, new_prompt: &str) -> String {
+    format!(
+        r#"Previous session context is below. Read and remember it, then proceed to the new task.
+
+{}
+
+---
+New task: {}"#,
+        context_md, new_prompt
+    )
+}
+```
+
+**Step 4: Run tests to verify they pass**
+
+Run: `cd src-tauri && cargo test orchestrator -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src-tauri/src/router/orchestrator.rs
+git commit -m "feat(orchestrator): add question relay, context backup/restore prompt builders"
+```
+
+---
+
+### Task 10: Rewrite `dispatch_orchestrated_task` — Phase 1 (Decompose)
+
+**Files:**
+- Modify: `src-tauri/src/commands/orchestrator.rs:20-108`
+
+**Step 1: Replace Phase 1 implementation**
+
+The current Phase 1 uses `run_agent_and_collect_output()` (one-shot). Replace with:
+
+1. `spawn_interactive()` — master stays alive
+2. `send_to_process()` — send decompose prompt
+3. `wait_for_turn_complete()` — new helper that monitors output for `is_turn_complete()`
+4. `adapter.extract_result()` — adapter-specific JSON extraction
+
+Key code structure:
+
+```rust
+// Phase 1: Spawn interactive master
+update_plan_phase(&state, &task_id, OrchestrationPhase::Decomposing)?;
+
+let adapter = get_adapter(&config.master_agent)?;
+let api_key = get_api_key(&config.master_agent, &state)?;
+let cmd = adapter.build_interactive_command(&project_dir, &api_key);
+
+let master_task_id = process::manager::spawn_interactive(
+    cmd, "orchestration master", &config.master_agent,
+    channel.clone(), &state, &app_handle,
+).await?;
+
+// Store master process id in plan
+{
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(p) = s.orchestration_plans.get_mut(&task_id) {
+        p.master_process_id = Some(master_task_id.clone());
     }
+}
 
-    // Emit messenger: orchestration started
+// Check for context.md and build first prompt
+let context_path = std::path::Path::new(&project_dir).join("context.md");
+let decompose_prompt = Orchestrator::build_decompose_prompt(&prompt, &config);
+let first_prompt = if context_path.exists() {
+    let context_md = std::fs::read_to_string(&context_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&context_path);
     emit_messenger(&app_handle, MessengerMessage::system(
-        &plan.task_id,
-        format!("Orchestration started: \"{}\"", truncate(&prompt, 80)),
-        MessageType::OrchestrationStarted,
+        "Restoring context from previous session",
+        MessageType::ContextRestore, &task_id,
+    ));
+    Orchestrator::build_context_restore_prompt(&context_md, &decompose_prompt)
+} else {
+    decompose_prompt
+};
+
+// Send prompt and wait for result
+process::manager::send_to_process(&state, &master_task_id, &first_prompt)?;
+let master_output = wait_for_turn_complete(&state, &master_task_id, adapter.as_ref()).await?;
+
+// Parse decomposition
+let decomposition = adapter.extract_result(&master_output)
+    .and_then(|json| serde_json::from_str::<DecompositionResult>(&json).ok())
+    .ok_or_else(|| "Failed to parse decomposition JSON from master agent".to_string())?;
+```
+
+**Step 2: Add `wait_for_turn_complete()` helper**
+
+```rust
+async fn wait_for_turn_complete(
+    state: &AppState,
+    task_id: &str,
+    adapter: &dyn ToolAdapter,
+) -> Result<Vec<String>, String> {
+    let mut lines_seen = 0;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let (current_lines, status) = {
+            let s = state.lock().map_err(|e| e.to_string())?;
+            let entry = s.processes.get(task_id)
+                .ok_or_else(|| format!("Process {} not found", task_id))?;
+            (entry.output_lines.clone(), entry.status.clone())
+        };
+
+        for line in current_lines.iter().skip(lines_seen) {
+            if adapter.is_turn_complete(line) {
+                return Ok(current_lines);
+            }
+        }
+        lines_seen = current_lines.len();
+
+        match status {
+            ProcessStatus::Failed(e) => return Err(format!("Process died: {}", e)),
+            ProcessStatus::Completed(_) => return Ok(current_lines),
+            _ => {}
+        }
+    }
+}
+```
+
+**Step 3: Add helper functions `get_adapter()` and `get_api_key()`**
+
+```rust
+fn get_adapter(agent_name: &str) -> Result<Box<dyn ToolAdapter>, String> {
+    match agent_name {
+        "claude" => Ok(Box::new(crate::adapters::claude::ClaudeAdapter)),
+        "gemini" => Ok(Box::new(crate::adapters::gemini::GeminiAdapter)),
+        "codex" => Ok(Box::new(crate::adapters::codex::CodexAdapter)),
+        _ => Err(format!("Unknown agent: {}", agent_name)),
+    }
+}
+
+fn get_api_key(agent_name: &str, state: &AppState) -> Result<String, String> {
+    // Use credentials module to get API key for the agent
+    let key_name = match agent_name {
+        "claude" => "ANTHROPIC_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "codex" => "OPENAI_API_KEY",
+        _ => return Err(format!("Unknown agent: {}", agent_name)),
+    };
+    crate::credentials::get_credential(key_name)
+        .map_err(|e| format!("Failed to get API key for {}: {}", agent_name, e))
+}
+```
+
+**Step 4: Run tests**
+
+Run: `cd src-tauri && cargo test -- --test-threads=1 2>&1 | tail -30`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src-tauri/src/commands/orchestrator.rs
+git commit -m "feat(orchestrator): rewrite Phase 1 with interactive master spawn"
+```
+
+---
+
+### Task 11: Rewrite `dispatch_orchestrated_task` — Phase 2 (Execute with Question Routing)
+
+**Files:**
+- Modify: `src-tauri/src/commands/orchestrator.rs:121-204`
+
+**Step 1: Replace Phase 2 implementation**
+
+Key changes:
+- Workers spawned as before (single-shot via `dispatch_task`)
+- Monitor worker streams for questions via `adapter.detect_question()`
+- Route questions to master via `send_to_process()`
+- Parse master response for `{"ask_user": "..."}` or direct answer
+- If ask_user: emit `QuestionForUser` message, set phase to `WaitingForInput`, pause until `answer_user_question` command called
+- If direct answer: send to worker's stdin
+
+```rust
+// Phase 2: Execute workers with question monitoring
+update_plan_phase(&state, &task_id, OrchestrationPhase::Executing)?;
+
+let mut worker_tasks: Vec<(String, String)> = Vec::new(); // (task_id, agent)
+
+for sub_task in &decomposition.tasks {
+    let sub_task_id = uuid::Uuid::new_v4().to_string();
+    emit_messenger(&app_handle, MessengerMessage::system(
+        &format!("[{}] {}", sub_task.agent, sub_task.description),
+        MessageType::TaskAssigned, &task_id,
     ));
 
-    // === Phase 1: Decompose ===
-    on_event.send(OutputEvent::Stdout(
-        "[orchestrator] Phase 1: Decomposing task via master agent...".to_string()
-    )).ok();
+    let worker_id = dispatch_task(
+        &sub_task.agent, &sub_task.prompt, &project_dir,
+        channel.clone(), &state, &app_handle,
+    ).await?;
+    worker_tasks.push((worker_id, sub_task.agent.clone()));
+}
 
-    let decompose_prompt = Orchestrator::build_decompose_prompt(&prompt, &config.agents);
+// Wait for all workers, monitoring for questions
+let mut worker_results: Vec<WorkerResult> = Vec::new();
+for (worker_id, agent) in &worker_tasks {
+    let worker_adapter = get_adapter(agent)?;
 
-    // Dispatch master for decomposition — collect its full output
-    let decompose_result = run_agent_and_collect_output(
-        &config.master_agent,
-        &decompose_prompt,
-        &project_dir,
-        &on_event,
-        state.clone(),
-        context_store.clone(),
-    ).await;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    let decomposition = match decompose_result {
-        Ok(output) => {
-            match parse_decomposition_json(&output) {
-                Some(result) => {
-                    emit_messenger(&app_handle, MessengerMessage::agent(
-                        &plan.task_id,
-                        &config.master_agent,
-                        format!("Decomposed into {} sub-tasks:\n{}",
-                            result.tasks.len(),
-                            result.tasks.iter()
-                                .map(|t| format!("  - {} → {}", t.agent, t.description))
-                                .collect::<Vec<_>>().join("\n")
-                        ),
-                        MessageType::DecompositionResult,
-                    ));
-                    result
-                }
-                None => {
-                    // Fallback: send entire prompt to master
-                    on_event.send(OutputEvent::Stderr(
-                        "[orchestrator] JSON parse failed, falling back to single-agent".to_string()
-                    )).ok();
-                    emit_messenger(&app_handle, MessengerMessage::system(
-                        &plan.task_id,
-                        "Decomposition failed — falling back to single-agent dispatch".to_string(),
-                        MessageType::TaskFailed,
-                    ));
-                    DecompositionResult {
-                        tasks: vec![SubTaskDef {
-                            agent: config.master_agent.clone(),
-                            prompt: prompt.clone(),
-                            description: "Fallback: full task".to_string(),
-                        }],
+        let (lines, status) = {
+            let s = state.lock().map_err(|e| e.to_string())?;
+            let entry = s.processes.get(worker_id)
+                .ok_or_else(|| format!("Worker {} not found", worker_id))?;
+            (entry.output_lines.clone(), entry.status.clone())
+        };
+
+        // Check for questions in new lines
+        for line in &lines {
+            if let Some(question) = worker_adapter.detect_question(line) {
+                // Route to master
+                let q_prompt = Orchestrator::build_question_relay_prompt(
+                    &question.source_agent, &question.content,
+                );
+                process::manager::send_to_process(&state, &master_task_id, &q_prompt)?;
+
+                let master_response = wait_for_turn_complete(
+                    &state, &master_task_id, adapter.as_ref(),
+                ).await?;
+
+                if let Some(result_json) = adapter.extract_result(&master_response) {
+                    if let Ok(ask) = serde_json::from_str::<AskUserResponse>(&result_json) {
+                        // Master needs user input
+                        emit_messenger(&app_handle, MessengerMessage::system(
+                            &ask.ask_user,
+                            MessageType::QuestionForUser, &task_id,
+                        ));
+                        update_plan_phase(&state, &task_id, OrchestrationPhase::WaitingForInput)?;
+                        // Wait for answer_user_question command to resume
+                        // The answer will be sent to master, master will respond,
+                        // and that response goes to worker
+                    } else {
+                        // Master answered directly, send to worker
+                        process::manager::send_to_process(&state, worker_id, &result_json)?;
                     }
                 }
             }
         }
-        Err(e) => {
-            update_plan_phase(&state, &plan.task_id, OrchestrationPhase::Failed)?;
-            plan.phase = OrchestrationPhase::Failed;
-            emit_messenger(&app_handle, MessengerMessage::system(
-                &plan.task_id,
-                format!("Master agent failed during decomposition: {}", e),
-                MessageType::TaskFailed,
-            ));
-            return Ok(plan);
-        }
-    };
 
-    // Store decomposition
-    plan.decomposition = Some(decomposition.clone());
-    plan.phase = OrchestrationPhase::Executing;
-    {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
-        if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
-            p.decomposition = plan.decomposition.clone();
-            p.phase = OrchestrationPhase::Executing;
-        }
-    }
-
-    // === Phase 2: Execute ===
-    on_event.send(OutputEvent::Stdout(format!(
-        "[orchestrator] Phase 2: Executing {} sub-tasks...",
-        decomposition.tasks.len()
-    ))).ok();
-
-    // Build sub-tasks from decomposition and dispatch
-    plan.sub_tasks.clear();
-    let mut task_channels: Vec<(String, String, String)> = Vec::new(); // (sub_task_id, agent, description)
-
-    for sub_def in &decomposition.tasks {
-        let sub_task_id = uuid::Uuid::new_v4().to_string();
-
-        plan.sub_tasks.push(crate::router::orchestrator::SubTask {
-            id: sub_task_id.clone(),
-            prompt: sub_def.prompt.clone(),
-            assigned_agent: sub_def.agent.clone(),
-            status: "pending".to_string(),
-            parent_task_id: plan.task_id.clone(),
-        });
-
-        emit_messenger(&app_handle, MessengerMessage::system(
-            &plan.task_id,
-            format!("Assigned to {}: {}", sub_def.agent, sub_def.description),
-            MessageType::TaskAssigned,
-        ));
-
-        task_channels.push((sub_task_id, sub_def.agent.clone(), sub_def.prompt.clone()));
-    }
-
-    // Dispatch all sub-tasks
-    let mut worker_task_ids: Vec<(String, String)> = Vec::new(); // (task_id, agent)
-    for (sub_id, agent, sub_prompt) in &task_channels {
-        let dispatch_result = super::router::dispatch_task(
-            sub_prompt.clone(),
-            project_dir.clone(),
-            agent.clone(),
-            Some(sub_id.clone()),
-            on_event.clone(),
-            state.clone(),
-            context_store.clone(),
-        ).await;
-
-        match dispatch_result {
-            Ok(task_id) => {
-                worker_task_ids.push((task_id, agent.clone()));
-            }
-            Err(e) => {
+        // Check if worker is done
+        match &status {
+            ProcessStatus::Completed(code) => {
+                let summary = get_process_output_summary(&state, worker_id);
+                worker_results.push(WorkerResult {
+                    task_id: worker_id.clone(),
+                    agent: agent.clone(),
+                    exit_code: *code,
+                    output_summary: summary,
+                });
                 emit_messenger(&app_handle, MessengerMessage::system(
-                    &plan.task_id,
-                    format!("Failed to dispatch to {}: {}", agent, e),
-                    MessageType::TaskFailed,
+                    &format!("{} completed (exit {})", agent, code),
+                    MessageType::TaskCompleted, &task_id,
                 ));
+                break;
             }
-        }
-    }
-
-    // Wait for all workers to complete
-    for (task_id, agent) in &worker_task_ids {
-        let result = wait_for_process_completion(task_id, state.clone()).await;
-        let output_summary = get_process_output_summary(task_id);
-
-        let worker_result = WorkerResult {
-            task_id: task_id.clone(),
-            agent: agent.clone(),
-            exit_code: result,
-            output_summary: output_summary.clone(),
-        };
-        plan.worker_results.push(worker_result);
-
-        let msg_type = if result == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
-        emit_messenger(&app_handle, MessengerMessage::agent(
-            &plan.task_id,
-            agent,
-            format!("{} (exit {}): {}",
-                if result == 0 { "Completed" } else { "Failed" },
-                result,
-                truncate(&output_summary, 200),
-            ),
-            msg_type,
-        ));
-    }
-
-    // === Phase 3: Review ===
-    on_event.send(OutputEvent::Stdout(
-        "[orchestrator] Phase 3: Master reviewing results...".to_string()
-    )).ok();
-    plan.phase = OrchestrationPhase::Reviewing;
-    update_plan_phase(&state, &plan.task_id, OrchestrationPhase::Reviewing)?;
-
-    let review_prompt = Orchestrator::build_review_prompt(&prompt, &plan.worker_results);
-    let review_result = run_agent_and_collect_output(
-        &config.master_agent,
-        &review_prompt,
-        &project_dir,
-        &on_event,
-        state.clone(),
-        context_store.clone(),
-    ).await;
-
-    match review_result {
-        Ok(output) => {
-            emit_messenger(&app_handle, MessengerMessage::agent(
-                &plan.task_id,
-                &config.master_agent,
-                format!("Review complete:\n{}", truncate(&output, 500)),
-                MessageType::ReviewResult,
-            ));
-        }
-        Err(e) => {
-            emit_messenger(&app_handle, MessengerMessage::system(
-                &plan.task_id,
-                format!("Review failed: {}", e),
-                MessageType::TaskFailed,
-            ));
-        }
-    }
-
-    plan.phase = OrchestrationPhase::Completed;
-    update_plan_phase(&state, &plan.task_id, OrchestrationPhase::Completed)?;
-    emit_messenger(&app_handle, MessengerMessage::system(
-        &plan.task_id,
-        "Orchestration completed".to_string(),
-        MessageType::OrchestrationStarted, // reusing for "completed" lifecycle
-    ));
-
-    Ok(plan)
-}
-
-// ── Helper functions ──
-
-fn emit_messenger(app_handle: &AppHandle, message: MessengerMessage) {
-    let _ = app_handle.emit("messenger-event", &message);
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max])
-    } else {
-        s.to_string()
-    }
-}
-
-fn update_plan_phase(
-    state: &tauri::State<'_, AppState>,
-    plan_id: &str,
-    phase: OrchestrationPhase,
-) -> Result<(), String> {
-    let mut inner = state.lock().map_err(|e| e.to_string())?;
-    if let Some(plan) = inner.orchestration_plans.get_mut(plan_id) {
-        plan.phase = phase;
-    }
-    Ok(())
-}
-
-/// Parse the master agent's decomposition JSON output.
-/// Tries to extract a JSON object from the output (handles markdown fences, trailing text).
-fn parse_decomposition_json(output: &str) -> Option<DecompositionResult> {
-    // Try direct parse first
-    if let Ok(result) = serde_json::from_str::<DecompositionResult>(output.trim()) {
-        return Some(result);
-    }
-
-    // Try extracting JSON from markdown code fences
-    let json_str = if let Some(start) = output.find("```json") {
-        let after_fence = &output[start + 7..];
-        if let Some(end) = after_fence.find("```") {
-            &after_fence[..end]
-        } else {
-            after_fence
-        }
-    } else if let Some(start) = output.find('{') {
-        // Try from first { to last }
-        if let Some(end) = output.rfind('}') {
-            &output[start..=end]
-        } else {
-            return None;
-        }
-    } else {
-        return None;
-    };
-
-    serde_json::from_str::<DecompositionResult>(json_str.trim()).ok()
-}
-
-/// Run an agent CLI process and collect its full stdout output.
-async fn run_agent_and_collect_output(
-    agent: &str,
-    prompt: &str,
-    project_dir: &str,
-    on_event: &Channel<OutputEvent>,
-    state: tauri::State<'_, AppState>,
-    context_store: tauri::State<'_, ContextStore>,
-) -> Result<String, String> {
-    let task_id = super::router::dispatch_task(
-        prompt.to_string(),
-        project_dir.to_string(),
-        agent.to_string(),
-        None,
-        on_event.clone(),
-        state.clone(),
-        context_store,
-    ).await?;
-
-    // Wait for completion
-    let exit_code = wait_for_process_completion(&task_id, state).await;
-    let output = get_process_output_summary(&task_id);
-
-    if exit_code != 0 {
-        return Err(format!("Agent {} exited with code {}", agent, exit_code));
-    }
-
-    Ok(output)
-}
-
-/// Wait for a process to complete by polling its status.
-async fn wait_for_process_completion(
-    task_id: &str,
-    state: tauri::State<'_, AppState>,
-) -> i32 {
-    loop {
-        {
-            let inner = state.lock().unwrap();
-            if let Some(entry) = inner.processes.get(task_id) {
-                match &entry.status {
-                    ProcessStatus::Completed(code) => return *code,
-                    ProcessStatus::Failed(_) => return -1,
-                    _ => {}
-                }
-            } else {
-                return -1;
+            ProcessStatus::Failed(e) => {
+                worker_results.push(WorkerResult {
+                    task_id: worker_id.clone(),
+                    agent: agent.clone(),
+                    exit_code: -1,
+                    output_summary: e.clone(),
+                });
+                emit_messenger(&app_handle, MessengerMessage::system(
+                    &format!("{} failed: {}", agent, e),
+                    MessageType::TaskFailed, &task_id,
+                ));
+                break;
             }
+            _ => {} // still running, continue loop
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-}
-
-/// Get the last N lines of a process's output as a summary string.
-/// Reads from the output channel events stored in state.
-fn get_process_output_summary(task_id: &str) -> String {
-    // This will be connected to the output log in the frontend side
-    // For now, return a placeholder that the frontend can populate
-    format!("[Output summary for task {}]", task_id)
 }
 ```
 
-**Step 2: Update the function signature to accept AppHandle**
+**Step 2: Run tests**
 
-The new `dispatch_orchestrated_task` now takes `app_handle: AppHandle` for emitting events. Tauri auto-injects this.
+Run: `cd src-tauri && cargo test -- --test-threads=1 2>&1 | tail -30`
+Expected: PASS
 
-**Step 3: Run compilation check**
+**Step 3: Commit**
 
-Run: `cd src-tauri && cargo check`
-Expected: Compiles (may have warnings about unused imports — fix as needed)
+```bash
+git add src-tauri/src/commands/orchestrator.rs
+git commit -m "feat(orchestrator): rewrite Phase 2 with question routing to master"
+```
+
+---
+
+### Task 12: Rewrite `dispatch_orchestrated_task` — Phase 3 (Review) and Phase 4 (Continue)
+
+**Files:**
+- Modify: `src-tauri/src/commands/orchestrator.rs:206-250`
+
+**Step 1: Replace Phase 3 — send review to still-alive master**
+
+```rust
+// Phase 3: Review — master is still alive, send review prompt
+update_plan_phase(&state, &task_id, OrchestrationPhase::Reviewing)?;
+
+let review_prompt = Orchestrator::build_review_prompt(&prompt, &worker_results);
+process::manager::send_to_process(&state, &master_task_id, &review_prompt)?;
+
+let review_output = wait_for_turn_complete(&state, &master_task_id, adapter.as_ref()).await?;
+let review_summary = adapter.extract_result(&review_output)
+    .unwrap_or_else(|| review_output.join("\n"));
+
+emit_messenger(&app_handle, MessengerMessage::system(
+    &review_summary,
+    MessageType::ReviewResult, &task_id,
+));
+
+// Phase 4: Master stays alive for follow-up
+// Update plan but do NOT kill master
+{
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(p) = s.orchestration_plans.get_mut(&task_id) {
+        p.phase = OrchestrationPhase::Completed;
+        p.worker_results = worker_results;
+    }
+}
+```
+
+**Step 2: Run tests**
+
+Run: `cd src-tauri && cargo test -- --test-threads=1 2>&1 | tail -30`
+Expected: PASS
+
+**Step 3: Commit**
+
+```bash
+git add src-tauri/src/commands/orchestrator.rs
+git commit -m "feat(orchestrator): rewrite Phase 3 review via live master, master stays alive"
+```
+
+---
+
+### Task 13: Add New Commands — `clear_orchestration_context` and `answer_user_question`
+
+**Files:**
+- Modify: `src-tauri/src/commands/orchestrator.rs` (append new commands)
+
+**Step 1: Add `clear_orchestration_context` command**
+
+```rust
+#[tauri::command]
+#[specta::specta]
+pub async fn clear_orchestration_context(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+    plan_id: String,
+    project_dir: String,
+) -> Result<String, String> {
+    let master_task_id = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let plan = s.orchestration_plans.get(&plan_id)
+            .ok_or("Plan not found")?;
+        plan.master_process_id.clone()
+            .ok_or("No master process")?
+    };
+
+    let adapter = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let plan = s.orchestration_plans.get(&plan_id)
+            .ok_or("Plan not found")?;
+        get_adapter(&plan.master_agent)?
+    };
+
+    emit_messenger(&app_handle, MessengerMessage::system(
+        "Backing up context...", MessageType::ContextBackup, &plan_id,
+    ));
+
+    // Send backup prompt to master
+    let backup_prompt = Orchestrator::build_context_backup_prompt();
+    process::manager::send_to_process(&state, &master_task_id, &backup_prompt)?;
+
+    // Wait for response with 30s timeout
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(30),
+        wait_for_turn_complete(&state, &master_task_id, adapter.as_ref()),
+    ).await;
+
+    let context_content = match result {
+        Ok(Ok(lines)) => {
+            adapter.extract_result(&lines).and_then(|json| {
+                #[derive(Deserialize)]
+                struct ContextBackup { context_backup: String }
+                serde_json::from_str::<ContextBackup>(&json)
+                    .ok()
+                    .map(|cb| cb.context_backup)
+            }).unwrap_or_else(|| lines.join("\n"))
+        }
+        _ => {
+            // Timeout fallback
+            let s = state.lock().map_err(|e| e.to_string())?;
+            s.processes.get(&master_task_id)
+                .map(|e| e.output_lines.join("\n"))
+                .unwrap_or_default()
+        }
+    };
+
+    // Write context.md
+    let context_path = std::path::Path::new(&project_dir).join("context.md");
+    std::fs::write(&context_path, &context_content)
+        .map_err(|e| format!("Failed to write context.md: {}", e))?;
+
+    // Kill all processes
+    {
+        let task_ids: Vec<String> = {
+            let s = state.lock().map_err(|e| e.to_string())?;
+            s.processes.keys().cloned().collect()
+        };
+        for tid in task_ids {
+            let _ = process::manager::cancel(&tid, &state, &app_handle).await;
+        }
+    }
+
+    // Clear state
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        s.orchestration_plans.remove(&plan_id);
+        s.question_queue.clear();
+    }
+
+    emit_messenger(&app_handle, MessengerMessage::system(
+        "Context backed up and cleared", MessageType::ContextBackup, &plan_id,
+    ));
+
+    Ok(context_path.to_string_lossy().to_string())
+}
+```
+
+**Step 2: Add `answer_user_question` command**
+
+```rust
+#[tauri::command]
+#[specta::specta]
+pub async fn answer_user_question(
+    state: tauri::State<'_, AppState>,
+    app_handle: AppHandle,
+    plan_id: String,
+    answer: String,
+) -> Result<(), String> {
+    let master_task_id = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let plan = s.orchestration_plans.get(&plan_id)
+            .ok_or("Plan not found")?;
+        plan.master_process_id.clone()
+            .ok_or("No master process")?
+    };
+
+    process::manager::send_to_process(
+        &state, &master_task_id,
+        &format!("The user answered: {}", answer),
+    )?;
+
+    emit_messenger(&app_handle, MessengerMessage::system(
+        &format!("User answered: {}", truncate(&answer, 100)),
+        MessageType::UserAnswer, &plan_id,
+    ));
+
+    update_plan_phase(&state, &plan_id, OrchestrationPhase::Executing)?;
+    Ok(())
+}
+```
+
+**Step 3: Run tests**
+
+Run: `cd src-tauri && cargo test -- --test-threads=1 2>&1 | tail -30`
+Expected: PASS
 
 **Step 4: Commit**
 
 ```bash
 git add src-tauri/src/commands/orchestrator.rs
-git commit -m "feat: implement two-phase orchestration with decompose-execute-review flow"
+git commit -m "feat(orchestrator): add clear_orchestration_context and answer_user_question commands"
 ```
 
 ---
 
-### Task 5: Create Messenger Store (Frontend)
+### Task 14: Register New Commands and Regenerate Bindings
 
 **Files:**
-- Create: `src/stores/messengerStore.ts`
+- Modify: `src-tauri/src/lib.rs` (command registration)
+- Auto-generated: `src/bindings.ts`
 
-**Step 1: Create the store**
+**Step 1: Find command registration**
+
+Search for `invoke_handler` or `generate_handler` in `src-tauri/src/lib.rs`.
+
+**Step 2: Add new commands to the handler list**
+
+Add `clear_orchestration_context` and `answer_user_question` to the `tauri::generate_handler![]` macro.
+
+**Step 3: Build to regenerate bindings**
+
+Run: `cd src-tauri && cargo build 2>&1 | tail -20`
+
+**Step 4: Verify `src/bindings.ts` includes new exports**
+
+Check for:
+- `clearOrchestrationContext`
+- `answerUserQuestion`
+- `OrchestrationPhase` includes `"WaitingForInput"`
+- `MessageType` includes new variants
+- New types: `Question`, `DisplayLine`, etc.
+
+**Step 5: Commit**
+
+```bash
+git add src-tauri/src/lib.rs src/bindings.ts
+git commit -m "feat: register new orchestration commands and regenerate bindings"
+```
+
+---
+
+### Task 15: Remove Dead Code
+
+**Files:**
+- Modify: `src-tauri/src/commands/orchestrator.rs`
+
+**Step 1: Remove `parse_decomposition_json()` (lines ~323-349)**
+
+Replaced by `adapter.extract_result()`.
+
+**Step 2: Remove `run_agent_and_collect_output()` (lines ~352-379)**
+
+Replaced by `spawn_interactive()` + `send_to_process()` + `wait_for_turn_complete()`.
+
+**Step 3: Run tests to verify no remaining callers**
+
+Run: `cd src-tauri && cargo test -- --test-threads=1 2>&1 | tail -30`
+Expected: PASS
+
+**Step 4: Commit**
+
+```bash
+git add src-tauri/src/commands/orchestrator.rs
+git commit -m "refactor: remove deprecated parse_decomposition_json and run_agent_and_collect_output"
+```
+
+---
+
+### Task 16: Frontend — Update Stores
+
+**Files:**
+- Modify: `src/stores/messengerStore.ts`
+- Modify: `src/stores/taskStore.ts`
+
+**Step 1: Add PendingQuestion state to taskStore**
 
 ```typescript
-import { create } from 'zustand';
-import { listen } from '@tauri-apps/api/event';
-
-export interface MessengerMessage {
-  id: string;
-  timestamp: number;
-  source: { type: 'System' } | { type: 'Agent'; name: string };
+export interface PendingQuestion {
+  questionId: string;
+  sourceAgent: string;
   content: string;
-  messageType: string;
   planId: string;
 }
 
-interface MessengerState {
-  messages: MessengerMessage[];
-  addMessage: (msg: MessengerMessage) => void;
-  clearMessages: () => void;
-  getMessagesForPlan: (planId: string) => MessengerMessage[];
-}
+// Add to TaskState interface:
+pendingQuestion: PendingQuestion | null;
+setPendingQuestion: (q: PendingQuestion | null) => void;
 
-export const useMessengerStore = create<MessengerState>((set, get) => ({
-  messages: [],
+// Add to store implementation:
+pendingQuestion: null,
+setPendingQuestion: (q) => set({ pendingQuestion: q }),
+```
 
-  addMessage: (msg) => {
-    set((state) => ({
-      messages: [...state.messages, msg],
-    }));
-  },
+**Step 2: Update messengerStore to detect QuestionForUser and set pending question**
 
-  clearMessages: () => set({ messages: [] }),
+In `initMessengerListener()`, after adding message to store:
 
-  getMessagesForPlan: (planId) => {
-    return get().messages.filter((m) => m.planId === planId);
-  },
-}));
-
-// Initialize Tauri event listener
-let listenerInitialized = false;
-
-export function initMessengerListener() {
-  if (listenerInitialized) return;
-  listenerInitialized = true;
-
-  listen<MessengerMessage>('messenger-event', (event) => {
-    const msg = event.payload;
-    // Normalize source from Rust enum format
-    const normalized: MessengerMessage = {
-      ...msg,
-      source: typeof msg.source === 'string'
-        ? { type: 'System' }
-        : 'Agent' in (msg.source as Record<string, unknown>)
-          ? { type: 'Agent', name: (msg.source as { Agent: string }).Agent }
-          : { type: 'System' },
-    };
-    useMessengerStore.getState().addMessage(normalized);
+```typescript
+if (normalized.messageType === 'QuestionForUser') {
+  useTaskStore.getState().setPendingQuestion({
+    questionId: normalized.id,
+    sourceAgent: typeof normalized.source === 'string' ? normalized.source : 'master',
+    content: normalized.content,
+    planId: normalized.planId,
   });
 }
 ```
 
-**Step 2: Run TypeScript check**
-
-Run: `npx tsc --noEmit`
-Expected: No new errors (existing errors from bindings.ts are pre-existing)
-
 **Step 3: Commit**
 
 ```bash
-git add src/stores/messengerStore.ts
-git commit -m "feat: add useMessengerStore with Tauri event listener for orchestration messages"
+git add src/stores/
+git commit -m "feat(stores): add pending question state and QuestionForUser detection"
 ```
 
 ---
 
-### Task 6: Create Messenger Tab Component (Frontend)
+### Task 17: Frontend — Question/Answer UI
 
 **Files:**
-- Create: `src/components/messenger/MessengerPanel.tsx`
+- Modify: `src/components/messenger/MessengerPanel.tsx`
 
-**Step 1: Create the component**
+**Step 1: Add question input UI**
+
+Import `answerUserQuestion` from bindings. Add state for answer input. When `pendingQuestion` is set, show input field below message list.
 
 ```tsx
-import { useEffect, useRef } from 'react';
-import { useMessengerStore, initMessengerListener } from '../../stores/messengerStore';
-import type { MessengerMessage } from '../../stores/messengerStore';
+import { answerUserQuestion } from '../../bindings';
 
-const SOURCE_COLORS: Record<string, string> = {
-  System: 'text-zinc-400',
-  claude: 'text-violet-400',
-  gemini: 'text-blue-400',
-  codex: 'text-emerald-400',
+// Inside component:
+const pendingQuestion = useTaskStore(s => s.pendingQuestion);
+const setPendingQuestion = useTaskStore(s => s.setPendingQuestion);
+const [answer, setAnswer] = useState('');
+
+const handleAnswer = async () => {
+  if (!pendingQuestion || !answer.trim()) return;
+  await answerUserQuestion(pendingQuestion.planId, answer.trim());
+  setPendingQuestion(null);
+  setAnswer('');
 };
 
-const TYPE_ICONS: Record<string, string> = {
-  OrchestrationStarted: '●',
-  TaskAssigned: '→',
-  TaskCompleted: '✓',
-  TaskFailed: '✗',
-  AgentSummary: '◆',
-  MasterDecision: '★',
-  DecompositionResult: '◇',
-  ReviewResult: '◈',
-};
-
-function getSourceLabel(source: MessengerMessage['source']): string {
-  return source.type === 'System' ? 'System' : source.name;
-}
-
-function getSourceColor(source: MessengerMessage['source']): string {
-  const name = source.type === 'System' ? 'System' : source.name;
-  return SOURCE_COLORS[name] ?? 'text-zinc-400';
-}
-
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-export function MessengerPanel() {
-  const messages = useMessengerStore((s) => s.messages);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    initMessengerListener();
-  }, []);
-
-  // Auto-scroll to bottom
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  if (messages.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
-        No orchestration messages yet. Start a multi-agent task to see activity here.
-      </div>
-    );
-  }
-
-  return (
-    <div ref={scrollRef} className="flex flex-col h-full overflow-y-auto p-4 space-y-3">
-      {messages.map((msg) => (
-        <div key={msg.id} className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-600">{formatTime(msg.timestamp)}</span>
-            <span className={`text-xs font-medium ${getSourceColor(msg.source)}`}>
-              {TYPE_ICONS[msg.messageType] ?? '●'} {getSourceLabel(msg.source)}
-            </span>
-          </div>
-          <div className="pl-4 text-sm text-zinc-300 whitespace-pre-wrap font-mono leading-relaxed">
-            {msg.content}
-          </div>
-        </div>
-      ))}
+// In JSX, after messages div:
+{pendingQuestion && (
+  <div className="border-t border-zinc-700 p-3">
+    <div className="text-sm text-yellow-400 mb-2">
+      {pendingQuestion.sourceAgent} is asking:
     </div>
-  );
-}
+    <div className="text-sm text-zinc-300 mb-2">
+      {pendingQuestion.content}
+    </div>
+    <div className="flex gap-2">
+      <input
+        value={answer}
+        onChange={e => setAnswer(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && handleAnswer()}
+        className="flex-1 bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm text-zinc-200"
+        placeholder="Type your answer..."
+        autoFocus
+      />
+      <button onClick={handleAnswer} className="px-3 py-1 bg-blue-600 rounded text-sm text-white">
+        Send
+      </button>
+    </div>
+  </div>
+)}
 ```
 
 **Step 2: Commit**
 
 ```bash
 git add src/components/messenger/MessengerPanel.tsx
-git commit -m "feat: add MessengerPanel component for orchestration event display"
+git commit -m "feat(ui): add question/answer input in messenger panel"
 ```
 
 ---
 
-### Task 7: Redesign ProcessPanel — Remove "New Task", Add Persistent Input Bar and Messenger Tab
+### Task 18: Frontend — DisplayLine Output Styling
 
 **Files:**
-- Modify: `src/components/terminal/ProcessPanel.tsx`
+- Modify: `src/components/orchestration/MultiAgentOutput.tsx`
 
-This is the largest frontend change. We'll restructure ProcessPanel to:
-1. Remove the "New Task" button and its toggle mechanism
-2. Move agent selector + input to a persistent bottom bar
-3. Add "Messenger" tab to the tab bar
-4. Add stdin routing logic for the "Send" button
+**Step 1: Add DisplayLine styles**
 
-**Step 1: Remove "New Task" button and showTaskInput state**
-
-Remove from ProcessPanel:
-- `const [showTaskInput, setShowTaskInput] = useState(false);` (line 71)
-- The "New Task" `<Button>` block (lines 206-215)
-- The `{showTaskInput && (...)}` conditional wrapper around the task input area (line 229)
-- The Cancel button that sets `setShowTaskInput(false)` (lines 277-288)
-- The `setShowTaskInput(false)` in handleDispatch (line 151)
-- The empty state message referencing "New Task" (lines 421-423)
-
-**Step 2: Remove "Test Process" button**
-
-Remove lines 218-225 (the "+ Test Process" button and `handleSpawnTest`).
-
-**Step 3: Add Messenger tab to tab bar**
-
-Add a "Messenger" tab button after the multi-agent view button. Add state for active view:
-
-```tsx
-const [activeView, setActiveView] = useState<'process' | 'messenger'>('process');
+```typescript
+const DISPLAY_LINE_STYLES: Record<string, string> = {
+  AgentThinking: 'text-zinc-500 italic',
+  ToolExecution: 'font-mono bg-zinc-900 px-2 py-0.5 text-emerald-400',
+  Result: 'text-zinc-200',
+  Info: 'text-blue-400',
+};
 ```
 
-In the tab bar, add:
+**Step 2: Update OutputConsole rendering**
 
-```tsx
-{/* Messenger tab */}
-<button
-  onClick={() => setActiveView('messenger')}
-  className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-mono transition-all shadow-sm shrink-0 ${
-    activeView === 'messenger'
-      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30 shadow-amber-500/10'
-      : 'bg-white/5 text-zinc-400 border border-white/5 hover:bg-white/10 hover:text-zinc-200 hover:border-white/10'
-  }`}
->
-  Messenger
-</button>
+If the `OutputEvent` includes a `display_type` field (from Rust-side parsing), apply the corresponding style class. This requires extending `OutputEvent` to carry `display_type: Option<string>`.
+
+Check if `OutputEvent` in `src/bindings.ts` was updated during binding regeneration (Task 14). If not, extend it in `state.rs`:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct OutputEvent {
+    pub event: String,
+    pub data: String,
+    pub display_type: Option<String>,
+}
 ```
 
-**Step 4: Add MessengerPanel to output area**
-
-In the output area, add a condition for the messenger view:
+Frontend reads `display_type` and applies style:
 
 ```tsx
-{activeView === 'messenger' ? (
-  <MessengerPanel />
-) : hasMultiAgentOutput && !activeProcessId ? (
-  <MultiAgentOutput taskIds={multiAgentTaskIds} />
-) : /* ...existing process output logic... */}
+const lineStyle = event.display_type
+  ? DISPLAY_LINE_STYLES[event.display_type] || ''
+  : '';
 ```
 
-**Step 5: Move input area to bottom (persistent)**
+**Step 3: Commit**
 
-Remove the `{showTaskInput && (...)}` wrapper. The agent selector and prompt input now always render at the bottom of the panel, after the output area div.
+```bash
+git add src/components/orchestration/MultiAgentOutput.tsx src-tauri/src/state.rs
+git commit -m "feat(ui): render agent output with DisplayLine type styling"
+```
 
-Restructure the component JSX to this layout:
+---
+
+### Task 19: Frontend — /clear Command
+
+**Files:**
+- Modify: `src/components/terminal/ProcessPanel.tsx` (or main input component)
+
+**Step 1: Add /clear detection in prompt handler**
+
+```typescript
+import { clearOrchestrationContext } from '../../bindings';
+
+const handleSubmit = async (input: string) => {
+  if (input.trim() === '/clear') {
+    await handleClear();
+    return;
+  }
+  // ... existing prompt handling
+};
+
+const [isClearing, setIsClearing] = useState(false);
+
+const handleClear = async () => {
+  const plan = useTaskStore.getState().orchestrationPlan;
+  if (!plan?.taskId) return;
+  setIsClearing(true);
+  try {
+    await clearOrchestrationContext(plan.taskId, projectDir);
+    useMessengerStore.getState().clearMessages();
+    useTaskStore.getState().setOrchestrationPlan(null);
+  } catch (err) {
+    console.error('Clear failed:', err);
+  } finally {
+    setIsClearing(false);
+  }
+};
+```
+
+**Step 2: Add clearing state UI**
 
 ```tsx
-return (
-  <div className="flex flex-col h-full bg-transparent">
-    {/* Tab bar */}
-    <div className="flex items-center gap-2 px-3 py-2 ...">
-      {/* process tabs */}
-      {/* messenger tab */}
-    </div>
-
-    {/* Context info panel */}
-    {typedContexts.size > 0 && <ContextInfoPanel ... />}
-
-    {/* Control bar for active process */}
-    {activeView === 'process' && !hasMultiAgentOutput && activeProcess && (
-      <div className="...">...</div>
-    )}
-
-    {/* Output area */}
-    <div className="flex-1 min-h-0 relative">
-      {/* messenger view or process view */}
-    </div>
-
-    {/* Persistent input bar — always at bottom */}
-    <div className="border-t border-white/5 bg-black/40 backdrop-blur-xl shrink-0">
-      <AgentSelector
-        config={orchestratorConfig}
-        onConfigChange={setOrchestratorConfig}
-        apiKeyStatus={apiKeyStatus}
-      />
-      <div className="px-4 py-3 flex gap-3">
-        <Input
-          type="text"
-          value={taskPrompt}
-          onChange={(e) => setTaskPrompt(e.target.value)}
-          placeholder={hasActiveRunningProcess ? "Send follow-up message..." : "Enter prompt for task..."}
-          className="flex-1 h-9 text-sm bg-black/40 border-white/10 text-zinc-200 placeholder:text-zinc-600 focus-visible:ring-violet-500/50 rounded-lg"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSubmit();
-            }
-          }}
-        />
-        <Button
-          size="sm"
-          onClick={handleSubmit}
-          disabled={isDispatching || !taskPrompt.trim() || !projectDir.trim()}
-          className="bg-violet-600 border border-violet-500/50 shadow-lg shadow-violet-500/20 text-white hover:bg-violet-500 transition-all rounded-lg h-9"
-        >
-          {hasActiveRunningProcess ? 'Send' : isMultiAgent ? 'Run All' : 'Run'}
-        </Button>
-      </div>
-    </div>
+{isClearing && (
+  <div className="text-center text-zinc-400 py-2 animate-pulse">
+    Backing up context...
   </div>
-);
+)}
 ```
 
-**Step 6: Add handleSubmit with stdin routing**
-
-Replace `handleDispatch` with a unified `handleSubmit`:
-
-```tsx
-const hasActiveRunningProcess = useMemo(() => {
-  for (const proc of processes.values()) {
-    if (proc.status === 'running') return true;
-  }
-  return false;
-}, [processes]);
-
-const handleSubmit = useCallback(async () => {
-  if (!taskPrompt.trim()) return;
-
-  if (hasActiveRunningProcess) {
-    // Send to active process stdin
-    const targetId = isMultiAgent
-      ? multiAgentTaskIds.get(orchestratorConfig.masterAgent) ?? activeProcessId
-      : activeProcessId;
-
-    if (targetId) {
-      try {
-        await commands.sendToProcess(targetId, taskPrompt.trim());
-        setTaskPrompt('');
-      } catch (e) {
-        console.error('Failed to send to process:', e);
-      }
-    }
-  } else {
-    // New task dispatch
-    if (!projectDir.trim()) return;
-    setIsDispatching(true);
-
-    if (isMultiAgent) {
-      const results = await dispatchOrchestratedTask(
-        taskPrompt.trim(),
-        projectDir.trim(),
-        orchestratorConfig,
-      );
-      setMultiAgentTaskIds(results);
-    } else {
-      const tool: ToolName = selectedTool ?? orchestratorConfig.agents[0]?.toolName ?? 'claude';
-      await dispatchTask(taskPrompt.trim(), projectDir.trim(), tool);
-    }
-
-    setIsDispatching(false);
-    setTaskPrompt('');
-    setSuggestion(null);
-    setSelectedTool(null);
-  }
-}, [taskPrompt, projectDir, selectedTool, suggestion, dispatchTask, dispatchOrchestratedTask, isMultiAgent, orchestratorConfig, hasActiveRunningProcess, activeProcessId, multiAgentTaskIds, processes]);
-```
-
-**Step 7: Run dev build to verify**
-
-Run: `npm run dev`
-Expected: App builds and renders correctly with persistent input bar
-
-**Step 8: Commit**
+**Step 3: Commit**
 
 ```bash
 git add src/components/terminal/ProcessPanel.tsx
-git commit -m "feat: redesign ProcessPanel with persistent input bar, messenger tab, and stdin routing"
+git commit -m "feat(ui): add /clear command with context backup flow"
 ```
 
 ---
 
-### Task 8: Regenerate TypeScript Bindings
+### Task 20: Integration Tests
 
 **Files:**
-- Auto-generated: `src/bindings.ts`
+- Create: `src-tauri/tests/orchestration_integration.rs`
 
-The Rust changes added new types and commands. We need to regenerate bindings.
+**Step 1: Write integration tests**
 
-**Step 1: Build Rust to trigger specta export**
+```rust
+use whalecode::router::orchestrator::*;
+use whalecode::adapters::*;
 
-Run: `cd src-tauri && cargo build`
-Expected: `src/bindings.ts` is regenerated with `sendToProcess` command and new types
+#[test]
+fn test_full_plan_lifecycle() {
+    let plan = Orchestrator::create_plan("t1", "optimize code", "claude", vec![]);
+    assert!(plan.master_process_id.is_none());
+    assert!(matches!(plan.phase, OrchestrationPhase::Decomposing));
+}
 
-**Step 2: Verify new command exists in bindings**
+#[test]
+fn test_decomposition_parsing() {
+    let json = r#"{"tasks":[{"agent":"codex","prompt":"analyze","description":"analyze code"}]}"#;
+    let result: DecompositionResult = serde_json::from_str(json).unwrap();
+    assert_eq!(result.tasks.len(), 1);
+    assert_eq!(result.tasks[0].agent, "codex");
+}
 
-Check that `sendToProcess` appears in `src/bindings.ts`.
+#[test]
+fn test_ask_user_response_parsing() {
+    let json = r#"{"ask_user": "Which database schema?"}"#;
+    let resp: AskUserResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.ask_user, "Which database schema?");
+}
+
+#[test]
+fn test_prompt_builders() {
+    let q = Orchestrator::build_question_relay_prompt("codex", "Which DB?");
+    assert!(q.contains("codex") && q.contains("ask_user"));
+
+    let b = Orchestrator::build_context_backup_prompt();
+    assert!(b.contains("context_backup"));
+
+    let r = Orchestrator::build_context_restore_prompt("old", "new");
+    assert!(r.contains("old") && r.contains("new"));
+}
+
+#[test]
+fn test_claude_adapter_extract_result() {
+    let adapter = whalecode::adapters::claude::ClaudeAdapter;
+    let lines = vec![
+        r#"{"type":"result","result":"answer","is_error":false}"#.to_string(),
+    ];
+    assert!(adapter.extract_result(&lines).is_some());
+}
+```
+
+**Step 2: Run tests**
+
+Run: `cd src-tauri && cargo test orchestration_integration -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS
 
 **Step 3: Commit**
 
 ```bash
-git add src/bindings.ts
-git commit -m "chore: regenerate TypeScript bindings with new orchestration types and sendToProcess command"
+git add src-tauri/tests/
+git commit -m "test: add orchestration integration tests"
 ```
 
 ---
 
-### Task 9: Initialize Messenger Listener on App Start
+### Task 21: Final Verification
 
-**Files:**
-- Modify: `src/routes/index.tsx` or `src/App.tsx` (wherever the app root is)
+**Step 1: Run full Rust test suite**
 
-**Step 1: Find and read the app entry point**
+Run: `cd src-tauri && cargo test -- --skip credentials --test-threads=1 2>&1 | tail -30`
+Expected: All tests PASS
 
-Look for the root component that renders on app load.
+**Step 2: Build frontend**
 
-**Step 2: Call initMessengerListener**
+Run: `npm run build 2>&1 | tail -20`
+Expected: Build succeeds
 
-Add at the top level of the app:
-
-```tsx
-import { useEffect } from 'react';
-import { initMessengerListener } from './stores/messengerStore';
-
-// In the root component:
-useEffect(() => {
-  initMessengerListener();
-}, []);
-```
-
-**Step 3: Commit**
-
-```bash
-git add src/routes/index.tsx
-git commit -m "feat: initialize messenger event listener on app startup"
-```
-
----
-
-### Task 10: Output Summary Collection for Review Phase
-
-**Files:**
-- Modify: `src-tauri/src/commands/orchestrator.rs` (the `get_process_output_summary` function)
-- Modify: `src-tauri/src/state.rs`
-
-The review phase needs worker output summaries. We need to store output lines in the backend.
-
-**Step 1: Add output buffer to ProcessEntry**
-
-In `src-tauri/src/state.rs`, add an output buffer to ProcessEntry:
-
-```rust
-pub struct ProcessEntry {
-    pub pgid: i32,
-    pub status: ProcessStatus,
-    pub tool_name: String,
-    pub task_description: String,
-    pub started_at: i64,
-    pub stdin_tx: Option<mpsc::UnboundedSender<String>>,
-    pub output_lines: Vec<String>, // last N lines of stdout
-}
-```
-
-**Step 2: Append output lines in process manager**
-
-In `src-tauri/src/process/manager.rs`, in the stdout reader task, also store lines in state:
-
-```rust
-// Inside the stdout reader spawn block, after sending to channel:
-{
-    let state_clone = state_for_output.clone();
-    let tid = task_id_for_output.clone();
-    let line_clone = line.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Ok(mut inner) = state_clone.lock() {
-            if let Some(entry) = inner.processes.get_mut(&tid) {
-                entry.output_lines.push(line_clone);
-                // Keep only last 50 lines
-                if entry.output_lines.len() > 50 {
-                    entry.output_lines.drain(0..entry.output_lines.len() - 50);
-                }
-            }
-        }
-    });
-}
-```
-
-**Step 3: Implement get_process_output_summary properly**
-
-In `src-tauri/src/commands/orchestrator.rs`:
-
-```rust
-fn get_process_output_summary(task_id: &str, state: &tauri::State<'_, AppState>) -> String {
-    let inner = state.lock().unwrap();
-    if let Some(entry) = inner.processes.get(task_id) {
-        let lines = &entry.output_lines;
-        let last_20: Vec<&str> = lines.iter().rev().take(20).map(|s| s.as_str()).collect();
-        last_20.into_iter().rev().collect::<Vec<_>>().join("\n")
-    } else {
-        String::new()
-    }
-}
-```
-
-**Step 4: Update all callers of get_process_output_summary to pass state**
-
-**Step 5: Run tests**
-
-Run: `cd src-tauri && cargo test`
-Expected: All tests pass
-
-**Step 6: Commit**
-
-```bash
-git add src-tauri/src/state.rs src-tauri/src/process/manager.rs src-tauri/src/commands/orchestrator.rs
-git commit -m "feat: collect process output lines for review phase summaries"
-```
-
----
-
-### Task 11: Integration Test — Full Orchestration Flow
-
-**Files:**
-- No new files, manual testing
-
-**Step 1: Build and run the app**
+**Step 3: Manual smoke test**
 
 Run: `npm run tauri dev`
 
-**Step 2: Test single-agent flow**
+Manual checks:
+- [ ] Select 2+ agents, pick a master
+- [ ] Send a prompt → master decomposes → workers execute
+- [ ] Verify uniform output display across agents
+- [ ] Test `/clear` → verify context.md created in project dir
+- [ ] Send new prompt after clear → verify context restored
+- [ ] Check ContextInfoPanel shows per-agent tokens
+- [ ] Check MessengerPanel shows orchestration events
 
-1. Enter a prompt with single agent selected
-2. Verify "Run" button dispatches
-3. While agent runs, verify input shows "Send" and placeholder changes
-4. Type a follow-up message, click "Send" — verify it goes to agent's stdin
-
-**Step 3: Test multi-agent orchestration**
-
-1. Enable 2+ agents, set master
-2. Enter a prompt, click "Run All"
-3. Observe Messenger tab populates with:
-   - "Orchestration started" system message
-   - Decomposition result from master
-   - Task assignments
-   - Worker completion/failure messages
-   - Review result from master
-4. Verify process tabs appear for each worker
-
-**Step 4: Test messenger tab**
-
-1. Click "Messenger" tab in tab bar
-2. Verify messages render chronologically
-3. Verify auto-scroll on new messages
-
-**Step 5: Test error fallback**
-
-1. Test with only 1 agent selected (single-agent path)
-2. Verify direct dispatch without decomposition phase
-
-**Step 6: Final commit if any fixes needed**
+**Step 4: Final commit if any fixes needed**
 
 ```bash
-git commit -m "fix: integration test fixes for orchestration flow"
+git add -A
+git commit -m "fix: address issues from smoke test"
 ```
