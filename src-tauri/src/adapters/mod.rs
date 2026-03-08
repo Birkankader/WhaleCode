@@ -101,7 +101,7 @@ pub struct AskUserResponse {
 /// Uses `&self` methods so adapters can be instantiated as zero-cost unit structs.
 /// This trait enables polymorphic dispatch in the Task Router (Phase 7) and ensures
 /// adding a third adapter requires only implementing this trait.
-pub trait ToolAdapter {
+pub trait ToolAdapter: Send + Sync {
     /// Build the CLI command for this tool with the given prompt, working directory, and API key.
     fn build_command(&self, prompt: &str, cwd: &str, api_key: &str) -> ToolCommand;
 

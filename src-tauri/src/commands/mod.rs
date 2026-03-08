@@ -47,7 +47,10 @@ pub use codex::{
 pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
-pub use orchestrator::{dispatch_orchestrated_task, get_agent_context_info};
+pub use orchestrator::{
+    dispatch_orchestrated_task, get_agent_context_info,
+    clear_orchestration_context, answer_user_question,
+};
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
     check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,

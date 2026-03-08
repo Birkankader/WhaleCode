@@ -20,6 +20,7 @@ use commands::{
     set_gemini_api_key, spawn_claude_task, spawn_codex_task, spawn_gemini_task, spawn_process,
     send_to_process, start_stream, suggest_tool, validate_claude_result, validate_codex_result,
     validate_gemini_result, cleanup_completed_processes,
+    clear_orchestration_context, answer_user_question,
 };
 use state::AppState;
 use tauri::Manager;
@@ -65,6 +66,8 @@ pub fn run() {
         optimize_prompt,
         send_to_process,
         cleanup_completed_processes,
+        clear_orchestration_context,
+        answer_user_question,
     ]);
 
     #[cfg(debug_assertions)]
