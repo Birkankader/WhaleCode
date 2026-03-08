@@ -3,6 +3,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use uuid::Uuid;
 
+use crate::adapters::ToolCommand;
 use crate::ipc::events::OutputEvent;
 use crate::process::signals;
 use crate::state::{AppState, ProcessEntry, ProcessStatus};
@@ -31,6 +32,36 @@ pub async fn spawn_with_env(
     env_vars: &[(&str, &str)],
     channel: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
+    existing_task_id: Option<String>,
+    initial_stdin: Option<&[u8]>,
+) -> Result<String, String> {
+    spawn_with_env_core(
+        cmd,
+        args,
+        cwd,
+        env_vars,
+        "",
+        "",
+        channel,
+        &state,
+        existing_task_id,
+        initial_stdin,
+    )
+    .await
+}
+
+/// Core implementation for spawning a subprocess with env vars and pgid isolation.
+/// Accepts `&AppState` directly so it can be called from both Tauri commands
+/// (via `spawn_with_env`) and orchestration code (via `spawn_interactive`).
+async fn spawn_with_env_core(
+    cmd: &str,
+    args: &[String],
+    cwd: &str,
+    env_vars: &[(&str, &str)],
+    task_description: &str,
+    tool_name: &str,
+    channel: Channel<OutputEvent>,
+    state: &AppState,
     existing_task_id: Option<String>,
     initial_stdin: Option<&[u8]>,
 ) -> Result<String, String> {
@@ -106,8 +137,8 @@ pub async fn spawn_with_env(
             ProcessEntry {
                 pgid: pid,
                 status: ProcessStatus::Running,
-                tool_name: String::new(),
-                task_description: "".to_string(),
+                tool_name: tool_name.to_string(),
+                task_description: task_description.to_string(),
                 started_at: chrono::Utc::now().timestamp_millis(),
                 stdin_tx,
                 output_lines: Vec::new(),
@@ -126,7 +157,7 @@ pub async fn spawn_with_env(
     // Spawn stdout reader
     if let Some(stdout) = stdout {
         let stdout_channel = channel.clone();
-        let state_for_output = (*state).clone();
+        let state_for_output = state.clone();
         let task_id_for_output = task_id.clone();
         tauri::async_runtime::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -160,7 +191,7 @@ pub async fn spawn_with_env(
 
     // Spawn waiter task to update status on exit
     let waiter_task_id = task_id.clone();
-    let waiter_state = (*state).clone();
+    let waiter_state = state.clone();
     let exit_channel = channel;
     tauri::async_runtime::spawn(async move {
         let status: Result<std::process::ExitStatus, std::io::Error> = child.wait().await;
@@ -198,6 +229,56 @@ pub async fn spawn_with_env(
     });
 
     Ok(task_id)
+}
+
+/// Spawn an agent in interactive mode for multi-turn conversation.
+/// Returns task_id. Use ProcessEntry.stdin_tx to send subsequent prompts.
+pub async fn spawn_interactive(
+    tool_command: ToolCommand,
+    task_description: &str,
+    tool_name: &str,
+    channel: Channel<OutputEvent>,
+    state: &AppState,
+) -> Result<String, String> {
+    let env_refs: Vec<(&str, &str)> = tool_command
+        .env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    spawn_with_env_core(
+        &tool_command.cmd,
+        &tool_command.args,
+        &tool_command.cwd,
+        &env_refs,
+        task_description,
+        tool_name,
+        channel,
+        state,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Send a message to a running process's stdin channel.
+pub fn send_to_process(
+    state: &AppState,
+    task_id: &str,
+    message: &str,
+) -> Result<(), String> {
+    let state_guard = state.lock().map_err(|e| e.to_string())?;
+    let entry = state_guard
+        .processes
+        .get(task_id)
+        .ok_or_else(|| format!("Process {} not found", task_id))?;
+    let stdin_tx = entry
+        .stdin_tx
+        .as_ref()
+        .ok_or_else(|| format!("Process {} has no stdin channel", task_id))?;
+    stdin_tx
+        .send(format!("{}\n", message))
+        .map_err(|e| format!("Failed to send to stdin: {}", e))
 }
 
 /// Cancel a running process by sending SIGTERM then SIGKILL to its process group.
@@ -250,4 +331,27 @@ pub fn resume(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), St
     entry.status = ProcessStatus::Running;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spawn_interactive_builds_correct_args() {
+        let adapter = crate::adapters::claude::ClaudeAdapter;
+        use crate::adapters::ToolAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "test-key");
+        assert!(!cmd.args.iter().any(|a| a == "-p"));
+        assert!(cmd.args.contains(&"--output-format".to_string()));
+    }
+
+    #[test]
+    fn test_send_to_process_missing_process() {
+        use std::sync::{Arc, Mutex};
+        let state: AppState = Arc::new(Mutex::new(Default::default()));
+        let result = send_to_process(&state, "nonexistent", "hello");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
 }
