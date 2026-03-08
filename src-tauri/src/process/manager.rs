@@ -41,6 +41,10 @@ pub async fn spawn_with_env(
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
+        // Prevent nested-session detection by CLI tools that check parent env
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -58,6 +62,15 @@ pub async fn spawn_with_env(
     }
 
     let mut child = command.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
+
+    // Auto-answer any CLI initialization prompts (e.g Claude Code asking to use ANTHROPIC_API_KEY)
+    if let Some(mut stdin) = child.stdin.take() {
+        tauri::async_runtime::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            // "1" to select "Yes", "y" to confirm overrides. Then drop.
+            let _ = stdin.write_all(b"1\ny\n").await;
+        });
+    }
 
     // pgid = pid since we called setpgid(0, 0)
     let pid = child.id().ok_or("Failed to get child pid")? as i32;

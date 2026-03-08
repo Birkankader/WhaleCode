@@ -8,7 +8,7 @@ use crate::context::store::ContextStore;
 /// A context event with its associated file paths, suitable for IPC return.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct ContextEventWithFiles {
-    pub id: i64,
+    pub id: i32,
     pub task_id: String,
     pub tool_name: String,
     pub event_type: String,
@@ -16,7 +16,7 @@ pub struct ContextEventWithFiles {
     pub summary: Option<String>,
     pub project_dir: String,
     pub metadata: Option<String>,
-    pub duration_ms: Option<u64>,
+    pub duration_ms: Option<u32>,
     pub cost_usd: Option<f64>,
     pub created_at: String,
     pub files: Vec<String>,
@@ -32,28 +32,30 @@ pub fn record_task_completion_cmd(
     prompt: Option<String>,
     summary: Option<String>,
     project_dir: String,
-    duration_ms: Option<u64>,
+    duration_ms: Option<u32>,
     cost_usd: Option<f64>,
     files_json: String,
     store: tauri::State<'_, ContextStore>,
-) -> Result<i64, String> {
+) -> Result<i32, String> {
     let files: Vec<(String, String)> =
         serde_json::from_str(&files_json).map_err(|e| format!("Invalid files_json: {}", e))?;
 
-    store.with_conn(|conn| {
-        queries::record_task_completion(
-            conn,
-            &task_id,
-            &tool_name,
-            &event_type,
-            prompt.as_deref(),
-            summary.as_deref(),
-            &project_dir,
-            duration_ms,
-            cost_usd,
-            &files,
-        )
-    })
+    store
+        .with_conn(|conn| {
+            queries::record_task_completion(
+                conn,
+                &task_id,
+                &tool_name,
+                &event_type,
+                prompt.as_deref(),
+                summary.as_deref(),
+                &project_dir,
+                duration_ms.map(|d| d as u64),
+                cost_usd,
+                &files,
+            )
+        })
+        .map(|id| id as i32)
 }
 
 /// Get recent file changes for a project.
@@ -81,7 +83,7 @@ pub fn get_context_summary(
     let result: Vec<ContextEventWithFiles> = events
         .into_iter()
         .map(|(event, files)| ContextEventWithFiles {
-            id: event.id,
+            id: event.id as i32,
             task_id: event.task_id,
             tool_name: event.tool_name,
             event_type: event.event_type,
@@ -89,7 +91,7 @@ pub fn get_context_summary(
             summary: event.summary,
             project_dir: event.project_dir,
             metadata: event.metadata,
-            duration_ms: event.duration_ms,
+            duration_ms: event.duration_ms.map(|d| d as u32),
             cost_usd: event.cost_usd,
             created_at: event.created_at,
             files,

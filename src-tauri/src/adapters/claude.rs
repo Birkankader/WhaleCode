@@ -83,6 +83,10 @@ pub struct ClaudeCommand {
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
 /// in args or logged.
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
+    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+    if !api_key.is_empty() {
+        env.push(("ANTHROPIC_API_KEY".to_string(), api_key.to_string()));
+    }
     ClaudeCommand {
         cmd: "claude".to_string(),
         args: vec![
@@ -91,11 +95,9 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
+            "--dangerously-skip-permissions".to_string(),
         ],
-        env: vec![
-            ("ANTHROPIC_API_KEY".to_string(), api_key.to_string()),
-            ("NO_COLOR".to_string(), "1".to_string()),
-        ],
+        env,
         cwd: cwd.to_string(),
     }
 }

@@ -16,19 +16,18 @@ export interface ProcessInfo {
 // ── Global output routing (outside React/Zustand to avoid timing issues) ──
 
 const outputCallbacks = new Map<string, (event: OutputEvent) => void>();
-const outputBuffers = new Map<string, OutputEvent[]>();
+const outputLogs = new Map<string, OutputEvent[]>();
 
 export function registerProcessOutput(
   taskId: string,
   cb: (event: OutputEvent) => void,
 ) {
-  // Flush any buffered events first
-  const buf = outputBuffers.get(taskId);
-  if (buf) {
-    for (const event of buf) {
+  // Replay full event history so re-mounted consoles recover all output
+  const log = outputLogs.get(taskId);
+  if (log) {
+    for (const event of log) {
       cb(event);
     }
-    outputBuffers.delete(taskId);
   }
   outputCallbacks.set(taskId, cb);
 }
@@ -38,13 +37,14 @@ export function unregisterProcessOutput(taskId: string) {
 }
 
 export function emitProcessOutput(taskId: string, event: OutputEvent) {
+  // Always persist to log so future consumers can replay
+  const log = outputLogs.get(taskId) ?? [];
+  log.push(event);
+  outputLogs.set(taskId, log);
+
   const cb = outputCallbacks.get(taskId);
   if (cb) {
     cb(event);
-  } else {
-    const buf = outputBuffers.get(taskId) ?? [];
-    buf.push(event);
-    outputBuffers.set(taskId, buf);
   }
 }
 

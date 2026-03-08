@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextEvent {
     pub id: i64,
     pub task_id: String,
@@ -16,7 +16,7 @@ pub struct ContextEvent {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
     pub id: i64,
     pub event_id: i64,

@@ -14,7 +14,7 @@ import { Button } from './ui/button';
  * - ConflictAlert banner when conflict check returns positive
  * - Loading spinner during IPC calls
  */
-export function WorktreeStatus({ projectDir }: { projectDir: string }) {
+export function WorktreeStatus({ projectDir, onReview }: { projectDir: string; onReview?: (branchName: string) => void }) {
   const {
     worktrees,
     conflicts,
@@ -133,6 +133,20 @@ export function WorktreeStatus({ projectDir }: { projectDir: string }) {
                           </option>
                         ))}
                     </select>
+                  )}
+
+                  {/* Review button -- opens diff review panel */}
+                  {onReview && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => onReview(branchFromWorktree(wt))}
+                      disabled={loading}
+                      className="bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 border-amber-600/30"
+                      title={`Review changes in ${wt}`}
+                    >
+                      Review
+                    </Button>
                   )}
 
                   {/* Merge button -- disabled when conflicts exist (SAFE-04) */}

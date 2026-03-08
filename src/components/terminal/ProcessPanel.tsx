@@ -140,7 +140,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
       setMultiAgentTaskIds(results);
     } else {
       // Single-agent dispatch
-      const tool: ToolName = selectedTool ?? (suggestion?.suggested_tool as ToolName) ?? orchestratorConfig.agents[0]?.toolName ?? 'claude';
+      const tool: ToolName = selectedTool ?? orchestratorConfig.agents[0]?.toolName ?? (suggestion?.suggested_tool as ToolName) ?? 'claude';
       await dispatchTask(taskPrompt.trim(), projectDir.trim(), tool);
     }
 
@@ -151,7 +151,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
     setShowTaskInput(false);
   }, [taskPrompt, projectDir, selectedTool, suggestion, dispatchTask, dispatchOrchestratedTask, isMultiAgent, orchestratorConfig]);
 
-  const effectiveTool: ToolName = selectedTool ?? (suggestion?.suggested_tool as ToolName) ?? orchestratorConfig.agents[0]?.toolName ?? 'claude';
+  const effectiveTool: ToolName = selectedTool ?? orchestratorConfig.agents[0]?.toolName ?? (suggestion?.suggested_tool as ToolName) ?? 'claude';
   const toolBusy = isMultiAgent
     ? orchestratorConfig.agents.some((a) => isToolBusy(a.toolName))
     : isToolBusy(effectiveTool);
@@ -172,18 +172,17 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
   }, [agentContexts]);
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950">
+    <div className="flex flex-col h-full bg-transparent">
       {/* Tab bar */}
-      <div className="flex items-center gap-1 px-2 py-1 bg-zinc-900 border-b border-zinc-800 overflow-x-auto shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 bg-black/20 backdrop-blur-md border-b border-white/5 overflow-x-auto shrink-0">
         {processList.map((proc) => (
           <button
             key={proc.taskId}
             onClick={() => setActiveProcess(proc.taskId)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono transition-colors shrink-0 ${
-              proc.taskId === activeProcessId
-                ? 'bg-zinc-700 text-zinc-100'
-                : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-750 hover:text-zinc-300'
-            }`}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-mono transition-all shadow-sm shrink-0 ${proc.taskId === activeProcessId
+              ? 'bg-violet-500/20 text-violet-200 border border-violet-500/30 shadow-violet-500/10'
+              : 'bg-white/5 text-zinc-400 border border-white/5 hover:bg-white/10 hover:text-zinc-200 hover:border-white/10'
+              }`}
             title={`${proc.cmd} - ${statusLabel(proc.status)}`}
           >
             <span className={`w-2 h-2 rounded-full ${statusColor(proc.status)}`} />
@@ -198,7 +197,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
         {hasMultiAgentOutput && (
           <button
             onClick={() => setActiveProcess(null as unknown as string)}
-            className="flex items-center gap-1 px-3 py-1.5 rounded text-xs font-mono bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors shrink-0"
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-mono bg-white/5 text-zinc-300 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all shadow-sm shrink-0"
           >
             Multi-Agent View
           </button>
@@ -210,7 +209,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
           size="sm"
           onClick={() => setShowTaskInput(!showTaskInput)}
           disabled={isDispatching}
-          className="ml-auto bg-violet-900/30 text-violet-300 hover:bg-violet-800/40 hover:text-violet-200 font-mono text-xs shrink-0"
+          className="ml-auto bg-violet-500/20 text-violet-300 border border-violet-500/30 hover:bg-violet-500/30 hover:text-violet-100 font-mono text-xs rounded-lg shadow-inner transition-all shrink-0"
         >
           + New Task
         </Button>
@@ -220,7 +219,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
           variant="outline"
           size="sm"
           onClick={handleSpawnTest}
-          className="font-mono text-xs shrink-0"
+          className="font-mono text-xs bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10 hover:text-zinc-100 rounded-lg transition-all shrink-0"
         >
           + Test Process
         </Button>
@@ -228,7 +227,10 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
 
       {/* Unified task input area */}
       {showTaskInput && (
-        <div className="border-b border-zinc-800">
+        <div className="border-b border-white/5 bg-black/40 backdrop-blur-xl relative overflow-hidden">
+          {/* Subtle gradient accent for the input area */}
+          <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-violet-500/20 to-transparent" />
+
           {/* Agent selector */}
           <AgentSelector
             config={orchestratorConfig}
@@ -236,14 +238,14 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
             apiKeyStatus={apiKeyStatus}
           />
 
-          <div className="px-3 py-2 bg-zinc-900/70 space-y-2">
-            <div className="flex gap-2">
+          <div className="px-4 py-4 backdrop-blur-md space-y-3">
+            <div className="flex gap-3">
               <Input
                 type="text"
                 value={taskPrompt}
                 onChange={(e) => setTaskPrompt(e.target.value)}
                 placeholder="Enter prompt for task..."
-                className="flex-1 h-8 text-xs"
+                className="flex-1 h-9 text-sm bg-black/40 border-white/10 text-zinc-200 placeholder:text-zinc-600 focus-visible:ring-violet-500/50 rounded-lg shadow-inner transition-all"
                 onBlur={() => { if (!isMultiAgent) handleSuggest(); }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -260,6 +262,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
                 variant="outline"
                 size="sm"
                 onClick={() => setShowPreview(!showPreview)}
+                className="bg-white/5 border-white/10 hover:bg-white/10 text-zinc-200 transition-colors rounded-lg h-9"
               >
                 Preview
               </Button>
@@ -267,12 +270,12 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
                 size="sm"
                 onClick={handleDispatch}
                 disabled={isDispatching || !taskPrompt.trim() || !projectDir.trim() || toolBusy}
-                className="bg-violet-600 text-white hover:bg-violet-500"
+                className="bg-violet-600 border border-violet-500/50 shadow-lg shadow-violet-500/20 text-white hover:bg-violet-500 transition-all rounded-lg h-9"
               >
                 {isMultiAgent ? 'Run All' : 'Run'}
               </Button>
               <Button
-                variant="secondary"
+                variant="outline"
                 size="sm"
                 onClick={() => {
                   setShowTaskInput(false);
@@ -297,31 +300,28 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
                 <div className="flex gap-1 ml-auto">
                   <button
                     onClick={() => setSelectedTool(selectedTool === 'claude' && suggestion.suggested_tool === 'claude' ? null : 'claude')}
-                    className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                      effectiveTool === 'claude'
-                        ? 'bg-violet-600/40 text-violet-300 border border-violet-500/50'
-                        : 'bg-zinc-800 text-zinc-500 border border-zinc-700 hover:text-zinc-300'
-                    }`}
+                    className={`px-3 py-1 text-xs rounded-md transition-all ${effectiveTool === 'claude'
+                      ? 'bg-violet-500/20 text-violet-300 border border-violet-500/50 shadow-sm'
+                      : 'bg-white/5 text-zinc-400 border border-white/5 hover:bg-white/10 hover:text-zinc-200'
+                      }`}
                   >
                     Claude
                   </button>
                   <button
                     onClick={() => setSelectedTool(selectedTool === 'gemini' && suggestion.suggested_tool === 'gemini' ? null : 'gemini')}
-                    className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                      effectiveTool === 'gemini'
-                        ? 'bg-blue-600/40 text-blue-300 border border-blue-500/50'
-                        : 'bg-zinc-800 text-zinc-500 border border-zinc-700 hover:text-zinc-300'
-                    }`}
+                    className={`px-3 py-1 text-xs rounded-md transition-all ${effectiveTool === 'gemini'
+                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/50 shadow-sm'
+                      : 'bg-white/5 text-zinc-400 border border-white/5 hover:bg-white/10 hover:text-zinc-200'
+                      }`}
                   >
                     Gemini
                   </button>
                   <button
                     onClick={() => setSelectedTool(selectedTool === 'codex' && suggestion.suggested_tool === 'codex' ? null : 'codex')}
-                    className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                      effectiveTool === 'codex'
-                        ? 'bg-emerald-600/40 text-emerald-300 border border-emerald-500/50'
-                        : 'bg-zinc-800 text-zinc-500 border border-zinc-700 hover:text-zinc-300'
-                    }`}
+                    className={`px-3 py-1 text-xs rounded-md transition-all ${effectiveTool === 'codex'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 shadow-sm'
+                      : 'bg-white/5 text-zinc-400 border border-white/5 hover:bg-white/10 hover:text-zinc-200'
+                      }`}
                   >
                     Codex
                   </button>
@@ -354,17 +354,17 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
       {typedContexts.size > 0 && (
         <ContextInfoPanel
           contexts={typedContexts}
-          className="shrink-0 px-3 py-1 border-b border-zinc-800 bg-zinc-900/40"
+          className="shrink-0 px-4 py-2 border-b border-white/5 bg-black/20"
         />
       )}
 
       {/* Control bar for active process (single-agent mode) */}
       {!hasMultiAgentOutput && activeProcess && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 border-b border-zinc-800 shrink-0">
-          <span className="text-xs text-zinc-500 font-mono truncate flex-1">
+        <div className="flex items-center gap-3 px-4 py-2 bg-black/20 backdrop-blur-md border-b border-white/5 shrink-0">
+          <span className="text-xs text-zinc-400 font-mono truncate flex-1">
             {activeProcess.cmd}
           </span>
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-zinc-500 font-medium">
             {statusLabel(activeProcess.status)}
           </span>
 

@@ -9,3 +9,8 @@ pub struct RoutingSuggestion {
     pub alternative_tool: Option<String>,
     pub tool_available: bool,
 }
+
+// Re-export orchestrator types for convenience
+pub use super::orchestrator::{
+    AgentConfig, AgentContextInfo, OrchestratorConfig, OrchestrationPlan, SubTask,
+};

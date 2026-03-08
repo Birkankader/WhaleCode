@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { Routes, Route } from 'react-router';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AppShell } from '../components/layout/AppShell';
@@ -6,14 +6,12 @@ import { ProcessPanel } from '../components/terminal/ProcessPanel';
 import { StatusPanel } from '../components/status/StatusPanel';
 import { WorktreeStatus } from '../components/WorktreeStatus';
 import { DiffReview } from '../components/review/DiffReview';
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '../components/ui/resizable';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
-import { useTaskStore, type TaskEntry } from '../stores/taskStore';
 
 export function AppRoutes() {
   const [projectDir, setProjectDir] = useState('');
-  const [reviewTaskId, setReviewTaskId] = useState<string | null>(null);
+  const [reviewBranchName, setReviewBranchName] = useState<string | null>(null);
 
   const handleBrowse = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false });
@@ -22,27 +20,8 @@ export function AppRoutes() {
     }
   }, []);
 
-  // Find any task in 'review' status
-  const tasks = useTaskStore((s) => s.tasks);
-  const reviewTask: TaskEntry | undefined = useMemo(() => {
-    for (const task of tasks.values()) {
-      if (task.status === 'review') return task;
-    }
-    return undefined;
-  }, [tasks]);
-
-  // Compute branch name from taskId: whalecode/task/{first 8 chars}
-  const reviewBranchName = useMemo(() => {
-    if (!reviewTaskId) return null;
-    return `whalecode/task/${reviewTaskId.slice(0, 8)}`;
-  }, [reviewTaskId]);
-
   const handleReviewClose = () => {
-    // Mark task as completed when review finishes
-    if (reviewTaskId) {
-      useTaskStore.getState().updateTaskStatus(reviewTaskId, 'completed');
-    }
-    setReviewTaskId(null);
+    setReviewBranchName(null);
   };
 
   return (
@@ -53,10 +32,10 @@ export function AppRoutes() {
           <AppShell>
             <div className="flex flex-col h-full">
               {/* Project directory bar */}
-              <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-zinc-800 bg-zinc-900/60">
+              <div className="shrink-0 flex items-center gap-3 px-6 py-3 border-b border-white/5 bg-black/20 backdrop-blur-md">
                 <label
                   htmlFor="project-dir-input"
-                  className="text-xs text-zinc-500 whitespace-nowrap"
+                  className="text-xs font-medium text-zinc-400 whitespace-nowrap"
                 >
                   Project:
                 </label>
@@ -66,53 +45,69 @@ export function AppRoutes() {
                   value={projectDir}
                   onChange={(e) => setProjectDir(e.target.value)}
                   placeholder="/path/to/project"
-                  className="flex-1 h-8 font-mono text-xs"
+                  className="flex-1 h-8 font-mono text-xs bg-black/40 border-white/10 text-zinc-200 focus-visible:ring-violet-500/50"
                 />
-                <Button variant="outline" size="sm" onClick={handleBrowse}>
+                <Button variant="outline" size="sm" onClick={handleBrowse} className="bg-white/5 border-white/10 hover:bg-white/10 text-zinc-200 transition-colors">
                   Browse
                 </Button>
               </div>
 
               {/* Status panel - shows when any task exists */}
-              <StatusPanel className="shrink-0 px-3 py-2 border-b border-zinc-800 bg-zinc-900/40" />
+              <StatusPanel className="shrink-0 px-4 py-2 border-b border-white/5 bg-black/20" />
 
-              {/* Review Changes button when a task is in review status */}
-              {reviewTask && !reviewTaskId && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-zinc-800 bg-amber-900/20">
-                  <span className="text-xs text-amber-300">
-                    Task ready for review: {reviewTask.description}
-                  </span>
-                  <Button size="sm" onClick={() => setReviewTaskId(reviewTask.taskId)} className="ml-auto">
-                    Review Changes
-                  </Button>
-                </div>
-              )}
-
-              {/* Main content + worktree panel (resizable when project selected) */}
+              {/* Main content */}
               {projectDir ? (
-                <ResizablePanelGroup orientation="vertical" className="flex-1 min-h-0">
-                  <ResizablePanel defaultSize={80} minSize={40}>
-                    {reviewTaskId && reviewBranchName && projectDir ? (
-                      <DiffReview
-                        projectDir={projectDir}
-                        branchName={reviewBranchName}
-                        taskId={reviewTaskId}
-                        onClose={handleReviewClose}
-                      />
-                    ) : (
-                      <ProcessPanel projectDir={projectDir} />
-                    )}
-                  </ResizablePanel>
-                  <ResizableHandle withHandle />
-                  <ResizablePanel defaultSize={20} minSize={8} maxSize={40} collapsible collapsedSize={0}>
-                    <WorktreeStatus projectDir={projectDir} />
-                  </ResizablePanel>
-                </ResizablePanelGroup>
+                <div className="flex-1 min-h-0">
+                  {reviewBranchName ? (
+                    <DiffReview
+                      projectDir={projectDir}
+                      branchName={reviewBranchName}
+                      taskId=""
+                      onClose={handleReviewClose}
+                    />
+                  ) : (
+                    <ProcessPanel projectDir={projectDir} />
+                  )}
+                </div>
               ) : (
                 <div className="flex-1 min-h-0">
                   <ProcessPanel projectDir={projectDir} />
                 </div>
               )}
+            </div>
+          </AppShell>
+        }
+      />
+      <Route
+        path="/worktrees"
+        element={
+          <AppShell>
+            <div className="flex flex-col h-full">
+              {/* Project directory bar */}
+              <div className="shrink-0 flex items-center gap-3 px-6 py-3 border-b border-white/5 bg-black/20 backdrop-blur-md">
+                <label
+                  htmlFor="project-dir-input"
+                  className="text-xs font-medium text-zinc-400 whitespace-nowrap"
+                >
+                  Project:
+                </label>
+                <Input
+                  id="project-dir-input"
+                  type="text"
+                  value={projectDir}
+                  onChange={(e) => setProjectDir(e.target.value)}
+                  placeholder="/path/to/project"
+                  className="flex-1 h-8 font-mono text-xs bg-black/40 border-white/10 text-zinc-200 focus-visible:ring-violet-500/50"
+                />
+                <Button variant="outline" size="sm" onClick={handleBrowse} className="bg-white/5 border-white/10 hover:bg-white/10 text-zinc-200 transition-colors">
+                  Browse
+                </Button>
+              </div>
+
+              {/* Full height Worktree Status */}
+              <div className="flex-1 min-h-0 p-6 overflow-y-auto">
+                <WorktreeStatus projectDir={projectDir} onReview={setReviewBranchName} />
+              </div>
             </div>
           </AppShell>
         }

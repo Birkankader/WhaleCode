@@ -13,7 +13,7 @@ pub async fn create_worktree(
     task_id: String,
     project_dir: String,
 ) -> Result<WorktreeEntry, String> {
-    let project_path = std::path::PathBuf::from(project_dir);
+    let project_path = super::expand_tilde(&project_dir);
     tokio::task::spawn_blocking(move || {
         let manager = WorktreeManager::new(project_path);
         manager.create_for_task(&task_id)
@@ -33,7 +33,7 @@ pub async fn check_worktree_conflicts(
     branch_a: String,
     branch_b: String,
 ) -> Result<ConflictReport, String> {
-    let project_path = std::path::PathBuf::from(project_dir);
+    let project_path = super::expand_tilde(&project_dir);
     tokio::task::spawn_blocking(move || {
         // Resolve worktree paths from branch names
         // Branches follow pattern: whalecode/task/{prefix}
@@ -79,7 +79,7 @@ pub async fn get_worktree_diff(
     project_dir: String,
     branch_name: String,
 ) -> Result<WorktreeDiffReport, String> {
-    let project_path = std::path::PathBuf::from(project_dir);
+    let project_path = super::expand_tilde(&project_dir);
     tokio::task::spawn_blocking(move || {
         // Auto-commit pending changes in the worktree before diffing
         let manager = WorktreeManager::new(project_path.clone());
@@ -109,7 +109,7 @@ pub async fn merge_worktree(
     branch_name: String,
     accepted_files: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let project_path = std::path::PathBuf::from(project_dir);
+    let project_path = super::expand_tilde(&project_dir);
     tokio::task::spawn_blocking(move || {
         let repo =
             git2::Repository::open(&project_path).map_err(|e| format!("Failed to open repo: {}", e))?;
@@ -163,11 +163,7 @@ pub async fn merge_worktree(
             diff::selective_merge(&project_path, &branch_name, files)?;
         } else {
             // Full fast-forward merge (original behavior)
-            let branch_commit = repo
-                .revparse_single(&branch_name)
-                .map_err(|e| format!("Failed to resolve '{}': {}", branch_name, e))?
-                .peel_to_commit()
-                .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_name, e))?;
+            let branch_commit = crate::worktree::resolve_branch_commit(&repo, &branch_name)?;
 
             let default_ref_name = format!("refs/heads/{}", default_branch);
             let mut default_ref = repo
@@ -222,7 +218,7 @@ pub async fn merge_worktree(
 #[tauri::command]
 #[specta::specta]
 pub async fn cleanup_worktrees(project_dir: String) -> Result<Vec<String>, String> {
-    let project_path = std::path::PathBuf::from(project_dir);
+    let project_path = super::expand_tilde(&project_dir);
     tokio::task::spawn_blocking(move || {
         let manager = WorktreeManager::new(project_path);
         manager.cleanup_stale_worktrees()
@@ -235,7 +231,7 @@ pub async fn cleanup_worktrees(project_dir: String) -> Result<Vec<String>, Strin
 #[tauri::command]
 #[specta::specta]
 pub async fn list_worktrees(project_dir: String) -> Result<Vec<String>, String> {
-    let project_path = std::path::PathBuf::from(project_dir);
+    let project_path = super::expand_tilde(&project_dir);
     tokio::task::spawn_blocking(move || {
         let manager = WorktreeManager::new(project_path);
         manager.list_worktrees()

@@ -62,9 +62,9 @@ async resumeProcess(taskId: string) : Promise<Result<null, string>> {
  * 
  * Returns the task_id for tracking the process.
  */
-async spawnClaudeTask(prompt: string, projectDir: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+async spawnClaudeTask(prompt: string, projectDir: string, taskId: string | null, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("spawn_claude_task", { prompt, projectDir, onEvent }) };
+    return { status: "ok", data: await TAURI_INVOKE("spawn_claude_task", { prompt, projectDir, taskId, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -183,7 +183,7 @@ async checkWorktreeConflicts(projectDir: string, branchA: string, branchB: strin
 },
 /**
  * Generate per-file unified diffs between a worktree branch and the default branch.
- *
+ * 
  * Auto-commits any uncommitted changes in the worktree before generating diffs
  * to capture all tool changes.
  */
@@ -197,13 +197,10 @@ async getWorktreeDiff(projectDir: string, branchName: string) : Promise<Result<W
 },
 /**
  * Merge a worktree branch into the main/default branch.
- *
+ * 
  * SAFE-04: Pre-merge conflict gate — checks for conflicts against the default branch
  * and all other active whalecode branches before merging. If any conflicts are detected,
  * the merge is blocked and an error is returned.
- *
- * When acceptedFiles is provided, performs selective merge (only accepted files).
- * When acceptedFiles is null, performs full fast-forward merge (backward compatible).
  */
 async mergeWorktree(projectDir: string, branchName: string, acceptedFiles: string[] | null) : Promise<Result<null, string>> {
     try {
@@ -246,9 +243,9 @@ async listWorktrees(projectDir: string) : Promise<Result<string[], string>> {
  * 
  * Returns the task_id for tracking the process.
  */
-async spawnGeminiTask(prompt: string, projectDir: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+async spawnGeminiTask(prompt: string, projectDir: string, taskId: string | null, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("spawn_gemini_task", { prompt, projectDir, onEvent }) };
+    return { status: "ok", data: await TAURI_INVOKE("spawn_gemini_task", { prompt, projectDir, taskId, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -306,6 +303,73 @@ async deleteGeminiApiKey() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Spawn a Codex CLI subprocess in headless streaming mode.
+ * 
+ * Retrieves the API key from the macOS Keychain, builds the Codex CLI command,
+ * and spawns it through the process manager with secure env var injection.
+ * The prompt is expected to be already optimized by the prompt engine (dispatch_task handles this).
+ * 
+ * Returns the task_id for tracking the process.
+ */
+async spawnCodexTask(prompt: string, projectDir: string, taskId: string | null, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("spawn_codex_task", { prompt, projectDir, taskId, onEvent }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Store a Codex (OpenAI) API key in the macOS Keychain.
+ * 
+ * Validates that the key starts with "sk-" (OpenAI key format) and is non-empty.
+ * SECURITY: The key is never logged or included in error messages.
+ */
+async setCodexApiKey(key: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_codex_api_key", { key }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Check whether a Codex (OpenAI) API key is stored in the macOS Keychain.
+ */
+async hasCodexApiKey() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("has_codex_api_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Validate a Codex CLI result JSON for silent failures.
+ * 
+ * Parses the result JSON line with `parse_stream_line`, then validates via
+ * `validate_result` — checking empty response, error status, and error events.
+ */
+async validateCodexResult(resultJson: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_codex_result", { resultJson }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the stored Codex (OpenAI) API key from the macOS Keychain.
+ */
+async deleteCodexApiKey() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_codex_api_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Suggest the best tool for a given prompt based on keyword heuristics and tool availability.
  * 
  * Checks which tools currently have running processes to determine busyness,
@@ -325,9 +389,38 @@ async suggestTool(prompt: string) : Promise<Result<RoutingSuggestion, string>> {
  * Enforces max 1 running process per tool. Routes to the correct spawn function
  * based on tool_name, then updates the ProcessEntry with tool metadata.
  */
-async dispatchTask(prompt: string, projectDir: string, toolName: string, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
+async dispatchTask(prompt: string, projectDir: string, toolName: string, taskId: string | null, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("dispatch_task", { prompt, projectDir, toolName, onEvent }) };
+    return { status: "ok", data: await TAURI_INVOKE("dispatch_task", { prompt, projectDir, toolName, taskId, onEvent }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Dispatch an orchestrated multi-agent task.
+ * 
+ * Creates an orchestration plan from the prompt and config, then dispatches
+ * each sub-task to its assigned agent. Each sub-task gets its own worktree
+ * for isolation. Returns the plan for frontend tracking.
+ */
+async dispatchOrchestratedTask(prompt: string, projectDir: string, config: OrchestratorConfig, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<OrchestrationPlan, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dispatch_orchestrated_task", { prompt, projectDir, config, onEvent }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get context/token usage information for agents involved in a task.
+ * 
+ * Reads from the process state to gather context info per agent
+ * associated with the given orchestration plan task_id.
+ */
+async getAgentContextInfo(taskId: string) : Promise<Result<AgentContextInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_agent_context_info", { taskId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -359,22 +452,27 @@ async optimizePrompt(prompt: string, projectDir: string) : Promise<Result<Optimi
 
 /** user-defined types **/
 
+export type AgentConfig = { tool_name: string; sub_agent_count: number; is_master: boolean }
+export type AgentContextInfo = { tool_name: string; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cost_usd: number | null; status: string }
 export type ConflictFile = { path: string }
 export type ConflictReport = { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
-export type FileDiff = { path: string; status: string; old_path: string | null; patch: string; additions: number; deletions: number }
-export type WorktreeDiffReport = { branch_name: string; default_branch: string; files: FileDiff[]; total_additions: number; total_deletions: number }
 /**
  * A context event with its associated file paths, suitable for IPC return.
  */
 export type ContextEventWithFiles = { id: number; task_id: string; tool_name: string; event_type: string; prompt: string | null; summary: string | null; project_dir: string; metadata: string | null; duration_ms: number | null; cost_usd: number | null; created_at: string; files: string[] }
 export type FileChangeRecord = { file_path: string; change_type: string; tool_name: string; summary: string | null; created_at: string }
+export type FileDiff = { path: string; status: string; old_path: string | null; patch: string; additions: number; deletions: number }
 /**
  * An optimized prompt for a specific tool, ready for IPC export.
  */
 export type OptimizedPrompt = { tool_name: string; original_prompt: string; optimized_prompt: string }
+export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string }
+export type OrchestratorConfig = { agents: AgentConfig[]; master_agent: string }
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
 export type RoutingSuggestion = { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }
+export type SubTask = { id: string; prompt: string; assigned_agent: string; status: string; parent_task_id: string }
 export type TAURI_CHANNEL<TSend> = null
+export type WorktreeDiffReport = { branch_name: string; default_branch: string; files: FileDiff[]; total_additions: number; total_deletions: number }
 export type WorktreeEntry = { task_id: string; worktree_name: string; branch_name: string; path: string; 
 /**
  * ISO 8601 timestamp string (specta does not implement Type for chrono::DateTime)

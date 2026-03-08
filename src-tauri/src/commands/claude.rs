@@ -15,66 +15,28 @@ use crate::state::AppState;
 pub async fn spawn_claude_task(
     prompt: String,
     project_dir: String,
+    task_id: Option<String>,
     on_event: Channel<OutputEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    // Clean up stale worktrees from previous crashed sessions (best-effort, non-blocking)
-    // This runs on the first task spawn when project_dir is known, satisfying SAFE-03 cleanup requirement.
-    {
-        let cleanup_dir = project_dir.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let manager =
-                crate::worktree::manager::WorktreeManager::new(std::path::PathBuf::from(&cleanup_dir));
-            match manager.cleanup_stale_worktrees() {
-                Ok(cleaned) => {
-                    if !cleaned.is_empty() {
-                        eprintln!(
-                            "whalecode: cleaned {} stale worktrees: {:?}",
-                            cleaned.len(),
-                            cleaned
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("whalecode: failed to cleanup stale worktrees: {}", e);
-                }
-            }
-        })
-        .await;
-    }
-
-    // Retrieve API key from keychain (blocking call wrapped for async)
+    // Retrieve API key from keychain if available (optional — CLI handles its own auth)
     let api_key = tokio::task::spawn_blocking(|| {
-        crate::credentials::keychain::get_api_key()
+        crate::credentials::keychain::get_api_key().unwrap_or_default()
     })
     .await
-    .map_err(|e| format!("Failed to retrieve API key: {}", e))??;
+    .map_err(|e| format!("Failed to retrieve API key: {}", e))?;
 
     // Prompt is already optimized by dispatch_task's prompt engine — use directly
     let full_prompt = prompt;
 
-    // Generate task_id upfront so it can be used for both worktree creation and process tracking
-    let task_id = uuid::Uuid::new_v4().to_string();
+    // Use provided task_id or generate a new one
+    let task_id = task_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // Create an isolated worktree for this task
-    let task_id_for_wt = task_id.clone();
-    let project_dir_for_wt = project_dir.clone();
-    let worktree_entry = tokio::task::spawn_blocking(move || {
-        let manager =
-            crate::worktree::manager::WorktreeManager::new(std::path::PathBuf::from(&project_dir_for_wt));
-        manager.create_for_task(&task_id_for_wt)
-    })
-    .await
-    .map_err(|e| format!("Worktree creation failed: {}", e))??;
-
-    // Build Claude-specific command — use worktree path as cwd for isolation
-    let worktree_cwd = worktree_entry
-        .path
-        .to_str()
-        .ok_or_else(|| "Invalid worktree path".to_string())?
-        .to_string();
+    // Use project directory directly (no worktree isolation)
+    let expanded_dir = super::expand_tilde(&project_dir);
+    let cwd = expanded_dir.to_str().ok_or("Invalid project dir path")?;
     let adapter = crate::adapters::claude::ClaudeAdapter;
-    let cmd = crate::adapters::ToolAdapter::build_command(&adapter, &full_prompt, &worktree_cwd, &api_key);
+    let cmd = crate::adapters::ToolAdapter::build_command(&adapter, &full_prompt, cwd, &api_key);
 
     // Convert env Vec<(String, String)> to slice-compatible format
     let env_refs: Vec<(&str, &str)> = cmd.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

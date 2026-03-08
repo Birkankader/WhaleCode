@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { mockIPC } from '@tauri-apps/api/mocks';
 
 describe('IPC pipeline (FOUN-02)', () => {
@@ -36,7 +36,7 @@ describe('IPC pipeline (FOUN-02)', () => {
     });
 
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('start_stream', { onEvent: () => {} });
+    await invoke('start_stream', { onEvent: () => { } });
 
     expect(received).toHaveLength(2);
     expect(received[0].event).toBe('stdout');

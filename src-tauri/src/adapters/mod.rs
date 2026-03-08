@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod codex;
 pub mod gemini;
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,7 @@ pub trait ToolAdapter {
 mod tests {
     use super::*;
     use crate::adapters::claude::ClaudeAdapter;
+    use crate::adapters::codex::CodexAdapter;
     use crate::adapters::gemini::GeminiAdapter;
 
     #[test]
@@ -96,11 +98,23 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_adapter_implements_tool_trait() {
+        let adapter = CodexAdapter;
+        assert_eq!(adapter.name(), "Codex CLI");
+        let cmd = adapter.build_command("test prompt", "/tmp", "sk-key");
+        assert_eq!(cmd.cmd, "codex");
+        assert!(cmd.args.contains(&"--full-auto".to_string()));
+        let policy = adapter.retry_policy();
+        assert_eq!(policy.max_retries, 3);
+    }
+
+    #[test]
     fn test_adapters_are_interchangeable() {
-        // Both adapters can be used through the same trait reference
+        // All adapters can be used through the same trait reference
         let adapters: Vec<Box<dyn ToolAdapter>> = vec![
             Box::new(ClaudeAdapter),
             Box::new(GeminiAdapter),
+            Box::new(CodexAdapter),
         ];
         for adapter in &adapters {
             let cmd = adapter.build_command("hello", "/tmp", "key");

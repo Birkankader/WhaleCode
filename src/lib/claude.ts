@@ -6,10 +6,11 @@
  */
 
 export interface ClaudeStreamEvent {
-  type: 'init' | 'message' | 'tool_use' | 'tool_result' | 'result' | 'stream_event';
+  type: string;
   session_id?: string;
   role?: string;
   content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>;
+  message?: { role?: string; content?: Array<{ type: string; content?: string }> };
   name?: string;
   input?: unknown;
   output?: string;
@@ -51,7 +52,7 @@ export function parseClaudeEvent(line: string): ClaudeStreamEvent | null {
  *           or "[Error] {result}" if is_error
  * - unparseable: return raw line as-is
  */
-export function formatClaudeEvent(line: string): string {
+export function formatClaudeEvent(line: string): string | null {
   const event = parseClaudeEvent(line);
   if (!event) {
     return line;
@@ -63,7 +64,7 @@ export function formatClaudeEvent(line: string): string {
 
     case 'message': {
       if (!event.content || event.content.length === 0) {
-        return '';
+        return null;
       }
       return event.content
         .filter((block) => block.type === 'text' && block.text)
@@ -71,11 +72,19 @@ export function formatClaudeEvent(line: string): string {
         .join('\n');
     }
 
-    case 'tool_use':
-      return `[Tool: ${event.name}] ${JSON.stringify(event.input)}`;
+    case 'tool_use': {
+      const inputStr = JSON.stringify(event.input);
+      const truncatedInput = inputStr.length > 200 ? inputStr.slice(0, 197) + '...' : inputStr;
+      return `[Tool: ${event.name}] ${truncatedInput}`;
+    }
 
-    case 'tool_result':
-      return `[Result] ${event.output ?? ''}`;
+    case 'tool_result': {
+      const output = event.output ?? '';
+      if (output.length <= 500) return `[Result] ${output}`;
+      const lines = output.split('\n');
+      if (lines.length <= 5) return `[Result] ${output.slice(0, 500)}...`;
+      return `[Result] ${lines.slice(0, 3).join('\n')}\n  ... (${lines.length - 3} more lines)`;
+    }
 
     case 'result': {
       if (event.is_error) {
@@ -85,9 +94,11 @@ export function formatClaudeEvent(line: string): string {
     }
 
     case 'stream_event':
-      return line;
+      return null;
 
     default:
-      return line;
+      // Suppress verbose echo events (type: "user", "assistant", etc.)
+      // These contain full tool result content and are not useful to display
+      return null;
   }
 }

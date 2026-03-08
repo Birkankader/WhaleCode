@@ -2,7 +2,7 @@ pub mod models;
 pub mod templates;
 
 use models::{ContextEventSummary, OptimizedPrompt, PromptContext};
-use templates::{claude_template, default_template, gemini_template};
+use templates::{claude_template, codex_template, default_template, gemini_template};
 
 use crate::context::queries::get_recent_events;
 use crate::context::store::ContextStore;
@@ -16,6 +16,7 @@ impl PromptEngine {
         let optimized = match tool_name {
             "claude" => claude_template(raw_prompt, context),
             "gemini" => gemini_template(raw_prompt, context),
+            "codex" => codex_template(raw_prompt, context),
             _ => default_template(raw_prompt, context),
         };
 
@@ -31,6 +32,7 @@ impl PromptEngine {
         vec![
             Self::optimize(raw_prompt, "claude", context),
             Self::optimize(raw_prompt, "gemini", context),
+            Self::optimize(raw_prompt, "codex", context),
         ]
     }
 }
@@ -130,12 +132,13 @@ mod tests {
     }
 
     #[test]
-    fn optimize_all_returns_two_entries() {
+    fn optimize_all_returns_three_entries() {
         let ctx = context_with_events();
         let results = PromptEngine::optimize_all("fix bug", &ctx);
-        assert_eq!(results.len(), 2, "optimize_all should return exactly 2 entries");
+        assert_eq!(results.len(), 3, "optimize_all should return exactly 3 entries");
         assert_eq!(results[0].tool_name, "claude");
         assert_eq!(results[1].tool_name, "gemini");
+        assert_eq!(results[2].tool_name, "codex");
     }
 
     #[test]

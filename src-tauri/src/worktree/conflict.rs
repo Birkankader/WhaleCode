@@ -14,18 +14,9 @@ pub fn detect_conflicts(
 ) -> Result<ConflictReport, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?;
 
-    // Resolve both branches to commits
-    let commit_a = repo
-        .revparse_single(branch_a)
-        .map_err(|e| format!("Failed to resolve branch '{}': {}", branch_a, e))?
-        .peel_to_commit()
-        .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_a, e))?;
-
-    let commit_b = repo
-        .revparse_single(branch_b)
-        .map_err(|e| format!("Failed to resolve branch '{}': {}", branch_b, e))?
-        .peel_to_commit()
-        .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_b, e))?;
+    // Resolve both branches to commits (using find_branch to handle `/` in names)
+    let commit_a = super::resolve_branch_commit(&repo, branch_a)?;
+    let commit_b = super::resolve_branch_commit(&repo, branch_b)?;
 
     // Find merge base (common ancestor)
     let merge_base = repo

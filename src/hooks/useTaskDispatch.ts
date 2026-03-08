@@ -4,11 +4,12 @@ import { commands } from '../bindings';
 import type { OutputEvent, RoutingSuggestion } from '../bindings';
 import { formatClaudeEvent } from '../lib/claude';
 import { formatGeminiEvent } from '../lib/gemini';
+import { formatCodexEvent } from '../lib/codex';
 import {
   emitProcessOutput,
   useProcessStore,
 } from './useProcess';
-import { useTaskStore, type ToolName } from '../stores/taskStore';
+import { useTaskStore, type ToolName, type OrchestratorConfig } from '../stores/taskStore';
 
 /**
  * Unified task dispatch hook that composes useClaudeTask/useGeminiTask patterns
@@ -91,13 +92,18 @@ export function useTaskDispatch() {
       let resolvedTaskId: string | null = null;
       const earlyEvents: OutputEvent[] = [];
 
-      const formatEvent = toolName === 'claude' ? formatClaudeEvent : formatGeminiEvent;
+      const formatEvent =
+        toolName === 'claude' ? formatClaudeEvent :
+        toolName === 'codex' ? formatCodexEvent :
+        formatGeminiEvent;
 
       channel.onmessage = (msg: OutputEvent) => {
         let formattedMsg = msg;
 
         if (msg.event === 'stdout') {
-          formattedMsg = { event: 'stdout', data: formatEvent(msg.data) };
+          const formatted = formatEvent(msg.data);
+          if (!formatted) return; // Skip empty/suppressed events
+          formattedMsg = { event: 'stdout', data: formatted };
         }
 
         if (msg.event === 'exit') {
@@ -112,10 +118,9 @@ export function useTaskDispatch() {
           );
 
           // Update task store status
-          // Successful tasks go to 'review' so user can inspect diffs before merge
           useTaskStore.getState().updateTaskStatus(
             tempId,
-            code === 0 ? 'review' : 'failed',
+            code === 0 ? 'completed' : 'failed',
           );
 
           // Emit the exit event
@@ -132,7 +137,7 @@ export function useTaskDispatch() {
       };
 
       try {
-        const result = await commands.dispatchTask(prompt, projectDir, toolName, channel);
+        const result = await commands.dispatchTask(prompt, projectDir, toolName, tempId, channel);
 
         if (result.status === 'error') {
           console.error('Failed to dispatch task:', result.error);
@@ -195,5 +200,29 @@ export function useTaskDispatch() {
     [],
   );
 
-  return { suggestTool, dispatchTask, isToolBusy };
+  const dispatchOrchestratedTask = useCallback(
+    async (
+      prompt: string,
+      projectDir: string,
+      orchestratorConfig: OrchestratorConfig,
+    ): Promise<Map<ToolName, string>> => {
+      const results = new Map<ToolName, string>();
+      const dispatches = orchestratorConfig.agents.map(async (agentConfig) => {
+        const taskId = await dispatchTask(
+          prompt,
+          projectDir,
+          agentConfig.toolName,
+        );
+        if (taskId) {
+          results.set(agentConfig.toolName, taskId);
+        }
+      });
+
+      await Promise.allSettled(dispatches);
+      return results;
+    },
+    [dispatchTask],
+  );
+
+  return { suggestTool, dispatchTask, dispatchOrchestratedTask, isToolBusy };
 }

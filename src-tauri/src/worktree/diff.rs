@@ -34,21 +34,13 @@ pub fn generate_worktree_diff(
 
     let default_branch = find_default_branch(&repo)?;
 
-    // Resolve both branches to trees
-    let default_commit = repo
-        .revparse_single(&default_branch)
-        .map_err(|e| format!("Failed to resolve '{}': {}", default_branch, e))?
-        .peel_to_commit()
-        .map_err(|e| format!("Failed to peel '{}' to commit: {}", default_branch, e))?;
+    // Resolve both branches to trees (using find_branch to handle `/` in names)
+    let default_commit = super::resolve_branch_commit(&repo, &default_branch)?;
     let default_tree = default_commit
         .tree()
         .map_err(|e| format!("Failed to get tree for '{}': {}", default_branch, e))?;
 
-    let branch_commit = repo
-        .revparse_single(branch_name)
-        .map_err(|e| format!("Failed to resolve '{}': {}", branch_name, e))?
-        .peel_to_commit()
-        .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_name, e))?;
+    let branch_commit = super::resolve_branch_commit(&repo, branch_name)?;
     let branch_tree = branch_commit
         .tree()
         .map_err(|e| format!("Failed to get tree for '{}': {}", branch_name, e))?;
@@ -155,21 +147,13 @@ pub fn selective_merge(
 
     let default_branch = find_default_branch(&repo)?;
 
-    // Resolve commits and trees
-    let default_commit = repo
-        .revparse_single(&default_branch)
-        .map_err(|e| format!("Failed to resolve '{}': {}", default_branch, e))?
-        .peel_to_commit()
-        .map_err(|e| format!("Failed to peel '{}' to commit: {}", default_branch, e))?;
+    // Resolve commits and trees (using find_branch to handle `/` in names)
+    let default_commit = super::resolve_branch_commit(&repo, &default_branch)?;
     let default_tree = default_commit
         .tree()
         .map_err(|e| format!("Failed to get default tree: {}", e))?;
 
-    let branch_commit = repo
-        .revparse_single(branch_name)
-        .map_err(|e| format!("Failed to resolve '{}': {}", branch_name, e))?
-        .peel_to_commit()
-        .map_err(|e| format!("Failed to peel '{}' to commit: {}", branch_name, e))?;
+    let branch_commit = super::resolve_branch_commit(&repo, branch_name)?;
     let branch_tree = branch_commit
         .tree()
         .map_err(|e| format!("Failed to get branch tree: {}", e))?;

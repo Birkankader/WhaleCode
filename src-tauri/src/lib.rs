@@ -10,12 +10,15 @@ mod worktree;
 mod state;
 
 use commands::{
-    cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,
-    delete_claude_api_key, delete_gemini_api_key, dispatch_task, get_context_summary,
-    get_recent_changes, get_task_count, has_claude_api_key, has_gemini_api_key, list_worktrees,
-    merge_worktree, optimize_prompt, pause_process, record_task_completion_cmd, resume_process,
-    set_claude_api_key, set_gemini_api_key, spawn_claude_task, spawn_gemini_task, spawn_process,
-    start_stream, suggest_tool, validate_claude_result, validate_gemini_result,
+    cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
+    delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key,
+    dispatch_orchestrated_task, dispatch_task, get_agent_context_info, get_context_summary,
+    get_recent_changes, get_task_count, get_worktree_diff, has_claude_api_key, has_codex_api_key,
+    has_gemini_api_key, list_worktrees, merge_worktree, optimize_prompt, pause_process,
+    record_task_completion_cmd, resume_process, set_claude_api_key, set_codex_api_key,
+    set_gemini_api_key, spawn_claude_task, spawn_codex_task, spawn_gemini_task, spawn_process,
+    start_stream, suggest_tool, validate_claude_result, validate_codex_result,
+    validate_gemini_result,
 };
 use state::AppState;
 use tauri::Manager;
@@ -49,8 +52,15 @@ pub fn run() {
         has_gemini_api_key,
         validate_gemini_result,
         delete_gemini_api_key,
+        spawn_codex_task,
+        set_codex_api_key,
+        has_codex_api_key,
+        validate_codex_result,
+        delete_codex_api_key,
         suggest_tool,
         dispatch_task,
+        dispatch_orchestrated_task,
+        get_agent_context_info,
         optimize_prompt,
     ]);
 
@@ -69,6 +79,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(invoke_handler)
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {

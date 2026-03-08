@@ -1,15 +1,34 @@
 pub mod claude;
+pub mod codex;
 pub mod gemini;
 pub mod context;
+pub mod orchestrator;
 pub mod process;
 pub mod prompt;
 pub mod router;
 pub mod worktree;
 
+use std::path::PathBuf;
 use tauri::ipc::Channel;
 
 use crate::ipc::events::OutputEvent;
 use crate::state::AppState;
+
+/// Expand `~` at the start of a path to the user's home directory.
+/// Uses `HOME` on Unix and `USERPROFILE` on Windows.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var(home_var) {
+            return PathBuf::from(home).join(rest);
+        }
+    } else if path == "~" {
+        if let Ok(home) = std::env::var(home_var) {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from(path)
+}
 
 pub use claude::{
     delete_claude_api_key, has_claude_api_key, set_claude_api_key, spawn_claude_task,
@@ -19,9 +38,14 @@ pub use gemini::{
     delete_gemini_api_key, has_gemini_api_key, set_gemini_api_key, spawn_gemini_task,
     validate_gemini_result,
 };
+pub use codex::{
+    delete_codex_api_key, has_codex_api_key, set_codex_api_key, spawn_codex_task,
+    validate_codex_result,
+};
 pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
+pub use orchestrator::{dispatch_orchestrated_task, get_agent_context_info};
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
     check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,

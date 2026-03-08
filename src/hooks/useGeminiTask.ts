@@ -126,6 +126,13 @@ export function useGeminiTask() {
               );
             }
 
+            console.log(
+              `[GeminiTask ${resolvedTaskId}] Completed.`,
+              `Exit Code: ${msg.data}.`,
+              `Silent Failure: ${isSilentFailure}.`,
+              `Last Result JSON: ${lastResultJson ? lastResultJson : 'NONE'}`
+            );
+
             resolve({ taskId: resolvedTaskId, hitRateLimit, silentFailure: isSilentFailure });
             return;
           }
@@ -139,7 +146,7 @@ export function useGeminiTask() {
         };
 
         // Spawn the task
-        commands.spawnGeminiTask(prompt, projectDir, channel).then((result) => {
+        commands.spawnGeminiTask(prompt, projectDir, null, channel).then((result) => {
           if (result.status === 'error') {
             console.error('Failed to spawn Gemini task:', result.error);
             resolve({ taskId: null, hitRateLimit: false, silentFailure: false });

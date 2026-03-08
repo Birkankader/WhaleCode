@@ -45,6 +45,27 @@ fn format_context_for_gemini(events: &[ContextEventSummary]) -> String {
     section
 }
 
+/// Format context events in Codex's flat list style (similar to Gemini).
+fn format_context_for_codex(events: &[ContextEventSummary]) -> String {
+    if events.is_empty() {
+        return String::new();
+    }
+
+    let mut section = String::from("Context: Recent project changes:\n");
+    for event in events {
+        let files_str = if event.files.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", event.files.join(", "))
+        };
+        section.push_str(&format!(
+            "- {} by {} at {}{}\n",
+            event.summary, event.tool_name, event.created_at, files_str
+        ));
+    }
+    section
+}
+
 /// Truncate context section to keep total prompt under MAX_PROMPT_CHARS.
 fn truncate_to_fit(base: &str, context_section: &str, task_section: &str) -> String {
     let base_len = base.len() + task_section.len() + 20; // 20 for separators
@@ -81,6 +102,20 @@ pub fn claude_template(prompt: &str, context: &PromptContext) -> String {
 pub fn gemini_template(prompt: &str, context: &PromptContext) -> String {
     let task_section = format!("Task: {}", prompt);
     let context_section = format_context_for_gemini(&context.recent_events);
+
+    if context_section.is_empty() {
+        return truncate_final(task_section);
+    }
+
+    let truncated_context = truncate_to_fit("", &context_section, &task_section);
+    let result = format!("{}\n\n{}", truncated_context, task_section);
+    truncate_final(result)
+}
+
+/// Produce a flat Codex prompt with context-first structure (same style as Gemini — flat).
+pub fn codex_template(prompt: &str, context: &PromptContext) -> String {
+    let task_section = format!("Task: {}", prompt);
+    let context_section = format_context_for_codex(&context.recent_events);
 
     if context_section.is_empty() {
         return truncate_final(task_section);

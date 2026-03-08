@@ -74,7 +74,7 @@ export function useClaudeTask() {
               /* not JSON, ignore */
             }
 
-            formattedMsg = { event: 'stdout', data: formatClaudeEvent(msg.data) };
+            formattedMsg = { event: 'stdout', data: formatClaudeEvent(msg.data) || '' };
 
             // Detect silent failure in formatted output
             const lower = msg.data.toLowerCase();
@@ -125,6 +125,13 @@ export function useClaudeTask() {
               );
             }
 
+            console.log(
+              `[ClaudeTask ${resolvedTaskId}] Completed.`,
+              `Exit Code: ${msg.data}.`,
+              `Silent Failure: ${isSilentFailure}.`,
+              `Last Result JSON: ${lastResultJson ? lastResultJson : 'NONE'}`
+            );
+
             resolve({ taskId: resolvedTaskId, hitRateLimit, silentFailure: isSilentFailure });
             return;
           }
@@ -138,7 +145,7 @@ export function useClaudeTask() {
         };
 
         // Spawn the task
-        commands.spawnClaudeTask(prompt, projectDir, channel).then((result) => {
+        commands.spawnClaudeTask(prompt, projectDir, null, channel).then((result) => {
           if (result.status === 'error') {
             console.error('Failed to spawn Claude task:', result.error);
             resolve({ taskId: null, hitRateLimit: false, silentFailure: false });

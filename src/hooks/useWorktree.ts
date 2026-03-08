@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { commands } from '../bindings';
 import type { ConflictReport, WorktreeDiffReport } from '../bindings';
+import { useTaskStore } from '../stores/taskStore';
 
 /**
  * React hook for managing git worktrees via IPC.
@@ -147,6 +148,25 @@ export function useWorktree(projectDir: string) {
       refreshWorktrees();
     }
   }, [projectDir, refreshWorktrees]);
+
+  // Refresh when any task transitions to 'running' (worktree just created)
+  const prevTaskStatuses = useRef<Map<string, string>>(new Map());
+  const tasks = useTaskStore((s) => s.tasks);
+  useEffect(() => {
+    let shouldRefresh = false;
+    const currentStatuses = new Map<string, string>();
+    for (const [id, t] of tasks.entries()) {
+      currentStatuses.set(id, t.status);
+      const prev = prevTaskStatuses.current.get(id);
+      if (t.status === 'running' && prev !== 'running') {
+        shouldRefresh = true;
+      }
+    }
+    prevTaskStatuses.current = currentStatuses;
+    if (shouldRefresh && projectDir) {
+      refreshWorktrees();
+    }
+  }, [tasks, projectDir, refreshWorktrees]);
 
   return {
     worktrees,

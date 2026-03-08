@@ -1,43 +1,67 @@
 import { useState } from 'react';
-import { Settings } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router';
+import { Settings, Command, LayoutGrid, Terminal } from 'lucide-react';
 import { ApiKeySettings } from '../settings/ApiKeySettings';
 import { Button } from '../ui/button';
-import { Separator } from '../ui/separator';
 
 export function Sidebar() {
   const [showSettings, setShowSettings] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   return (
     <aside
       data-testid="sidebar"
-      className="w-56 h-full bg-zinc-900 border-r border-zinc-800 flex flex-col"
+      className="w-64 h-full flex flex-col bg-transparent text-zinc-300 relative z-20"
     >
-      <div className="px-4 py-4">
-        <h1 className="text-lg font-semibold text-zinc-100">WhaleCode</h1>
+      <div className="px-6 py-8 flex items-center gap-3">
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg shadow-violet-500/20">
+          <Command className="w-4 h-4 text-white" />
+        </div>
+        <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-zinc-100 to-zinc-400 tracking-tight">WhaleCode</h1>
       </div>
-      <nav className="flex-1 px-2">
-        {/* Navigation items added as features grow */}
-      </nav>
 
-      <Separator className="bg-zinc-800" />
-
-      {/* Settings button at bottom */}
-      <div className="px-2 py-3">
+      <nav className="flex-1 px-4 space-y-1 mt-4">
         <Button
           variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-2 text-zinc-400 hover:text-zinc-200"
+          onClick={() => navigate('/')}
+          className={`w-full justify-start gap-3 rounded-xl transition-all ${location.pathname === '/'
+              ? 'bg-white/10 text-zinc-100 shadow-sm'
+              : 'bg-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+            }`}
+        >
+          <Terminal className={`w-4 h-4 ${location.pathname === '/' ? 'text-violet-400' : ''}`} />
+          <span className="font-medium">Orchestrator</span>
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={() => navigate('/worktrees')}
+          className={`w-full justify-start gap-3 rounded-xl transition-all ${location.pathname === '/worktrees'
+              ? 'bg-white/10 text-zinc-100 shadow-sm'
+              : 'bg-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+            }`}
+        >
+          <LayoutGrid className={`w-4 h-4 ${location.pathname === '/worktrees' ? 'text-violet-400' : ''}`} />
+          <span className="font-medium">Worktrees</span>
+        </Button>
+      </nav>
+
+      {/* Settings button at bottom */}
+      <div className="px-4 pb-6 mt-auto">
+        <Button
+          variant="ghost"
+          className="w-full justify-start gap-3 text-zinc-400 hover:text-zinc-200 hover:bg-white/5 rounded-xl transition-all"
           onClick={() => setShowSettings(!showSettings)}
         >
-          <Settings className="size-4" />
-          Settings
+          <Settings className="w-4 h-4" />
+          <span className="font-medium">Settings</span>
         </Button>
       </div>
 
       {/* Settings modal overlay */}
       {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm transition-all">
+          <div className="bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden transform scale-100 animate-in fade-in zoom-in duration-200">
             <ApiKeySettings onClose={() => setShowSettings(false)} />
           </div>
         </div>
