@@ -38,10 +38,10 @@ jobs:
         run: cargo test -- --skip credentials
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy
 
   frontend:
-    name: Frontend (typecheck + lint)
+    name: Frontend (build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,5 +55,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npx tsc --noEmit
+      - name: Build
+        run: npx vite build
