@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -78,6 +78,10 @@ pub struct AppStateInner {
     pub orchestration_plans: HashMap<TaskId, crate::router::orchestrator::OrchestrationPlan>,
     pub cached_prompt_context: Option<CachedPromptContext>,
     pub question_queue: Vec<crate::router::orchestrator::PendingQuestion>,
+    /// Tools that have been reserved for dispatch but not yet spawned.
+    /// Prevents TOCTOU races where two rapid dispatch calls for the same
+    /// tool both pass the "no running process" check before either spawns.
+    pub reserved_tools: HashSet<String>,
 }
 
 pub type AppState = Arc<Mutex<AppStateInner>>;
@@ -162,5 +166,66 @@ mod tests {
             tasks_since_cache: 0,
         };
         assert!(!cache.is_valid("/other/project"));
+    }
+
+    #[test]
+    fn reserved_tools_starts_empty() {
+        let state = AppState::default();
+        let inner = state.lock().unwrap();
+        assert!(inner.reserved_tools.is_empty());
+    }
+
+    #[test]
+    fn reserved_tools_insert_and_check() {
+        let state = AppState::default();
+        let mut inner = state.lock().unwrap();
+
+        // First insert succeeds
+        assert!(inner.reserved_tools.insert("claude".to_string()));
+        // Duplicate insert returns false (already reserved)
+        assert!(!inner.reserved_tools.insert("claude".to_string()));
+        // Different tool succeeds
+        assert!(inner.reserved_tools.insert("gemini".to_string()));
+    }
+
+    #[test]
+    fn reserved_tools_remove_allows_re_reservation() {
+        let state = AppState::default();
+        let mut inner = state.lock().unwrap();
+
+        inner.reserved_tools.insert("claude".to_string());
+        inner.reserved_tools.remove("claude");
+
+        // After removal, can reserve again
+        assert!(inner.reserved_tools.insert("claude".to_string()));
+    }
+
+    #[test]
+    fn reserved_tools_independent_of_processes() {
+        let state = AppState::default();
+        let mut inner = state.lock().unwrap();
+
+        // Reservation exists even with no matching process
+        inner.reserved_tools.insert("claude".to_string());
+        assert!(inner.reserved_tools.contains("claude"));
+        assert!(inner.processes.is_empty());
+
+        // Process exists without reservation
+        inner.reserved_tools.remove("claude");
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        inner.processes.insert(
+            "task-1".to_string(),
+            ProcessEntry {
+                pgid: 1234,
+                status: ProcessStatus::Running,
+                tool_name: "claude".to_string(),
+                task_description: "test".to_string(),
+                started_at: 0,
+                stdin_tx: None,
+                output_lines: vec![],
+                completion_rx: rx,
+            },
+        );
+        assert!(!inner.reserved_tools.contains("claude"));
     }
 }

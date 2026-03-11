@@ -40,10 +40,48 @@ pub async fn suggest_tool(
     Ok(TaskRouter::suggest(&prompt, claude_busy, gemini_busy, codex_busy))
 }
 
+/// RAII guard that releases a tool reservation when dropped.
+/// Ensures the reservation is always cleaned up, even on early `?` returns or panics.
+struct ReservationGuard {
+    state: AppState,
+    tool_name: String,
+    released: bool,
+}
+
+impl ReservationGuard {
+    fn new(state: AppState, tool_name: String) -> Self {
+        Self {
+            state,
+            tool_name,
+            released: false,
+        }
+    }
+
+    /// Explicitly release the reservation. Prevents double-release on drop.
+    fn release(&mut self) {
+        if !self.released {
+            if let Ok(mut inner) = self.state.lock() {
+                inner.reserved_tools.remove(&self.tool_name);
+            }
+            self.released = true;
+        }
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// Dispatch a task to the specified tool (claude or gemini).
 ///
 /// Enforces max 1 running process per tool. Routes to the correct spawn function
 /// based on tool_name, then updates the ProcessEntry with tool metadata.
+///
+/// Uses an atomic reservation pattern to prevent TOCTOU races: the tool is reserved
+/// in the same lock scope as the running-process check, and a RAII guard ensures
+/// the reservation is always released (even on early error returns).
 #[tauri::command]
 #[specta::specta]
 pub async fn dispatch_task(
@@ -55,15 +93,21 @@ pub async fn dispatch_task(
     state: tauri::State<'_, AppState>,
     context_store: tauri::State<'_, ContextStore>,
 ) -> Result<String, String> {
-    // Check if the requested tool already has a running process
-    {
-        let inner = state.lock().map_err(|e| e.to_string())?;
+    // Atomically check no running process AND reserve the tool to prevent TOCTOU races.
+    // Without this, two rapid dispatch calls could both pass the check before either spawns.
+    let mut guard = {
+        let mut inner = state.lock().map_err(|e| e.to_string())?;
         for (_id, proc) in inner.processes.iter() {
             if proc.tool_name == tool_name && matches!(proc.status, ProcessStatus::Running) {
                 return Err(format!("{} is already running a task", tool_name));
             }
         }
-    }
+        if !inner.reserved_tools.insert(tool_name.clone()) {
+            return Err(format!("{} is already being dispatched", tool_name));
+        }
+        // Guard takes ownership of reservation cleanup via Drop
+        ReservationGuard::new((*state).clone(), tool_name.clone())
+    };
 
     // Cache-aware prompt context: reuse cached context if valid, otherwise rebuild from SQLite
     // CRITICAL: Do NOT hold AppState lock while calling build_prompt_context (deadlock risk)
@@ -151,6 +195,9 @@ pub async fn dispatch_task(
         }
         _ => return Err(format!("Unknown tool: {}", tool_name)),
     };
+
+    // Spawn succeeded — release reservation explicitly (guard would also do it on drop)
+    guard.release();
 
     // Update the ProcessEntry with tool metadata
     {
