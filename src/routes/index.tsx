@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Routes, Route } from 'react-router';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AppShell } from '../components/layout/AppShell';
@@ -8,10 +8,25 @@ import { WorktreeStatus } from '../components/WorktreeStatus';
 import { DiffReview } from '../components/review/DiffReview';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
+import { initMessengerListener, cleanupMessengerListener } from '../stores/messengerStore';
+import { commands } from '../bindings';
 
 export function AppRoutes() {
   const [projectDir, setProjectDir] = useState('');
   const [reviewBranchName, setReviewBranchName] = useState<string | null>(null);
+
+  useEffect(() => {
+    initMessengerListener();
+    return () => cleanupMessengerListener();
+  }, []);
+
+  // Periodically clean up stale backend processes (every 5 minutes)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      commands.cleanupCompletedProcesses().catch(() => {});
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleBrowse = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false });

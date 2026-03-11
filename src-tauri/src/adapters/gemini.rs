@@ -2,7 +2,11 @@
 
 use serde::Deserialize;
 
-use super::{ToolAdapter, ToolCommand, RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy};
+use super::{
+    ToolAdapter, ToolCommand,
+    RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy,
+    Question, QuestionType, DisplayLine, DisplayLineType,
+};
 
 // ---------------------------------------------------------------------------
 // NDJSON Event Types
@@ -84,6 +88,16 @@ pub struct GeminiCommand {
     pub cwd: String,
 }
 
+/// Build the environment variable list for Gemini CLI.
+/// Always includes NO_COLOR=1; adds GEMINI_API_KEY when non-empty.
+fn build_env(api_key: &str) -> Vec<(String, String)> {
+    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+    if !api_key.is_empty() {
+        env.push(("GEMINI_API_KEY".to_string(), api_key.to_string()));
+    }
+    env
+}
+
 /// Build the CLI command for spawning Gemini CLI in headless streaming mode.
 ///
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
@@ -91,10 +105,6 @@ pub struct GeminiCommand {
 ///
 /// The `--yolo` flag is required for headless tool execution (no confirmation prompts).
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> GeminiCommand {
-    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-    if !api_key.is_empty() {
-        env.push(("GEMINI_API_KEY".to_string(), api_key.to_string()));
-    }
     GeminiCommand {
         cmd: "gemini".to_string(),
         args: vec![
@@ -104,7 +114,7 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> GeminiCommand {
             "stream-json".to_string(),
             "--yolo".to_string(),
         ],
-        env,
+        env: build_env(api_key),
         cwd: cwd.to_string(),
     }
 }
@@ -272,6 +282,100 @@ impl ToolAdapter for GeminiAdapter {
 
     fn name(&self) -> &str {
         "Gemini CLI"
+    }
+
+    fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
+        ToolCommand {
+            cmd: "gemini".to_string(),
+            args: vec![
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--yolo".to_string(),
+            ],
+            env: build_env(api_key),
+            cwd: cwd.to_string(),
+        }
+    }
+
+    fn detect_question(&self, line: &str) -> Option<Question> {
+        let event = parse_stream_line(line)?;
+        match event {
+            GeminiStreamEvent::Message { content, .. } => {
+                let text = content?;
+                if text.contains("[QUESTION]") || text.contains("[ASK]") {
+                    let qtype = QuestionType::from_text(&text);
+                    return Some(Question {
+                        source_agent: "gemini".to_string(),
+                        content: text,
+                        question_type: qtype,
+                    });
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_display_output(&self, line: &str) -> Option<DisplayLine> {
+        let event = parse_stream_line(line)?;
+        match event {
+            GeminiStreamEvent::Message { content, .. } => {
+                let text = content?;
+                if text.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content: text,
+                    line_type: DisplayLineType::AgentThinking,
+                })
+            }
+            GeminiStreamEvent::ToolUse { tool_name, parameters, .. } => {
+                let name = tool_name.unwrap_or_else(|| "unknown".to_string());
+                let params_str = parameters
+                    .map(|v| serde_json::to_string(&v).unwrap_or_default())
+                    .unwrap_or_default();
+                Some(DisplayLine {
+                    content: format!("[{}] {}", name, params_str),
+                    line_type: DisplayLineType::ToolExecution,
+                })
+            }
+            GeminiStreamEvent::ToolResult { output, .. } => {
+                let content = output.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content,
+                    line_type: DisplayLineType::Result,
+                })
+            }
+            GeminiStreamEvent::Result { response, .. } => {
+                let content = response.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content,
+                    line_type: DisplayLineType::Result,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn extract_result(&self, output_lines: &[String]) -> Option<String> {
+        for line in output_lines.iter().rev() {
+            if let Some(event) = parse_stream_line(line) {
+                if let GeminiStreamEvent::Result { response, .. } = event {
+                    return response;
+                }
+            }
+        }
+        None
+    }
+
+    fn is_turn_complete(&self, line: &str) -> bool {
+        matches!(parse_stream_line(line), Some(GeminiStreamEvent::Result { .. }))
     }
 }
 
@@ -563,5 +667,179 @@ mod tests {
         let policy = RetryPolicy::default_gemini();
         let d10 = policy.delay_for_attempt(10); // would be huge, capped at 60000
         assert_eq!(d10, 60_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // New Trait Method Tests
+    // -----------------------------------------------------------------------
+
+    use super::super::ToolAdapter;
+
+    #[test]
+    fn test_build_interactive_command_no_prompt_flag() {
+        let adapter = GeminiAdapter;
+        let cmd = adapter.build_interactive_command("/tmp/project", "gemini-key");
+        assert_eq!(cmd.cmd, "gemini");
+        // Must NOT contain -p
+        assert!(!cmd.args.contains(&"-p".to_string()));
+        // Must contain streaming/yolo flags
+        assert!(cmd.args.contains(&"--output-format".to_string()));
+        assert!(cmd.args.contains(&"stream-json".to_string()));
+        assert!(cmd.args.contains(&"--yolo".to_string()));
+    }
+
+    #[test]
+    fn test_build_interactive_command_env() {
+        let adapter = GeminiAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "gemini-key-123");
+        let key_env = cmd.env.iter().find(|(k, _)| k == "GEMINI_API_KEY");
+        assert!(key_env.is_some());
+        assert_eq!(key_env.unwrap().1, "gemini-key-123");
+        assert_eq!(cmd.cwd, "/tmp");
+    }
+
+    #[test]
+    fn test_build_interactive_command_empty_key() {
+        let adapter = GeminiAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "");
+        let key_env = cmd.env.iter().find(|(k, _)| k == "GEMINI_API_KEY");
+        assert!(key_env.is_none());
+    }
+
+    #[test]
+    fn test_detect_question_with_question_tag() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"message","role":"model","content":"[QUESTION] Which schema to use?"}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+        let q = q.unwrap();
+        assert_eq!(q.source_agent, "gemini");
+        assert!(q.content.contains("[QUESTION]"));
+        assert!(matches!(q.question_type, super::super::QuestionType::Technical));
+    }
+
+    #[test]
+    fn test_detect_question_with_ask_tag() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"message","role":"model","content":"[ASK] Need clarification on API"}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+    }
+
+    #[test]
+    fn test_detect_question_no_tag_returns_none() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"message","role":"model","content":"Working on it..."}"#;
+        assert!(adapter.detect_question(line).is_none());
+    }
+
+    #[test]
+    fn test_detect_question_tool_use_returns_none() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"tool_use","tool_name":"Bash","tool_id":"t1","parameters":{"command":"ls"}}"#;
+        assert!(adapter.detect_question(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_display_output_message() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"message","role":"model","content":"Analyzing code..."}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert_eq!(dl.content, "Analyzing code...");
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::AgentThinking));
+    }
+
+    #[test]
+    fn test_parse_display_output_tool_use() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"tool_use","tool_name":"Bash","tool_id":"t1","parameters":{"command":"ls"}}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert!(dl.content.contains("[Bash]"));
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::ToolExecution));
+    }
+
+    #[test]
+    fn test_parse_display_output_tool_result() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"tool_result","tool_id":"t1","status":"success","output":"file.txt"}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        assert!(matches!(dl.unwrap().line_type, super::super::DisplayLineType::Result));
+    }
+
+    #[test]
+    fn test_parse_display_output_result_event() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"result","status":"completed","response":"All done"}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert_eq!(dl.content, "All done");
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::Result));
+    }
+
+    #[test]
+    fn test_parse_display_output_init_returns_none() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"init","session_id":"abc"}"#;
+        assert!(adapter.parse_display_output(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_display_output_non_json_returns_none() {
+        let adapter = GeminiAdapter;
+        assert!(adapter.parse_display_output("Starting Gemini CLI...").is_none());
+    }
+
+    #[test]
+    fn test_extract_result_finds_last_result() {
+        let adapter = GeminiAdapter;
+        let lines = vec![
+            r#"{"type":"init","session_id":"abc"}"#.to_string(),
+            r#"{"type":"message","role":"model","content":"Working..."}"#.to_string(),
+            r#"{"type":"result","status":"completed","response":"Task done"}"#.to_string(),
+        ];
+        let result = adapter.extract_result(&lines);
+        assert_eq!(result, Some("Task done".to_string()));
+    }
+
+    #[test]
+    fn test_extract_result_empty_returns_none() {
+        let adapter = GeminiAdapter;
+        assert!(adapter.extract_result(&[]).is_none());
+    }
+
+    #[test]
+    fn test_extract_result_no_result_event() {
+        let adapter = GeminiAdapter;
+        let lines = vec![
+            r#"{"type":"init","session_id":"abc"}"#.to_string(),
+            r#"{"type":"message","role":"model","content":"Working..."}"#.to_string(),
+        ];
+        assert!(adapter.extract_result(&lines).is_none());
+    }
+
+    #[test]
+    fn test_is_turn_complete_result_event() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"result","status":"completed","response":"Done"}"#;
+        assert!(adapter.is_turn_complete(line));
+    }
+
+    #[test]
+    fn test_is_turn_complete_message_event() {
+        let adapter = GeminiAdapter;
+        let line = r#"{"type":"message","role":"model","content":"Still working"}"#;
+        assert!(!adapter.is_turn_complete(line));
+    }
+
+    #[test]
+    fn test_is_turn_complete_non_json() {
+        let adapter = GeminiAdapter;
+        assert!(!adapter.is_turn_complete("Starting Gemini CLI..."));
     }
 }

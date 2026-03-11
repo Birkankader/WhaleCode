@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod cleanup;
 pub mod codex;
 pub mod gemini;
 pub mod context;
@@ -6,6 +7,7 @@ pub mod orchestrator;
 pub mod process;
 pub mod prompt;
 pub mod router;
+pub mod stdin;
 pub mod worktree;
 
 use std::path::PathBuf;
@@ -45,12 +47,17 @@ pub use codex::{
 pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
-pub use orchestrator::{dispatch_orchestrated_task, get_agent_context_info};
+pub use orchestrator::{
+    dispatch_orchestrated_task, get_agent_context_info,
+    clear_orchestration_context, answer_user_question,
+};
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
     check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,
     list_worktrees, merge_worktree,
 };
+pub use stdin::send_to_process;
+pub use cleanup::cleanup_completed_processes;
 
 #[tauri::command]
 #[specta::specta]

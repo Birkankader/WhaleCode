@@ -29,6 +29,10 @@ pub struct ProcessEntry {
     pub tool_name: String,
     pub task_description: String,
     pub started_at: i64,
+    pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub output_lines: Vec<String>,
+    /// Signals when the process exits. Clone the receiver, drop the lock, then await.
+    pub completion_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Cache TTL in seconds (5 minutes).
@@ -73,6 +77,7 @@ pub struct AppStateInner {
     pub processes: HashMap<TaskId, ProcessEntry>,
     pub orchestration_plans: HashMap<TaskId, crate::router::orchestrator::OrchestrationPlan>,
     pub cached_prompt_context: Option<CachedPromptContext>,
+    pub question_queue: Vec<crate::router::orchestrator::PendingQuestion>,
 }
 
 pub type AppState = Arc<Mutex<AppStateInner>>;

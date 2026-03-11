@@ -40,6 +40,9 @@ export function emitProcessOutput(taskId: string, event: OutputEvent) {
   // Always persist to log so future consumers can replay
   const log = outputLogs.get(taskId) ?? [];
   log.push(event);
+  if (log.length > 5000) {
+    log.splice(0, log.length - 5000);
+  }
   outputLogs.set(taskId, log);
 
   const cb = outputCallbacks.get(taskId);
@@ -92,11 +95,13 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
         earlyEvents.push(msg);
         return;
       }
-      emitProcessOutput(resolvedTaskId, msg);
       if (msg.event === 'exit') {
         const code = Number(msg.data);
         get()._updateStatus(resolvedTaskId, code === 0 ? 'completed' : 'failed', code);
+        emitProcessOutput(resolvedTaskId, msg);
+        return;
       }
+      emitProcessOutput(resolvedTaskId, msg);
     };
 
     try {
@@ -127,11 +132,11 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
 
       // Replay events that arrived during the await
       for (const msg of earlyEvents) {
-        emitProcessOutput(taskId, msg);
         if (msg.event === 'exit') {
           const code = Number(msg.data);
           get()._updateStatus(taskId, code === 0 ? 'completed' : 'failed', code);
         }
+        emitProcessOutput(taskId, msg);
       }
 
       return taskId;
@@ -178,6 +183,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
   },
 
   _removeProcess: (taskId) => {
+    outputLogs.delete(taskId);
+    outputCallbacks.delete(taskId);
     set((state) => {
       const newProcesses = new Map(state.processes);
       newProcesses.delete(taskId);

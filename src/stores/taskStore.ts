@@ -41,6 +41,13 @@ export interface AgentContextInfo {
   status: string;
 }
 
+export interface PendingQuestion {
+  questionId: string;
+  sourceAgent: string;
+  content: string;
+  planId: string;
+}
+
 interface TaskState {
   tasks: Map<string, TaskEntry>;
   orchestrationPlan: OrchestratorConfig | null;
@@ -50,6 +57,10 @@ interface TaskState {
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;
+  activePlan: { task_id: string; master_agent: string } | null;
+  setActivePlan: (plan: { task_id: string; master_agent: string } | null) => void;
+  pendingQuestion: PendingQuestion | null;
+  setPendingQuestion: (q: PendingQuestion | null) => void;
   updateAgentContext: (toolName: ToolName, info: AgentContextInfo) => void;
 }
 
@@ -57,6 +68,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: new Map(),
   orchestrationPlan: null,
   agentContexts: new Map(),
+  activePlan: null,
+
+  setActivePlan: (plan) => {
+    set({ activePlan: plan });
+  },
+
+  pendingQuestion: null,
+
+  setPendingQuestion: (q) => {
+    set({ pendingQuestion: q });
+  },
 
   addTask: (entry) => {
     set((state) => {

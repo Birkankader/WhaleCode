@@ -2,6 +2,7 @@ mod adapters;
 mod commands;
 mod credentials;
 mod ipc;
+mod messenger;
 mod process;
 mod context;
 mod prompt;
@@ -17,8 +18,9 @@ use commands::{
     has_gemini_api_key, list_worktrees, merge_worktree, optimize_prompt, pause_process,
     record_task_completion_cmd, resume_process, set_claude_api_key, set_codex_api_key,
     set_gemini_api_key, spawn_claude_task, spawn_codex_task, spawn_gemini_task, spawn_process,
-    start_stream, suggest_tool, validate_claude_result, validate_codex_result,
-    validate_gemini_result,
+    send_to_process, start_stream, suggest_tool, validate_claude_result, validate_codex_result,
+    validate_gemini_result, cleanup_completed_processes,
+    clear_orchestration_context, answer_user_question,
 };
 use state::AppState;
 use tauri::Manager;
@@ -62,6 +64,10 @@ pub fn run() {
         dispatch_orchestrated_task,
         get_agent_context_info,
         optimize_prompt,
+        send_to_process,
+        cleanup_completed_processes,
+        clear_orchestration_context,
+        answer_user_question,
     ]);
 
     #[cfg(debug_assertions)]

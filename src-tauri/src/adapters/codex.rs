@@ -2,7 +2,11 @@
 
 use serde::Deserialize;
 
-use super::{ToolAdapter, ToolCommand, RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy};
+use super::{
+    ToolAdapter, ToolCommand,
+    RateLimitInfo as SharedRateLimitInfo, RetryPolicy as SharedRetryPolicy,
+    Question, QuestionType, DisplayLine, DisplayLineType,
+};
 
 // ---------------------------------------------------------------------------
 // NDJSON Event Types
@@ -88,6 +92,16 @@ pub struct CodexCommand {
     pub cwd: String,
 }
 
+/// Build the environment variable list for Codex CLI.
+/// Always includes NO_COLOR=1; adds OPENAI_API_KEY when non-empty.
+fn build_env(api_key: &str) -> Vec<(String, String)> {
+    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
+    if !api_key.is_empty() {
+        env.push(("OPENAI_API_KEY".to_string(), api_key.to_string()));
+    }
+    env
+}
+
 /// Build the CLI command for spawning Codex CLI in non-interactive mode.
 ///
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
@@ -96,10 +110,6 @@ pub struct CodexCommand {
 /// Uses `codex exec --full-auto` for headless tool execution (no confirmation prompts).
 /// Codex CLI does not support `--output-format`; output is plain text on stdout.
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> CodexCommand {
-    let mut env = vec![("NO_COLOR".to_string(), "1".to_string())];
-    if !api_key.is_empty() {
-        env.push(("OPENAI_API_KEY".to_string(), api_key.to_string()));
-    }
     CodexCommand {
         cmd: "codex".to_string(),
         args: vec![
@@ -107,7 +117,7 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> CodexCommand {
             "--full-auto".to_string(),
             prompt.to_string(),
         ],
-        env,
+        env: build_env(api_key),
         cwd: cwd.to_string(),
     }
 }
@@ -273,6 +283,98 @@ impl ToolAdapter for CodexAdapter {
 
     fn name(&self) -> &str {
         "Codex CLI"
+    }
+
+    fn build_interactive_command(&self, cwd: &str, api_key: &str) -> ToolCommand {
+        ToolCommand {
+            cmd: "codex".to_string(),
+            args: vec![
+                "--full-auto".to_string(),
+            ],
+            env: build_env(api_key),
+            cwd: cwd.to_string(),
+        }
+    }
+
+    fn detect_question(&self, line: &str) -> Option<Question> {
+        let event = parse_stream_line(line)?;
+        match event {
+            CodexStreamEvent::Message { content, .. } => {
+                let text = content?;
+                if text.contains("[QUESTION]") || text.contains("[ASK]") {
+                    let qtype = QuestionType::from_text(&text);
+                    return Some(Question {
+                        source_agent: "codex".to_string(),
+                        content: text,
+                        question_type: qtype,
+                    });
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_display_output(&self, line: &str) -> Option<DisplayLine> {
+        let event = parse_stream_line(line)?;
+        match event {
+            CodexStreamEvent::Message { content, .. } => {
+                let text = content?;
+                if text.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content: text,
+                    line_type: DisplayLineType::AgentThinking,
+                })
+            }
+            CodexStreamEvent::ToolUse { function_name, arguments, .. } => {
+                let name = function_name.unwrap_or_else(|| "unknown".to_string());
+                let args_str = arguments
+                    .map(|v| serde_json::to_string(&v).unwrap_or_default())
+                    .unwrap_or_default();
+                Some(DisplayLine {
+                    content: format!("[{}] {}", name, args_str),
+                    line_type: DisplayLineType::ToolExecution,
+                })
+            }
+            CodexStreamEvent::ToolResult { output, .. } => {
+                let content = output.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content,
+                    line_type: DisplayLineType::Result,
+                })
+            }
+            CodexStreamEvent::Result { response, .. } => {
+                let content = response.unwrap_or_default();
+                if content.is_empty() {
+                    return None;
+                }
+                Some(DisplayLine {
+                    content,
+                    line_type: DisplayLineType::Result,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn extract_result(&self, output_lines: &[String]) -> Option<String> {
+        for line in output_lines.iter().rev() {
+            if let Some(event) = parse_stream_line(line) {
+                if let CodexStreamEvent::Result { response, .. } = event {
+                    return response;
+                }
+            }
+        }
+        None
+    }
+
+    fn is_turn_complete(&self, line: &str) -> bool {
+        matches!(parse_stream_line(line), Some(CodexStreamEvent::Result { .. }))
     }
 }
 
@@ -560,5 +662,178 @@ mod tests {
         let policy = RetryPolicy::default_codex();
         let d10 = policy.delay_for_attempt(10); // would be huge, capped at 60000
         assert_eq!(d10, 60_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // New Trait Method Tests
+    // -----------------------------------------------------------------------
+
+    use super::super::ToolAdapter;
+
+    #[test]
+    fn test_build_interactive_command_no_prompt_flag() {
+        let adapter = CodexAdapter;
+        let cmd = adapter.build_interactive_command("/tmp/project", "sk-key");
+        assert_eq!(cmd.cmd, "codex");
+        // Must NOT contain -p or exec (interactive mode, not exec mode)
+        assert!(!cmd.args.contains(&"-p".to_string()));
+        assert!(!cmd.args.contains(&"exec".to_string()));
+        // Must contain --full-auto
+        assert!(cmd.args.contains(&"--full-auto".to_string()));
+    }
+
+    #[test]
+    fn test_build_interactive_command_env() {
+        let adapter = CodexAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "sk-key-123");
+        let key_env = cmd.env.iter().find(|(k, _)| k == "OPENAI_API_KEY");
+        assert!(key_env.is_some());
+        assert_eq!(key_env.unwrap().1, "sk-key-123");
+        assert_eq!(cmd.cwd, "/tmp");
+    }
+
+    #[test]
+    fn test_build_interactive_command_empty_key() {
+        let adapter = CodexAdapter;
+        let cmd = adapter.build_interactive_command("/tmp", "");
+        let key_env = cmd.env.iter().find(|(k, _)| k == "OPENAI_API_KEY");
+        assert!(key_env.is_none());
+    }
+
+    #[test]
+    fn test_detect_question_with_question_tag() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":"[QUESTION] Which schema to use?"}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+        let q = q.unwrap();
+        assert_eq!(q.source_agent, "codex");
+        assert!(q.content.contains("[QUESTION]"));
+        assert!(matches!(q.question_type, super::super::QuestionType::Technical));
+    }
+
+    #[test]
+    fn test_detect_question_with_ask_tag() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":"[ASK] Need clarification"}"#;
+        let q = adapter.detect_question(line);
+        assert!(q.is_some());
+    }
+
+    #[test]
+    fn test_detect_question_no_tag_returns_none() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":"Working on it..."}"#;
+        assert!(adapter.detect_question(line).is_none());
+    }
+
+    #[test]
+    fn test_detect_question_tool_use_returns_none() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"tool_use","function_name":"Bash","call_id":"t1","arguments":{"command":"ls"}}"#;
+        assert!(adapter.detect_question(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_display_output_message() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":"Analyzing code..."}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert_eq!(dl.content, "Analyzing code...");
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::AgentThinking));
+    }
+
+    #[test]
+    fn test_parse_display_output_tool_use() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"tool_use","function_name":"Bash","call_id":"t1","arguments":{"command":"ls"}}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert!(dl.content.contains("[Bash]"));
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::ToolExecution));
+    }
+
+    #[test]
+    fn test_parse_display_output_tool_result() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"tool_result","tool_id":"t1","status":"success","output":"file.txt"}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        assert!(matches!(dl.unwrap().line_type, super::super::DisplayLineType::Result));
+    }
+
+    #[test]
+    fn test_parse_display_output_result_event() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"result","status":"completed","response":"All done"}"#;
+        let dl = adapter.parse_display_output(line);
+        assert!(dl.is_some());
+        let dl = dl.unwrap();
+        assert_eq!(dl.content, "All done");
+        assert!(matches!(dl.line_type, super::super::DisplayLineType::Result));
+    }
+
+    #[test]
+    fn test_parse_display_output_init_returns_none() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"init","session_id":"abc"}"#;
+        assert!(adapter.parse_display_output(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_display_output_non_json_returns_none() {
+        let adapter = CodexAdapter;
+        assert!(adapter.parse_display_output("Starting Codex CLI...").is_none());
+    }
+
+    #[test]
+    fn test_extract_result_finds_last_result() {
+        let adapter = CodexAdapter;
+        let lines = vec![
+            r#"{"type":"init","session_id":"abc"}"#.to_string(),
+            r#"{"type":"message","role":"assistant","content":"Working..."}"#.to_string(),
+            r#"{"type":"result","status":"completed","response":"Task done"}"#.to_string(),
+        ];
+        let result = adapter.extract_result(&lines);
+        assert_eq!(result, Some("Task done".to_string()));
+    }
+
+    #[test]
+    fn test_extract_result_empty_returns_none() {
+        let adapter = CodexAdapter;
+        assert!(adapter.extract_result(&[]).is_none());
+    }
+
+    #[test]
+    fn test_extract_result_no_result_event() {
+        let adapter = CodexAdapter;
+        let lines = vec![
+            r#"{"type":"init","session_id":"abc"}"#.to_string(),
+            r#"{"type":"message","role":"assistant","content":"Working..."}"#.to_string(),
+        ];
+        assert!(adapter.extract_result(&lines).is_none());
+    }
+
+    #[test]
+    fn test_is_turn_complete_result_event() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"result","status":"completed","response":"Done"}"#;
+        assert!(adapter.is_turn_complete(line));
+    }
+
+    #[test]
+    fn test_is_turn_complete_message_event() {
+        let adapter = CodexAdapter;
+        let line = r#"{"type":"message","role":"assistant","content":"Still working"}"#;
+        assert!(!adapter.is_turn_complete(line));
+    }
+
+    #[test]
+    fn test_is_turn_complete_non_json() {
+        let adapter = CodexAdapter;
+        assert!(!adapter.is_turn_complete("Starting Codex CLI..."));
     }
 }
