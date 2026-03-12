@@ -37,6 +37,11 @@ pub struct ProcessEntry {
     pub completion_rx: tokio::sync::watch::Receiver<bool>,
     /// Signals new line count — subscribers can detect new output without polling.
     pub line_count_rx: tokio::sync::watch::Receiver<usize>,
+    /// Token usage stats extracted from NDJSON result events
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
 }
 
 /// Cache TTL in seconds (5 minutes).
@@ -230,6 +235,10 @@ mod tests {
                 output_lines: vec![],
                 completion_rx: rx,
                 line_count_rx: lrx,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                cost_usd: None,
             },
         );
         assert!(!inner.reserved_tools.contains("claude"));

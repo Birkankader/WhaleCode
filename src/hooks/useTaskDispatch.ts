@@ -305,11 +305,22 @@ export function useTaskDispatch() {
                     });
                   }
                 }
-              } else if (ev.type === 'result' && ev.result) {
-                useTaskStore.getState().addOrchestrationLog({
-                  agent: masterAgent,
-                  level: 'success',
-                  message: ev.result,
+              } else if (ev.type === 'result') {
+                if (ev.result) {
+                  useTaskStore.getState().addOrchestrationLog({
+                    agent: masterAgent,
+                    level: 'success',
+                    message: ev.result,
+                  });
+                }
+                // Extract usage data from result event
+                useTaskStore.getState().updateAgentContext(masterAgent, {
+                  toolName: masterAgent,
+                  inputTokens: ev.stats?.input_tokens ?? null,
+                  outputTokens: ev.stats?.output_tokens ?? null,
+                  totalTokens: ev.stats?.total_tokens ?? null,
+                  costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : null,
+                  status: ev.is_error ? 'failed' : 'completed',
                 });
               }
             } catch {

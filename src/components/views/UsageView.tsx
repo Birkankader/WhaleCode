@@ -192,6 +192,23 @@ export function UsageView() {
                       <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>Total</div>
                     </div>
                   </div>
+
+                  {/* Cost */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingTop: 12,
+                      marginTop: 12,
+                      borderTop: `1px solid ${C.border}`,
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: C.textMuted }}>Estimated Cost</span>
+                    <span style={{ fontSize: 16, fontWeight: 700, color: C.green }}>
+                      ${(agentContexts.get(agent.toolName)?.costUsd ?? 0).toFixed(4)}
+                    </span>
+                  </div>
                 </div>
               );
             })}

@@ -965,8 +965,9 @@ pub async fn get_agent_context_info(
     let mut infos: Vec<AgentContextInfo> = Vec::new();
 
     for sub_task in &plan.sub_tasks {
-        let status = if let Some(proc) = inner.processes.get(&sub_task.id) {
-            match &proc.status {
+        let proc = inner.processes.get(&sub_task.id);
+        let status = if let Some(p) = proc {
+            match &p.status {
                 ProcessStatus::Running => "running".to_string(),
                 ProcessStatus::Paused => "paused".to_string(),
                 ProcessStatus::Completed(code) => format!("completed({})", code),
@@ -978,10 +979,10 @@ pub async fn get_agent_context_info(
 
         infos.push(AgentContextInfo {
             tool_name: sub_task.assigned_agent.clone(),
-            input_tokens: None,
-            output_tokens: None,
-            total_tokens: None,
-            cost_usd: None,
+            input_tokens: proc.and_then(|p| p.input_tokens.map(|v| v as u32)),
+            output_tokens: proc.and_then(|p| p.output_tokens.map(|v| v as u32)),
+            total_tokens: proc.and_then(|p| p.total_tokens.map(|v| v as u32)),
+            cost_usd: proc.and_then(|p| p.cost_usd),
             status,
         });
     }

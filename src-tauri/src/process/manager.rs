@@ -146,6 +146,10 @@ async fn spawn_with_env_core(
                 output_lines: Vec::new(),
                 completion_rx,
                 line_count_rx,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                cost_usd: None,
             },
         );
     }
@@ -208,6 +212,7 @@ async fn spawn_with_env_core(
         // Update process status in state
         if let Ok(mut inner) = waiter_state.lock() {
             if let Some(entry) = inner.processes.get_mut(&waiter_task_id) {
+                extract_usage_from_output(entry);
                 match &status {
                     Ok(s) if s.success() => {
                         entry.status = ProcessStatus::Completed(exit_code);
@@ -221,9 +226,9 @@ async fn spawn_with_env_core(
                 }
                 // Drop stdin sender so the stdin writer task can exit
                 entry.stdin_tx = None;
-                // Free output buffer — no longer needed after exit
-                entry.output_lines.clear();
-                entry.output_lines.shrink_to_fit();
+                // Keep output_lines — they may still be read by
+                // wait_for_turn_complete or parse_decomposition_from_output
+                // after process exit. Buffer is already capped at 50 lines.
             }
         }
 
@@ -234,6 +239,35 @@ async fn spawn_with_env_core(
     });
 
     Ok(task_id)
+}
+
+/// Extract token usage from NDJSON result events in process output.
+/// Scans the last 10 lines for a result event.
+fn extract_usage_from_output(entry: &mut ProcessEntry) {
+    let start = entry.output_lines.len().saturating_sub(10);
+    for line in &entry.output_lines[start..] {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            if parsed.get("type").and_then(|v| v.as_str()) == Some("result") {
+                // Claude: total_cost_usd at top level
+                if let Some(cost) = parsed.get("total_cost_usd").and_then(|v| v.as_f64()) {
+                    entry.cost_usd = Some(cost);
+                }
+                // Gemini: stats.input_tokens, stats.output_tokens, stats.total_tokens
+                if let Some(stats) = parsed.get("stats") {
+                    if let Some(input) = stats.get("input_tokens").and_then(|v| v.as_u64()) {
+                        entry.input_tokens = Some(input);
+                    }
+                    if let Some(output) = stats.get("output_tokens").and_then(|v| v.as_u64()) {
+                        entry.output_tokens = Some(output);
+                    }
+                    if let Some(total) = stats.get("total_tokens").and_then(|v| v.as_u64()) {
+                        entry.total_tokens = Some(total);
+                    }
+                }
+                break;
+            }
+        }
+    }
 }
 
 /// Spawn an agent in interactive mode for multi-turn conversation.
@@ -284,6 +318,20 @@ pub fn send_to_process(
     stdin_tx
         .send(format!("{}\n", message))
         .map_err(|e| format!("Failed to send to stdin: {}", e))
+}
+
+/// Close a process's stdin, signaling EOF. This causes CLIs that read until EOF
+/// (like Claude Code in non-TTY mode) to start processing their input.
+pub fn close_stdin(state: &AppState, task_id: &str) -> Result<(), String> {
+    let mut state_guard = state.lock().map_err(|e| e.to_string())?;
+    let entry = state_guard
+        .processes
+        .get_mut(task_id)
+        .ok_or_else(|| format!("Process {} not found", task_id))?;
+    // Dropping the sender closes the mpsc channel, which makes the stdin writer
+    // task exit its loop, dropping ChildStdin and closing the pipe fd.
+    entry.stdin_tx = None;
+    Ok(())
 }
 
 /// Cancel a running process by sending SIGTERM then SIGKILL to its process group.
@@ -413,6 +461,7 @@ mod tests {
                 tool_name: "claude".to_string(), task_description: "test".to_string(),
                 started_at: 0, stdin_tx: None, output_lines: vec![],
                 completion_rx: rx, line_count_rx: lrx,
+                input_tokens: None, output_tokens: None, total_tokens: None, cost_usd: None,
             });
         }
         let err = acquire_tool_slot(&state, "claude");
