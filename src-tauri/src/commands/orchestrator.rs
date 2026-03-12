@@ -42,8 +42,9 @@ fn get_api_key(agent_name: &str) -> Result<String, String> {
 // Helper: wait for an interactive agent's turn to complete
 // ---------------------------------------------------------------------------
 
-/// Polls the process's output_lines and checks each new line with
-/// `adapter.is_turn_complete()`. Returns all output lines accumulated so far.
+/// Waits for an interactive agent's turn to complete using watch channels
+/// (no polling). Checks each new line with `adapter.is_turn_complete()`.
+/// Returns all output lines accumulated so far.
 ///
 /// Exits early if the process dies or completes (EOF).
 async fn wait_for_turn_complete(
@@ -51,15 +52,45 @@ async fn wait_for_turn_complete(
     task_id: &str,
     adapter: &dyn ToolAdapter,
 ) -> Result<Vec<String>, String> {
-    let mut lines_seen = 0;
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Clone receivers while holding lock, then drop lock
+    let (mut line_rx, mut completion_rx) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let entry = s.processes.get(task_id)
+            .ok_or_else(|| format!("Process {} not found", task_id))?;
+        (entry.line_count_rx.clone(), entry.completion_rx.clone())
+    };
 
+    let mut lines_seen = 0usize;
+
+    loop {
+        // Wait for either new lines or process completion
+        tokio::select! {
+            res = line_rx.changed() => {
+                if res.is_err() { break; }
+            }
+            res = completion_rx.changed() => {
+                if res.is_err() || *completion_rx.borrow() {
+                    // Process exited — return whatever we have
+                    let s = state.lock().map_err(|e| e.to_string())?;
+                    if let Some(entry) = s.processes.get(task_id) {
+                        return Ok(entry.output_lines.clone());
+                    }
+                    return Ok(vec![]);
+                }
+            }
+        }
+
+        // Check new lines for turn completion
         let (current_lines, status) = {
             let s = state.lock().map_err(|e| e.to_string())?;
             let entry = s.processes.get(task_id)
                 .ok_or_else(|| format!("Process {} not found", task_id))?;
-            (entry.output_lines.clone(), entry.status.clone())
+            // Only clone if there are new lines to check
+            if entry.output_lines.len() > lines_seen {
+                (entry.output_lines.clone(), entry.status.clone())
+            } else {
+                continue;
+            }
         };
 
         for line in current_lines.iter().skip(lines_seen) {
@@ -74,6 +105,14 @@ async fn wait_for_turn_complete(
             ProcessStatus::Completed(_) => return Ok(current_lines),
             _ => {}
         }
+    }
+
+    // Channel closed — check final state
+    let s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(entry) = s.processes.get(task_id) {
+        Ok(entry.output_lines.clone())
+    } else {
+        Ok(vec![])
     }
 }
 
@@ -299,6 +338,9 @@ pub async fn dispatch_orchestrated_task(
     let api_key = get_api_key(&config.master_agent)?;
     let tool_command = adapter.build_interactive_command(&project_dir, &api_key);
 
+    // Reserve tool slot for master agent before spawning
+    process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
+
     // Spawn master as an interactive (long-lived) process
     let master_task_id = process::manager::spawn_interactive(
         tool_command,
@@ -306,7 +348,14 @@ pub async fn dispatch_orchestrated_task(
         &config.master_agent,
         on_event.clone(),
         state_ref,
-    ).await?;
+    ).await.map_err(|e| {
+        // Release reservation on spawn failure
+        process::manager::release_tool_slot(state_ref, &config.master_agent);
+        e
+    })?;
+
+    // Release reservation after successful spawn (process now tracked in state)
+    process::manager::release_tool_slot(state_ref, &config.master_agent);
 
     // Store master_process_id in plan
     plan.master_process_id = Some(master_task_id.clone());
@@ -564,8 +613,41 @@ async fn wait_for_worker_with_questions(
 ) -> i32 {
     let mut lines_seen = 0;
 
+    // Clone receivers while holding lock, then drop lock
+    let (mut line_rx, mut completion_rx) = {
+        let s = match state.lock() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        match s.processes.get(worker_task_id) {
+            Some(entry) => (entry.line_count_rx.clone(), entry.completion_rx.clone()),
+            None => return -1,
+        }
+    };
+
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait for either new lines or process completion
+        tokio::select! {
+            res = line_rx.changed() => {
+                if res.is_err() { break; }
+            }
+            res = completion_rx.changed() => {
+                if res.is_err() || *completion_rx.borrow() {
+                    // Process exited — check final status
+                    let s = match state.lock() {
+                        Ok(s) => s,
+                        Err(_) => return -1,
+                    };
+                    return match s.processes.get(worker_task_id) {
+                        Some(entry) => match &entry.status {
+                            ProcessStatus::Completed(code) => *code,
+                            _ => -1,
+                        },
+                        None => -1,
+                    };
+                }
+            }
+        }
 
         let (current_lines, status) = {
             let s = match state.lock() {
@@ -573,7 +655,13 @@ async fn wait_for_worker_with_questions(
                 Err(_) => return -1,
             };
             match s.processes.get(worker_task_id) {
-                Some(entry) => (entry.output_lines.clone(), entry.status.clone()),
+                Some(entry) => {
+                    if entry.output_lines.len() > lines_seen {
+                        (entry.output_lines.clone(), entry.status.clone())
+                    } else {
+                        continue;
+                    }
+                }
                 None => return -1,
             }
         };
@@ -675,6 +763,19 @@ async fn wait_for_worker_with_questions(
             ProcessStatus::Failed(_) => return -1,
             _ => {}
         }
+    }
+
+    // Channel closed — check final status
+    let s = match state.lock() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    match s.processes.get(worker_task_id) {
+        Some(entry) => match &entry.status {
+            ProcessStatus::Completed(code) => *code,
+            _ => -1,
+        },
+        None => -1,
     }
 }
 
@@ -1042,7 +1143,8 @@ mod tests {
         use crate::adapters::ToolAdapter;
         let adapter = crate::adapters::codex::CodexAdapter;
         let lines = vec![
-            r#"{"type":"result","response":"codex answer","is_error":false}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"codex answer"}}"#.to_string(),
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#.to_string(),
         ];
         let result = adapter.extract_result(&lines);
         assert!(result.is_some());

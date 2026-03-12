@@ -39,43 +39,49 @@ export const useMessengerStore = create<MessengerState>((set, get) => ({
 // Initialize Tauri event listener
 let listenerInitialized = false;
 let unlistenFn: (() => void) | null = null;
+let listenerUnavailable = false;
 
 export async function initMessengerListener() {
-  if (listenerInitialized) return;
+  if (listenerInitialized || listenerUnavailable) return;
   listenerInitialized = true;
 
-  unlistenFn = await listen<Record<string, unknown>>('messenger-event', (event) => {
-    const raw = event.payload;
-    // Normalize source from Rust enum format
-    let source: MessengerMessage['source'];
-    if (typeof raw.source === 'string' && raw.source === 'System') {
-      source = { type: 'System' };
-    } else if (raw.source && typeof raw.source === 'object' && 'Agent' in (raw.source as Record<string, unknown>)) {
-      source = { type: 'Agent', name: (raw.source as { Agent: string }).Agent };
-    } else {
-      source = { type: 'System' };
-    }
+  try {
+    unlistenFn = await listen<Record<string, unknown>>('messenger-event', (event) => {
+      const raw = event.payload;
+      // Normalize source from Rust enum format
+      let source: MessengerMessage['source'];
+      if (typeof raw.source === 'string' && raw.source === 'System') {
+        source = { type: 'System' };
+      } else if (raw.source && typeof raw.source === 'object' && 'Agent' in (raw.source as Record<string, unknown>)) {
+        source = { type: 'Agent', name: (raw.source as { Agent: string }).Agent };
+      } else {
+        source = { type: 'System' };
+      }
 
-    const normalized: MessengerMessage = {
-      id: raw.id as string,
-      timestamp: raw.timestamp as number,
-      source,
-      content: raw.content as string,
-      messageType: raw.message_type as string,
-      planId: raw.plan_id as string,
-    };
-    useMessengerStore.getState().addMessage(normalized);
+      const normalized: MessengerMessage = {
+        id: raw.id as string,
+        timestamp: raw.timestamp as number,
+        source,
+        content: raw.content as string,
+        messageType: raw.message_type as string,
+        planId: raw.plan_id as string,
+      };
+      useMessengerStore.getState().addMessage(normalized);
 
-    if (normalized.messageType === 'QuestionForUser') {
-      useTaskStore.getState().setPendingQuestion({
-        questionId: normalized.id,
-        sourceAgent: typeof normalized.source === 'object' && 'name' in normalized.source
-          ? normalized.source.name : 'master',
-        content: normalized.content,
-        planId: normalized.planId,
-      });
-    }
-  });
+      if (normalized.messageType === 'QuestionForUser') {
+        useTaskStore.getState().setPendingQuestion({
+          questionId: normalized.id,
+          sourceAgent: typeof normalized.source === 'object' && 'name' in normalized.source
+            ? normalized.source.name : 'master',
+          content: normalized.content,
+          planId: normalized.planId,
+        });
+      }
+    });
+  } catch {
+    listenerInitialized = false;
+    listenerUnavailable = true;
+  }
 }
 
 export function cleanupMessengerListener() {

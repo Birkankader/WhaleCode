@@ -58,18 +58,30 @@ export function formatClaudeEvent(line: string): string | null {
     return line;
   }
 
+  const contentBlocks = event.content ?? [];
+  const textBlocks = contentBlocks
+    .filter((block) => block.type === 'text' && block.text)
+    .map((block) => block.text!.trim())
+    .filter(Boolean);
+
+  const messageBlocks = event.message?.content ?? [];
+  const messageText = messageBlocks
+    .map((block) => block.content?.trim())
+    .filter((value): value is string => Boolean(value))
+    .join('\n');
+
   switch (event.type) {
     case 'init':
       return '[Session started]';
 
     case 'message': {
-      if (!event.content || event.content.length === 0) {
-        return null;
+      if (textBlocks.length > 0) {
+        return textBlocks.join('\n');
       }
-      return event.content
-        .filter((block) => block.type === 'text' && block.text)
-        .map((block) => block.text!)
-        .join('\n');
+      if (messageText) {
+        return messageText;
+      }
+      return line;
     }
 
     case 'tool_use': {
@@ -94,11 +106,27 @@ export function formatClaudeEvent(line: string): string | null {
     }
 
     case 'stream_event':
+      if (textBlocks.length > 0) {
+        return textBlocks.join('\n');
+      }
+      if (messageText) {
+        return messageText;
+      }
       return null;
 
     default:
-      // Suppress verbose echo events (type: "user", "assistant", etc.)
-      // These contain full tool result content and are not useful to display
-      return null;
+      if (textBlocks.length > 0) {
+        return textBlocks.join('\n');
+      }
+      if (messageText) {
+        return messageText;
+      }
+      if (typeof event.result === 'string' && event.result.trim().length > 0) {
+        return event.result.trim();
+      }
+      if (typeof event.output === 'string' && event.output.trim().length > 0) {
+        return event.output.trim();
+      }
+      return line;
   }
 }

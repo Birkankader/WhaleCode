@@ -164,6 +164,10 @@ export function useGeminiTask() {
             cmd: `gemini: ${prompt.slice(0, 60)}`,
             status: 'running',
             channel,
+            startedAt: Date.now(),
+            hasOutput: false,
+            lastEventAt: Date.now(),
+            lastOutputPreview: 'Gemini process started. Waiting for first output...',
           });
           useProcessStore.setState({
             processes: newProcesses,

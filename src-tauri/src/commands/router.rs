@@ -60,9 +60,7 @@ impl ReservationGuard {
     /// Explicitly release the reservation. Prevents double-release on drop.
     fn release(&mut self) {
         if !self.released {
-            if let Ok(mut inner) = self.state.lock() {
-                inner.reserved_tools.remove(&self.tool_name);
-            }
+            crate::process::manager::release_tool_slot(&self.state, &self.tool_name);
             self.released = true;
         }
     }
@@ -95,19 +93,8 @@ pub async fn dispatch_task(
 ) -> Result<String, String> {
     // Atomically check no running process AND reserve the tool to prevent TOCTOU races.
     // Without this, two rapid dispatch calls could both pass the check before either spawns.
-    let mut guard = {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
-        for (_id, proc) in inner.processes.iter() {
-            if proc.tool_name == tool_name && matches!(proc.status, ProcessStatus::Running) {
-                return Err(format!("{} is already running a task", tool_name));
-            }
-        }
-        if !inner.reserved_tools.insert(tool_name.clone()) {
-            return Err(format!("{} is already being dispatched", tool_name));
-        }
-        // Guard takes ownership of reservation cleanup via Drop
-        ReservationGuard::new((*state).clone(), tool_name.clone())
-    };
+    crate::process::manager::acquire_tool_slot(&*state, &tool_name)?;
+    let mut guard = ReservationGuard::new((*state).clone(), tool_name.clone());
 
     // Cache-aware prompt context: reuse cached context if valid, otherwise rebuild from SQLite
     // CRITICAL: Do NOT hold AppState lock while calling build_prompt_context (deadlock risk)

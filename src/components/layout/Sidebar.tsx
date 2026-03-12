@@ -1,71 +1,301 @@
 import { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router';
-import { Settings, Command, LayoutGrid, Terminal, Kanban, BarChart3 } from 'lucide-react';
-import { ApiKeySettings } from '../settings/ApiKeySettings';
-import { Button } from '../ui/button';
+import { C } from '@/lib/theme';
+import { useUIStore } from '@/stores/uiStore';
+import { useTaskStore } from '@/stores/taskStore';
 
-export function Sidebar() {
-  const [showSettings, setShowSettings] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
+/* ── Tooltip ─────────────────────────────────────────────── */
 
-  const navItems = [
-    { path: '/', label: 'Orchestrator', icon: Terminal },
-    { path: '/kanban', label: 'Kanban', icon: Kanban },
-    { path: '/usage', label: 'Usage', icon: BarChart3 },
-    { path: '/worktrees', label: 'Worktrees', icon: LayoutGrid },
-  ];
-
+function Tooltip({ label, children }: { label: string; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
   return (
-    <aside
-      data-testid="sidebar"
-      className="w-64 h-full flex flex-col bg-transparent text-zinc-300 relative z-20"
-    >
-      <div className="px-6 py-8 flex items-center gap-3">
-        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg shadow-violet-500/20">
-          <Command className="w-4 h-4 text-white" />
-        </div>
-        <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-zinc-100 to-zinc-400 tracking-tight">WhaleCode</h1>
-      </div>
-
-      <nav className="flex-1 px-4 space-y-1 mt-4">
-        {navItems.map(({ path, label, icon: Icon }) => (
-          <Button
-            key={path}
-            variant="ghost"
-            onClick={() => navigate(path)}
-            className={`w-full justify-start gap-3 rounded-xl transition-all ${
-              location.pathname === path
-                ? 'bg-white/10 text-zinc-100 shadow-sm'
-                : 'bg-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
-            }`}
-          >
-            <Icon className={`w-4 h-4 ${location.pathname === path ? 'text-violet-400' : ''}`} />
-            <span className="font-medium">{label}</span>
-          </Button>
-        ))}
-      </nav>
-
-      {/* Settings button at bottom */}
-      <div className="px-4 pb-6 mt-auto">
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-3 text-zinc-400 hover:text-zinc-200 hover:bg-white/5 rounded-xl transition-all"
-          onClick={() => setShowSettings(!showSettings)}
+    <div className="relative" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && (
+        <div
+          className="absolute left-full ml-2.5 top-1/2 -translate-y-1/2 z-50 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap pointer-events-none"
+          style={{
+            background: '#1e1e30',
+            color: C.textPrimary,
+            border: `1px solid ${C.borderStrong}`,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+          }}
         >
-          <Settings className="w-4 h-4" />
-          <span className="font-medium">Settings</span>
-        </Button>
-      </div>
-
-      {/* Settings modal overlay */}
-      {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm transition-all">
-          <div className="bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden transform scale-100 animate-in fade-in zoom-in duration-200">
-            <ApiKeySettings onClose={() => setShowSettings(false)} />
-          </div>
+          {label}
+          <div
+            className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent"
+            style={{ borderRightColor: '#1e1e30' }}
+          />
         </div>
       )}
-    </aside>
+    </div>
+  );
+}
+
+/* ── Icon Button ─────────────────────────────────────────── */
+
+function IconButton({
+  active,
+  onClick,
+  children,
+}: {
+  active?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: 36,
+        height: 36,
+        borderRadius: 10,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: active ? C.accentSoft : 'transparent',
+        color: active ? C.accentText : C.textMuted,
+        border: 'none',
+        cursor: 'pointer',
+        transition: 'all 150ms ease',
+      }}
+      onMouseEnter={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = C.surfaceHover;
+          e.currentTarget.style.color = C.textSecondary;
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.color = C.textMuted;
+        }
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ── Session Button ──────────────────────────────────────── */
+
+function SessionButton({
+  label,
+  statusColor,
+  active,
+  onClick,
+}: {
+  label: string;
+  statusColor: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip label={label}>
+      <button
+        onClick={onClick}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 10,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          position: 'relative',
+          background: active ? C.accentSoft : C.surface,
+          color: active ? C.accentText : C.textSecondary,
+          border: `1px solid ${active ? C.accent : C.border}`,
+          cursor: 'pointer',
+          fontSize: 13,
+          fontWeight: 600,
+          transition: 'all 150ms ease',
+        }}
+        onMouseEnter={(e) => {
+          if (!active) {
+            e.currentTarget.style.borderColor = C.borderStrong;
+            e.currentTarget.style.background = C.surfaceHover;
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!active) {
+            e.currentTarget.style.borderColor = C.border;
+            e.currentTarget.style.background = C.surface;
+          }
+        }}
+      >
+        {label.charAt(0).toUpperCase()}
+        <span
+          style={{
+            position: 'absolute',
+            bottom: -2,
+            right: -2,
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background: statusColor,
+            border: `2px solid ${C.sidebar}`,
+          }}
+        />
+      </button>
+    </Tooltip>
+  );
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+
+export function Sidebar() {
+  const activeView = useUIStore((s) => s.activeView);
+  const setActiveView = useUIStore((s) => s.setActiveView);
+  const setShowSetup = useUIStore((s) => s.setShowSetup);
+  const activePlan = useTaskStore((s) => s.activePlan);
+  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+
+  const phaseToColor = (phase: string): string => {
+    switch (phase) {
+      case 'executing':
+      case 'decomposing':
+        return C.amber;
+      case 'completed':
+        return C.green;
+      case 'failed':
+        return C.red;
+      case 'reviewing':
+      case 'awaiting_approval':
+        return C.accentText;
+      default:
+        return C.textMuted;
+    }
+  };
+
+  return (
+    <div
+      data-testid="sidebar"
+      style={{
+        width: 56,
+        minWidth: 56,
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        paddingTop: 12,
+        paddingBottom: 12,
+        background: C.sidebar,
+        borderRight: `1px solid ${C.border}`,
+      }}
+    >
+      {/* Logo */}
+      <Tooltip label="WhaleCode">
+        <div
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            background: 'linear-gradient(135deg, #6d5efc 0%, #8b5cf6 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 16,
+            color: '#fff',
+            boxShadow: '0 8px 24px rgba(109,94,252,0.35)',
+            cursor: 'default',
+            flexShrink: 0,
+          }}
+        >
+          &#9670;
+        </div>
+      </Tooltip>
+
+      {/* Divider */}
+      <div
+        style={{
+          width: 24,
+          height: 1,
+          background: C.border,
+          marginTop: 12,
+          marginBottom: 12,
+          flexShrink: 0,
+        }}
+      />
+
+      {/* Sessions */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 8,
+          flexShrink: 0,
+        }}
+      >
+        {activePlan && (
+          <SessionButton
+            label={`Session ${activePlan.task_id.slice(0, 6)}`}
+            statusColor={phaseToColor(orchestrationPhase)}
+            active={activeView === 'kanban' || activeView === 'terminal'}
+            onClick={() => setActiveView('kanban')}
+          />
+        )}
+
+        {/* New orchestration button */}
+        <Tooltip label="New orchestration">
+          <button
+            onClick={() => setShowSetup(true)}
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'transparent',
+              color: C.textMuted,
+              border: `1.5px dashed ${C.borderStrong}`,
+              cursor: 'pointer',
+              fontSize: 18,
+              fontWeight: 300,
+              lineHeight: 1,
+              transition: 'all 150ms ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = C.accent;
+              e.currentTarget.style.color = C.accentText;
+              e.currentTarget.style.background = C.accentSoft;
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = C.borderStrong;
+              e.currentTarget.style.color = C.textMuted;
+              e.currentTarget.style.background = 'transparent';
+            }}
+          >
+            +
+          </button>
+        </Tooltip>
+      </div>
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Bottom icons */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 4,
+          flexShrink: 0,
+        }}
+      >
+        <Tooltip label="Usage">
+          <IconButton active={activeView === 'usage'} onClick={() => setActiveView('usage')}>
+            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9678;</span>
+          </IconButton>
+        </Tooltip>
+
+        <Tooltip label="Settings">
+          <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')}>
+            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9881;</span>
+          </IconButton>
+        </Tooltip>
+      </div>
+    </div>
   );
 }

@@ -35,6 +35,8 @@ pub struct ProcessEntry {
     pub output_lines: Vec<String>,
     /// Signals when the process exits. Clone the receiver, drop the lock, then await.
     pub completion_rx: tokio::sync::watch::Receiver<bool>,
+    /// Signals new line count — subscribers can detect new output without polling.
+    pub line_count_rx: tokio::sync::watch::Receiver<usize>,
 }
 
 /// Cache TTL in seconds (5 minutes).
@@ -215,6 +217,7 @@ mod tests {
         // Process exists without reservation
         inner.reserved_tools.remove("claude");
         let (_tx, rx) = tokio::sync::watch::channel(false);
+        let (_ltx, lrx) = tokio::sync::watch::channel(0usize);
         inner.processes.insert(
             "task-1".to_string(),
             ProcessEntry {
@@ -226,6 +229,7 @@ mod tests {
                 stdin_tx: None,
                 output_lines: vec![],
                 completion_rx: rx,
+                line_count_rx: lrx,
             },
         );
         assert!(!inner.reserved_tools.contains("claude"));

@@ -7,6 +7,7 @@ import { formatGeminiEvent } from '../lib/gemini';
 import { formatCodexEvent } from '../lib/codex';
 import {
   emitProcessOutput,
+  emitLocalProcessMessage,
   useProcessStore,
 } from './useProcess';
 import { useTaskStore, type ToolName, type OrchestratorConfig } from '../stores/taskStore';
@@ -159,11 +160,17 @@ export function useTaskDispatch() {
           cmd: `${toolName}: ${description}`,
           status: 'running',
           channel,
+          startedAt: Date.now(),
+          hasOutput: false,
+          lastEventAt: Date.now(),
+          lastOutputPreview: `${toolName} process started. Waiting for first output...`,
         });
         useProcessStore.setState({
           processes: newProcesses,
           activeProcessId: taskId,
         });
+
+        emitLocalProcessMessage(taskId, `$ ${prompt}`);
 
         // Update task store with real taskId and running status
         const taskState = useTaskStore.getState();
@@ -236,11 +243,17 @@ export function useTaskDispatch() {
         cmd: `orchestration: ${description}`,
         status: 'running',
         channel,
+        startedAt: Date.now(),
+        hasOutput: false,
+        lastEventAt: Date.now(),
+        lastOutputPreview: 'Master orchestration started. Worker output will stream here.',
       });
       useProcessStore.setState({
         processes: newProcesses,
         activeProcessId: orchestrationId,
       });
+
+      emitLocalProcessMessage(orchestrationId, `$ ${prompt}`);
 
       try {
         // Convert frontend config format (camelCase) to backend format (snake_case)
@@ -270,6 +283,7 @@ export function useTaskDispatch() {
           useTaskStore.getState().setActivePlan({
             task_id: plan.task_id,
             master_agent: plan.master_agent,
+            master_process_id: plan.master_process_id,
           });
           // Mark orchestration complete
           useProcessStore.getState()._updateStatus(orchestrationId, 'completed', 0);

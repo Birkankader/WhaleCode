@@ -11,12 +11,33 @@ export interface ProcessInfo {
   status: ProcessStatus;
   exitCode?: number;
   channel: Channel<OutputEvent>;
+  startedAt: number;
+  hasOutput: boolean;
+  lastEventAt: number;
+  lastOutputPreview: string;
 }
 
 // ── Global output routing (outside React/Zustand to avoid timing issues) ──
 
 const outputCallbacks = new Map<string, (event: OutputEvent) => void>();
 const outputLogs = new Map<string, OutputEvent[]>();
+
+function buildOutputPreview(event: OutputEvent): string | null {
+  if (event.event === 'stdout' || event.event === 'stderr') {
+    const line = event.data.trim();
+    return line.length > 0 ? line.slice(0, 220) : null;
+  }
+
+  if (event.event === 'error') {
+    return `Error: ${event.data}`;
+  }
+
+  if (event.event === 'exit') {
+    return `Process exited with code ${event.data}`;
+  }
+
+  return null;
+}
 
 export function registerProcessOutput(
   taskId: string,
@@ -45,10 +66,38 @@ export function emitProcessOutput(taskId: string, event: OutputEvent) {
   }
   outputLogs.set(taskId, log);
 
+  const preview = buildOutputPreview(event);
+  useProcessStore.setState((state) => {
+    const proc = state.processes.get(taskId);
+    if (!proc) return state;
+
+    const newProcesses = new Map(state.processes);
+    newProcesses.set(taskId, {
+      ...proc,
+      lastEventAt: Date.now(),
+      hasOutput: proc.hasOutput || event.event === 'stdout' || event.event === 'stderr' || event.event === 'error',
+      lastOutputPreview: preview ?? proc.lastOutputPreview,
+    });
+    return { processes: newProcesses };
+  });
+
   const cb = outputCallbacks.get(taskId);
   if (cb) {
     cb(event);
   }
+}
+
+export function emitLocalProcessMessage(
+  taskId: string,
+  data: string,
+  event: OutputEvent['event'] = 'stdout',
+) {
+  if (event === 'exit') {
+    emitProcessOutput(taskId, { event, data: Number(data) });
+    return;
+  }
+
+  emitProcessOutput(taskId, { event, data } as OutputEvent);
 }
 
 // ── Zustand store (only manages process state, not output routing) ──
@@ -119,6 +168,10 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
         cmd: `${cmd} ${args.join(' ')}`.trim(),
         status: 'running',
         channel,
+        startedAt: Date.now(),
+        hasOutput: false,
+        lastEventAt: Date.now(),
+        lastOutputPreview: 'CLI process attached. Waiting for first output...',
       };
 
       set((state) => {

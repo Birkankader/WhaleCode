@@ -278,6 +278,16 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
             storeKey="autoMerge"
           />
           <ToggleSetting
+            label="Auto PR"
+            description="Create PRs automatically for worker branches"
+            storeKey="autoPr"
+          />
+          <ToggleSetting
+            label="Code Review"
+            description="Keep review step enabled before final merge"
+            storeKey="codeReview"
+          />
+          <ToggleSetting
             label="Developer Mode"
             description="Enable direct terminal access to running agents"
             storeKey="developerMode"
@@ -291,12 +301,21 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
 function ToggleSetting({ label, description, storeKey }: {
   label: string;
   description: string;
-  storeKey: 'autoMerge' | 'developerMode';
+  storeKey: 'autoMerge' | 'autoPr' | 'codeReview' | 'developerMode';
 }) {
   const value = useUIStore((s) => s[storeKey]);
-  const setter = useUIStore((s) =>
-    storeKey === 'autoMerge' ? s.setAutoMerge : s.setDeveloperMode,
-  );
+  const setter = useUIStore((s) => {
+    switch (storeKey) {
+      case 'autoMerge':
+        return s.setAutoMerge;
+      case 'autoPr':
+        return s.setAutoPr;
+      case 'codeReview':
+        return s.setCodeReview;
+      default:
+        return s.setDeveloperMode;
+    }
+  });
 
   return (
     <label className="flex items-center justify-between cursor-pointer group">
@@ -308,13 +327,13 @@ function ToggleSetting({ label, description, storeKey }: {
         role="switch"
         aria-checked={value}
         onClick={() => setter(!value)}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-          value ? 'bg-violet-600' : 'bg-zinc-700'
+        className={`relative inline-flex h-5 w-8.5 items-center rounded-full border transition-colors ${
+          value ? 'border-violet-400/40 bg-violet-500/25' : 'border-white/10 bg-white/[0.05]'
         }`}
       >
         <span
-          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-            value ? 'translate-x-4.5' : 'translate-x-0.5'
+          className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+            value ? 'translate-x-4' : 'translate-x-0.5'
           }`}
         />
       </button>

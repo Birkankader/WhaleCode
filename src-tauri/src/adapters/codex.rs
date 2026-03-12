@@ -1,4 +1,7 @@
 // Codex CLI adapter: NDJSON parsing, command building, failure detection, rate limit detection
+//
+// Uses real Codex CLI v0.111.0 JSONL format with --json flag:
+// thread.started, turn.started, item.completed, turn.completed events.
 
 use serde::Deserialize;
 
@@ -9,78 +12,55 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
-// NDJSON Event Types
+// NDJSON Event Types (real Codex CLI format)
 // ---------------------------------------------------------------------------
 
-/// Represents a single line from Codex CLI's stdout output.
+/// Represents a single line from Codex CLI's JSONL output (--json mode).
 /// Uses serde tagged enum on the `type` field. All inner fields are `Option<T>` for
 /// resilient parsing — the exact schema may vary across CLI versions.
-///
-/// NOTE: Like Gemini, Codex's message content is a plain String (not Vec<ContentBlock>).
-// Fields are deserialized from JSON for completeness; not all are read directly in Rust.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum CodexStreamEvent {
-    #[serde(rename = "init")]
-    Init {
-        session_id: Option<String>,
-        model: Option<String>,
-        timestamp: Option<String>,
+    #[serde(rename = "thread.started")]
+    ThreadStarted {
+        thread_id: Option<String>,
     },
 
-    #[serde(rename = "message")]
-    Message {
-        role: Option<String>,
-        content: Option<String>,
-        timestamp: Option<String>,
+    #[serde(rename = "turn.started")]
+    TurnStarted {},
+
+    #[serde(rename = "item.completed")]
+    ItemCompleted {
+        item: Option<CodexItem>,
     },
 
-    #[serde(rename = "tool_use")]
-    ToolUse {
-        /// Codex CLI uses `function_name` for tool_use events
-        function_name: Option<String>,
-        /// Codex CLI uses `call_id` instead of `tool_id`
-        call_id: Option<String>,
-        /// Codex CLI uses `arguments` instead of `parameters`
-        arguments: Option<serde_json::Value>,
-        timestamp: Option<String>,
-    },
-
-    #[serde(rename = "tool_result")]
-    ToolResult {
-        tool_id: Option<String>,
-        status: Option<String>,
-        output: Option<String>,
-        timestamp: Option<String>,
-    },
-
-    #[serde(rename = "error")]
-    Error {
-        message: Option<String>,
-        timestamp: Option<String>,
-    },
-
-    #[serde(rename = "result")]
-    Result {
-        status: Option<String>,
-        response: Option<String>,
-        stats: Option<CodexStats>,
-        timestamp: Option<String>,
+    #[serde(rename = "turn.completed")]
+    TurnCompleted {
+        usage: Option<CodexUsage>,
     },
 }
 
-/// Usage/statistics from a Codex CLI result event.
-/// Codex CLI uses `prompt_tokens`/`completion_tokens` naming (OpenAI convention).
-// Fields are deserialized from JSON for completeness; not all are read directly in Rust.
-#[allow(dead_code)]
+/// An item within an item.completed event.
 #[derive(Debug, Deserialize)]
-pub struct CodexStats {
-    pub total_tokens: Option<u64>,
-    pub prompt_tokens: Option<u64>,
-    pub completion_tokens: Option<u64>,
-    pub duration_ms: Option<u64>,
-    pub tool_calls: Option<u32>,
+pub struct CodexItem {
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    pub text: Option<String>,
+    // tool_use fields
+    pub function_name: Option<String>,
+    pub arguments: Option<serde_json::Value>,
+    // tool_result fields
+    pub output: Option<String>,
+    pub status: Option<String>,
+}
+
+/// Usage/statistics from a Codex CLI turn.completed event.
+#[derive(Debug, Deserialize)]
+pub struct CodexUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,14 +91,14 @@ fn build_env(api_key: &str) -> Vec<(String, String)> {
 /// SECURITY: The `api_key` is stored in `env` only — it is never included
 /// in args or logged.
 ///
-/// Uses `codex exec --full-auto` for headless tool execution (no confirmation prompts).
-/// Codex CLI does not support `--output-format`; output is plain text on stdout.
+/// Uses `codex exec --full-auto --json` for headless tool execution with JSONL output.
 pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> CodexCommand {
     CodexCommand {
         cmd: "codex".to_string(),
         args: vec![
             "exec".to_string(),
             "--full-auto".to_string(),
+            "--json".to_string(),
             prompt.to_string(),
         ],
         env: build_env(api_key),
@@ -145,39 +125,24 @@ pub fn parse_stream_line(line: &str) -> Option<CodexStreamEvent> {
 // ---------------------------------------------------------------------------
 
 /// Validate a result event from Codex CLI for silent failures.
-///
-/// Checks:
-/// - response text is non-empty
-/// - status is not "error"
-/// - event is a Result (not Error or other type)
-///
-/// NOTE: Does NOT check num_turns or is_error (Claude-specific fields per Pitfall 6).
-///
-/// Returns a descriptive error for each failure mode.
 pub fn validate_result(event: &CodexStreamEvent) -> Result<(), String> {
     match event {
-        CodexStreamEvent::Result {
-            status,
-            response,
-            ..
-        } => {
-            // Check for error status
-            if status.as_deref() == Some("error") {
-                return Err("Codex CLI reported an error status".to_string());
-            }
-            // Check for empty/missing response (silent failure)
-            if response.as_ref().map_or(true, |r| r.trim().is_empty()) {
-                return Err("Codex CLI returned empty response (silent failure)".to_string());
+        CodexStreamEvent::TurnCompleted { usage } => {
+            if usage.is_none() {
+                return Err("Codex CLI turn completed without usage data".to_string());
             }
             Ok(())
         }
-        CodexStreamEvent::Error { message, .. } => {
-            Err(format!(
-                "Codex CLI error: {}",
-                message.as_deref().unwrap_or("unknown error")
-            ))
+        CodexStreamEvent::ItemCompleted { item } => {
+            let item = item.as_ref().ok_or("Empty item in item.completed")?;
+            if item.item_type.as_deref() == Some("agent_message") {
+                if item.text.as_ref().map_or(true, |t| t.trim().is_empty()) {
+                    return Err("Codex CLI returned empty agent message".to_string());
+                }
+            }
+            Ok(())
         }
-        _ => Err("No result event received from Codex CLI".to_string()),
+        _ => Ok(()),
     }
 }
 
@@ -298,6 +263,7 @@ impl ToolAdapter for CodexAdapter {
             cmd: "codex".to_string(),
             args: vec![
                 "--full-auto".to_string(),
+                "--json".to_string(),
             ],
             env: build_env(api_key),
             cwd: cwd.to_string(),
@@ -307,17 +273,20 @@ impl ToolAdapter for CodexAdapter {
     fn detect_question(&self, line: &str) -> Option<Question> {
         let event = parse_stream_line(line)?;
         match event {
-            CodexStreamEvent::Message { content, .. } => {
-                let text = content?;
+            CodexStreamEvent::ItemCompleted { item } => {
+                let item = item?;
+                if item.item_type.as_deref() != Some("agent_message") { return None; }
+                let text = item.text?;
                 if text.contains("[QUESTION]") || text.contains("[ASK]") {
                     let qtype = QuestionType::from_text(&text);
-                    return Some(Question {
+                    Some(Question {
                         source_agent: "codex".to_string(),
                         content: text,
                         question_type: qtype,
-                    });
+                    })
+                } else {
+                    None
                 }
-                None
             }
             _ => None,
         }
@@ -326,43 +295,33 @@ impl ToolAdapter for CodexAdapter {
     fn parse_display_output(&self, line: &str) -> Option<DisplayLine> {
         let event = parse_stream_line(line)?;
         match event {
-            CodexStreamEvent::Message { content, .. } => {
-                let text = content?;
-                if text.is_empty() {
-                    return None;
+            CodexStreamEvent::ItemCompleted { item } => {
+                let item = item?;
+                match item.item_type.as_deref() {
+                    Some("agent_message") => {
+                        let text = item.text?;
+                        if text.is_empty() { return None; }
+                        Some(DisplayLine { content: text, line_type: DisplayLineType::AgentThinking })
+                    }
+                    Some("tool_use") => {
+                        let name = item.function_name.unwrap_or_else(|| "unknown".to_string());
+                        let args = item.arguments.map(|v| serde_json::to_string(&v).unwrap_or_default()).unwrap_or_default();
+                        Some(DisplayLine { content: format!("[{}] {}", name, args), line_type: DisplayLineType::ToolExecution })
+                    }
+                    Some("tool_result") => {
+                        let content = item.output.unwrap_or_default();
+                        if content.is_empty() { return None; }
+                        Some(DisplayLine { content, line_type: DisplayLineType::Result })
+                    }
+                    _ => None,
                 }
-                Some(DisplayLine {
-                    content: text,
-                    line_type: DisplayLineType::AgentThinking,
-                })
             }
-            CodexStreamEvent::ToolUse { function_name, arguments, .. } => {
-                let name = function_name.unwrap_or_else(|| "unknown".to_string());
-                let args_str = arguments
-                    .map(|v| serde_json::to_string(&v).unwrap_or_default())
-                    .unwrap_or_default();
+            CodexStreamEvent::TurnCompleted { usage } => {
+                let u = usage?;
+                let input = u.input_tokens.unwrap_or(0);
+                let output = u.output_tokens.unwrap_or(0);
                 Some(DisplayLine {
-                    content: format!("[{}] {}", name, args_str),
-                    line_type: DisplayLineType::ToolExecution,
-                })
-            }
-            CodexStreamEvent::ToolResult { output, .. } => {
-                let content = output.unwrap_or_default();
-                if content.is_empty() {
-                    return None;
-                }
-                Some(DisplayLine {
-                    content,
-                    line_type: DisplayLineType::Result,
-                })
-            }
-            CodexStreamEvent::Result { response, .. } => {
-                let content = response.unwrap_or_default();
-                if content.is_empty() {
-                    return None;
-                }
-                Some(DisplayLine {
-                    content,
+                    content: format!("Turn complete ({}in/{}out tokens)", input, output),
                     line_type: DisplayLineType::Result,
                 })
             }
@@ -371,10 +330,13 @@ impl ToolAdapter for CodexAdapter {
     }
 
     fn extract_result(&self, output_lines: &[String]) -> Option<String> {
+        // Find last agent_message text
         for line in output_lines.iter().rev() {
             if let Some(event) = parse_stream_line(line) {
-                if let CodexStreamEvent::Result { response, .. } = event {
-                    return response;
+                if let CodexStreamEvent::ItemCompleted { item: Some(item) } = event {
+                    if item.item_type.as_deref() == Some("agent_message") {
+                        return item.text;
+                    }
                 }
             }
         }
@@ -382,7 +344,7 @@ impl ToolAdapter for CodexAdapter {
     }
 
     fn is_turn_complete(&self, line: &str) -> bool {
-        matches!(parse_stream_line(line), Some(CodexStreamEvent::Result { .. }))
+        matches!(parse_stream_line(line), Some(CodexStreamEvent::TurnCompleted { .. }))
     }
 }
 
@@ -395,92 +357,86 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_init_event() {
-        let line = r#"{"type":"init","session_id":"abc","model":"o4-mini"}"#;
+    fn test_parse_thread_started_event() {
+        let line = r#"{"type":"thread.started","thread_id":"abc"}"#;
         let event = parse_stream_line(line);
-        assert!(event.is_some(), "Expected Some for init event");
+        assert!(event.is_some(), "Expected Some for thread.started event");
         match event.unwrap() {
-            CodexStreamEvent::Init { session_id, model, .. } => {
-                assert_eq!(session_id, Some("abc".to_string()));
-                assert_eq!(model, Some("o4-mini".to_string()));
+            CodexStreamEvent::ThreadStarted { thread_id } => {
+                assert_eq!(thread_id, Some("abc".to_string()));
             }
-            other => panic!("Expected Init, got {:?}", other),
+            other => panic!("Expected ThreadStarted, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_parse_message_event() {
-        let line = r#"{"type":"message","role":"assistant","content":"Hello"}"#;
+    fn test_parse_turn_started_event() {
+        let line = r#"{"type":"turn.started"}"#;
         let event = parse_stream_line(line);
-        assert!(event.is_some(), "Expected Some for message event");
+        assert!(event.is_some(), "Expected Some for turn.started event");
+        assert!(matches!(event.unwrap(), CodexStreamEvent::TurnStarted {}));
+    }
+
+    #[test]
+    fn test_parse_item_completed_agent_message() {
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Hello"}}"#;
+        let event = parse_stream_line(line);
+        assert!(event.is_some(), "Expected Some for item.completed event");
         match event.unwrap() {
-            CodexStreamEvent::Message { role, content, .. } => {
-                assert_eq!(role, Some("assistant".to_string()));
-                assert_eq!(content, Some("Hello".to_string()));
+            CodexStreamEvent::ItemCompleted { item } => {
+                let item = item.unwrap();
+                assert_eq!(item.item_type, Some("agent_message".to_string()));
+                assert_eq!(item.text, Some("Hello".to_string()));
             }
-            other => panic!("Expected Message, got {:?}", other),
+            other => panic!("Expected ItemCompleted, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_parse_tool_use_event() {
-        let line = r#"{"type":"tool_use","function_name":"Bash","call_id":"t1","arguments":{"command":"ls"}}"#;
+    fn test_parse_item_completed_tool_use() {
+        let line = r#"{"type":"item.completed","item":{"id":"i2","type":"tool_use","function_name":"Bash","arguments":{"command":"ls"}}}"#;
         let event = parse_stream_line(line);
-        assert!(event.is_some(), "Expected Some for tool_use event");
+        assert!(event.is_some(), "Expected Some for item.completed tool_use");
         match event.unwrap() {
-            CodexStreamEvent::ToolUse { function_name, call_id, arguments, .. } => {
-                assert_eq!(function_name, Some("Bash".to_string()));
-                assert_eq!(call_id, Some("t1".to_string()));
-                assert!(arguments.is_some());
+            CodexStreamEvent::ItemCompleted { item } => {
+                let item = item.unwrap();
+                assert_eq!(item.item_type, Some("tool_use".to_string()));
+                assert_eq!(item.function_name, Some("Bash".to_string()));
+                assert!(item.arguments.is_some());
             }
-            other => panic!("Expected ToolUse, got {:?}", other),
+            other => panic!("Expected ItemCompleted, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_parse_tool_result_event() {
-        let line = r#"{"type":"tool_result","tool_id":"t1","status":"success","output":"file.txt"}"#;
+    fn test_parse_item_completed_tool_result() {
+        let line = r#"{"type":"item.completed","item":{"id":"i3","type":"tool_result","output":"file.txt","status":"success"}}"#;
         let event = parse_stream_line(line);
-        assert!(event.is_some(), "Expected Some for tool_result event");
+        assert!(event.is_some(), "Expected Some for item.completed tool_result");
         match event.unwrap() {
-            CodexStreamEvent::ToolResult { tool_id, status, output, .. } => {
-                assert_eq!(tool_id, Some("t1".to_string()));
-                assert_eq!(status, Some("success".to_string()));
-                assert_eq!(output, Some("file.txt".to_string()));
+            CodexStreamEvent::ItemCompleted { item } => {
+                let item = item.unwrap();
+                assert_eq!(item.item_type, Some("tool_result".to_string()));
+                assert_eq!(item.output, Some("file.txt".to_string()));
+                assert_eq!(item.status, Some("success".to_string()));
             }
-            other => panic!("Expected ToolResult, got {:?}", other),
+            other => panic!("Expected ItemCompleted, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_parse_result_event() {
-        let line = r#"{"type":"result","status":"completed","response":"Done","stats":{"total_tokens":500,"prompt_tokens":200,"completion_tokens":300,"duration_ms":1500}}"#;
+    fn test_parse_turn_completed_event() {
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":300,"cached_input_tokens":50}}"#;
         let event = parse_stream_line(line);
-        assert!(event.is_some(), "Expected Some for result event");
+        assert!(event.is_some(), "Expected Some for turn.completed event");
         match event.unwrap() {
-            CodexStreamEvent::Result { status, response, stats, .. } => {
-                assert_eq!(status, Some("completed".to_string()));
-                assert_eq!(response, Some("Done".to_string()));
-                let s = stats.unwrap();
-                assert_eq!(s.total_tokens, Some(500));
-                assert_eq!(s.prompt_tokens, Some(200));
-                assert_eq!(s.completion_tokens, Some(300));
-                assert_eq!(s.duration_ms, Some(1500));
+            CodexStreamEvent::TurnCompleted { usage } => {
+                let u = usage.unwrap();
+                assert_eq!(u.input_tokens, Some(200));
+                assert_eq!(u.output_tokens, Some(300));
+                assert_eq!(u.cached_input_tokens, Some(50));
             }
-            other => panic!("Expected Result, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_error_event() {
-        let line = r#"{"type":"error","message":"API error"}"#;
-        let event = parse_stream_line(line);
-        assert!(event.is_some(), "Expected Some for error event");
-        match event.unwrap() {
-            CodexStreamEvent::Error { message, .. } => {
-                assert_eq!(message, Some("API error".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
+            other => panic!("Expected TurnCompleted, got {:?}", other),
         }
     }
 
@@ -500,76 +456,65 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_validate_result_success() {
-        let event = CodexStreamEvent::Result {
-            status: Some("completed".to_string()),
-            response: Some("Task completed successfully".to_string()),
-            stats: None,
-            timestamp: None,
+    fn test_validate_turn_completed_success() {
+        let event = CodexStreamEvent::TurnCompleted {
+            usage: Some(CodexUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(50),
+                cached_input_tokens: None,
+            }),
         };
         assert!(validate_result(&event).is_ok());
     }
 
     #[test]
-    fn test_validate_result_empty_response() {
-        let event = CodexStreamEvent::Result {
-            status: Some("completed".to_string()),
-            response: Some("".to_string()),
-            stats: None,
-            timestamp: None,
-        };
+    fn test_validate_turn_completed_no_usage() {
+        let event = CodexStreamEvent::TurnCompleted { usage: None };
         let err = validate_result(&event);
-        assert!(err.is_err(), "Expected Err for empty response");
-        assert!(err.unwrap_err().contains("empty response"));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("without usage data"));
     }
 
     #[test]
-    fn test_validate_result_missing_response() {
-        let event = CodexStreamEvent::Result {
-            status: Some("completed".to_string()),
-            response: None,
-            stats: None,
-            timestamp: None,
+    fn test_validate_item_completed_agent_message_success() {
+        let event = CodexStreamEvent::ItemCompleted {
+            item: Some(CodexItem {
+                id: Some("i1".to_string()),
+                item_type: Some("agent_message".to_string()),
+                text: Some("Task completed".to_string()),
+                function_name: None, arguments: None, output: None, status: None,
+            }),
         };
-        let err = validate_result(&event);
-        assert!(err.is_err(), "Expected Err for missing response");
-        assert!(err.unwrap_err().contains("empty response"));
+        assert!(validate_result(&event).is_ok());
     }
 
     #[test]
-    fn test_validate_result_error_status() {
-        let event = CodexStreamEvent::Result {
-            status: Some("error".to_string()),
-            response: Some("Something went wrong".to_string()),
-            stats: None,
-            timestamp: None,
+    fn test_validate_item_completed_empty_message() {
+        let event = CodexStreamEvent::ItemCompleted {
+            item: Some(CodexItem {
+                id: Some("i1".to_string()),
+                item_type: Some("agent_message".to_string()),
+                text: Some("".to_string()),
+                function_name: None, arguments: None, output: None, status: None,
+            }),
         };
         let err = validate_result(&event);
-        assert!(err.is_err(), "Expected Err for error status");
-        assert!(err.unwrap_err().contains("error"));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("empty agent message"));
     }
 
     #[test]
-    fn test_validate_result_error_event() {
-        let event = CodexStreamEvent::Error {
-            message: Some("API error".to_string()),
-            timestamp: None,
-        };
+    fn test_validate_item_completed_no_item() {
+        let event = CodexStreamEvent::ItemCompleted { item: None };
         let err = validate_result(&event);
-        assert!(err.is_err(), "Expected Err for Error event");
-        assert!(err.unwrap_err().contains("API error"));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("Empty item"));
     }
 
     #[test]
-    fn test_validate_result_non_result_event() {
-        let event = CodexStreamEvent::Init {
-            session_id: Some("abc".to_string()),
-            model: None,
-            timestamp: None,
-        };
-        let err = validate_result(&event);
-        assert!(err.is_err(), "Expected Err for non-result event");
-        assert!(err.unwrap_err().contains("No result event"));
+    fn test_validate_thread_started_ok() {
+        let event = CodexStreamEvent::ThreadStarted { thread_id: Some("abc".to_string()) };
+        assert!(validate_result(&event).is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -617,7 +562,7 @@ mod tests {
         assert!(cmd.args.contains(&"exec".to_string()));
         assert!(cmd.args.contains(&"write hello world".to_string()));
         assert!(cmd.args.contains(&"--full-auto".to_string()));
-        assert!(!cmd.args.contains(&"--output-format".to_string()));
+        assert!(cmd.args.contains(&"--json".to_string()));
     }
 
     #[test]
@@ -673,7 +618,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // New Trait Method Tests
+    // ToolAdapter Trait Method Tests
     // -----------------------------------------------------------------------
 
     use super::super::ToolAdapter;
@@ -686,8 +631,9 @@ mod tests {
         // Must NOT contain -p or exec (interactive mode, not exec mode)
         assert!(!cmd.args.contains(&"-p".to_string()));
         assert!(!cmd.args.contains(&"exec".to_string()));
-        // Must contain --full-auto
+        // Must contain --full-auto and --json
         assert!(cmd.args.contains(&"--full-auto".to_string()));
+        assert!(cmd.args.contains(&"--json".to_string()));
     }
 
     #[test]
@@ -711,7 +657,7 @@ mod tests {
     #[test]
     fn test_detect_question_with_question_tag() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"message","role":"assistant","content":"[QUESTION] Which schema to use?"}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"[QUESTION] Which schema to use?"}}"#;
         let q = adapter.detect_question(line);
         assert!(q.is_some());
         let q = q.unwrap();
@@ -723,7 +669,7 @@ mod tests {
     #[test]
     fn test_detect_question_with_ask_tag() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"message","role":"assistant","content":"[ASK] Need clarification"}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"[ASK] Need clarification"}}"#;
         let q = adapter.detect_question(line);
         assert!(q.is_some());
     }
@@ -731,21 +677,21 @@ mod tests {
     #[test]
     fn test_detect_question_no_tag_returns_none() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"message","role":"assistant","content":"Working on it..."}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Working on it..."}}"#;
         assert!(adapter.detect_question(line).is_none());
     }
 
     #[test]
     fn test_detect_question_tool_use_returns_none() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"tool_use","function_name":"Bash","call_id":"t1","arguments":{"command":"ls"}}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i2","type":"tool_use","function_name":"Bash","arguments":{"command":"ls"}}}"#;
         assert!(adapter.detect_question(line).is_none());
     }
 
     #[test]
-    fn test_parse_display_output_message() {
+    fn test_parse_display_output_agent_message() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"message","role":"assistant","content":"Analyzing code..."}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Analyzing code..."}}"#;
         let dl = adapter.parse_display_output(line);
         assert!(dl.is_some());
         let dl = dl.unwrap();
@@ -756,7 +702,7 @@ mod tests {
     #[test]
     fn test_parse_display_output_tool_use() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"tool_use","function_name":"Bash","call_id":"t1","arguments":{"command":"ls"}}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i2","type":"tool_use","function_name":"Bash","arguments":{"command":"ls"}}}"#;
         let dl = adapter.parse_display_output(line);
         assert!(dl.is_some());
         let dl = dl.unwrap();
@@ -767,27 +713,27 @@ mod tests {
     #[test]
     fn test_parse_display_output_tool_result() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"tool_result","tool_id":"t1","status":"success","output":"file.txt"}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i3","type":"tool_result","output":"file.txt","status":"success"}}"#;
         let dl = adapter.parse_display_output(line);
         assert!(dl.is_some());
         assert!(matches!(dl.unwrap().line_type, super::super::DisplayLineType::Result));
     }
 
     #[test]
-    fn test_parse_display_output_result_event() {
+    fn test_parse_display_output_turn_completed() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"result","status":"completed","response":"All done"}"#;
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
         let dl = adapter.parse_display_output(line);
         assert!(dl.is_some());
         let dl = dl.unwrap();
-        assert_eq!(dl.content, "All done");
+        assert!(dl.content.contains("100in/50out"));
         assert!(matches!(dl.line_type, super::super::DisplayLineType::Result));
     }
 
     #[test]
-    fn test_parse_display_output_init_returns_none() {
+    fn test_parse_display_output_thread_started_returns_none() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"init","session_id":"abc"}"#;
+        let line = r#"{"type":"thread.started","thread_id":"abc"}"#;
         assert!(adapter.parse_display_output(line).is_none());
     }
 
@@ -798,12 +744,13 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_result_finds_last_result() {
+    fn test_extract_result_finds_last_agent_message() {
         let adapter = CodexAdapter;
         let lines = vec![
-            r#"{"type":"init","session_id":"abc"}"#.to_string(),
-            r#"{"type":"message","role":"assistant","content":"Working..."}"#.to_string(),
-            r#"{"type":"result","status":"completed","response":"Task done"}"#.to_string(),
+            r#"{"type":"thread.started","thread_id":"abc"}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Working..."}}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Task done"}}"#.to_string(),
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#.to_string(),
         ];
         let result = adapter.extract_result(&lines);
         assert_eq!(result, Some("Task done".to_string()));
@@ -816,26 +763,26 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_result_no_result_event() {
+    fn test_extract_result_no_agent_message() {
         let adapter = CodexAdapter;
         let lines = vec![
-            r#"{"type":"init","session_id":"abc"}"#.to_string(),
-            r#"{"type":"message","role":"assistant","content":"Working..."}"#.to_string(),
+            r#"{"type":"thread.started","thread_id":"abc"}"#.to_string(),
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#.to_string(),
         ];
         assert!(adapter.extract_result(&lines).is_none());
     }
 
     #[test]
-    fn test_is_turn_complete_result_event() {
+    fn test_is_turn_complete_turn_completed() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"result","status":"completed","response":"Done"}"#;
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
         assert!(adapter.is_turn_complete(line));
     }
 
     #[test]
-    fn test_is_turn_complete_message_event() {
+    fn test_is_turn_complete_item_completed() {
         let adapter = CodexAdapter;
-        let line = r#"{"type":"message","role":"assistant","content":"Still working"}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Still working"}}"#;
         assert!(!adapter.is_turn_complete(line));
     }
 

@@ -163,6 +163,10 @@ export function useClaudeTask() {
             cmd: `claude: ${prompt.slice(0, 60)}`,
             status: 'running',
             channel,
+            startedAt: Date.now(),
+            hasOutput: false,
+            lastEventAt: Date.now(),
+            lastOutputPreview: 'Claude process started. Waiting for first output...',
           });
           useProcessStore.setState({
             processes: newProcesses,

@@ -58,8 +58,8 @@ interface TaskState {
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;
-  activePlan: { task_id: string; master_agent: string } | null;
-  setActivePlan: (plan: { task_id: string; master_agent: string } | null) => void;
+  activePlan: { task_id: string; master_agent: string; master_process_id: string | null } | null;
+  setActivePlan: (plan: { task_id: string; master_agent: string; master_process_id: string | null } | null) => void;
   pendingQuestion: PendingQuestion | null;
   setPendingQuestion: (q: PendingQuestion | null) => void;
   updateAgentContext: (toolName: ToolName, info: AgentContextInfo) => void;
@@ -67,6 +67,9 @@ interface TaskState {
   setOrchestrationPhase: (phase: OrchestrationPhase) => void;
   decomposedTasks: SubTaskEntry[];
   setDecomposedTasks: (tasks: SubTaskEntry[]) => void;
+  orchestrationLogs: Array<{ id: string; timestamp: string; agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }>;
+  addOrchestrationLog: (log: { agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }) => void;
+  clearOrchestrationLogs: () => void;
 }
 
 export const useTaskStore = create<TaskState>((set, get) => ({
@@ -142,4 +145,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   setDecomposedTasks: (tasks) => {
     set({ decomposedTasks: tasks });
   },
+
+  orchestrationLogs: [],
+  addOrchestrationLog: (log) => {
+    set((state) => ({
+      orchestrationLogs: [
+        ...state.orchestrationLogs.slice(-499),
+        {
+          id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
+          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          ...log,
+        },
+      ],
+    }));
+  },
+  clearOrchestrationLogs: () => set({ orchestrationLogs: [] }),
 }));

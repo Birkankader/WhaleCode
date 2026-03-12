@@ -128,6 +128,8 @@ async fn spawn_with_env_core(
 
     // Completion notification channel — waiter task signals when process exits
     let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
+    // Line count notification channel — stdout reader signals new output
+    let (line_count_tx, line_count_rx) = tokio::sync::watch::channel(0usize);
 
     // Register in state
     {
@@ -143,6 +145,7 @@ async fn spawn_with_env_core(
                 stdin_tx,
                 output_lines: Vec::new(),
                 completion_rx,
+                line_count_rx,
             },
         );
     }
@@ -172,6 +175,8 @@ async fn spawn_with_env_core(
                         if entry.output_lines.len() > 50 {
                             entry.output_lines.drain(0..entry.output_lines.len() - 50);
                         }
+                        // Signal new line count to watchers
+                        line_count_tx.send(entry.output_lines.len()).ok();
                     }
                 }
             }
@@ -333,6 +338,28 @@ pub fn resume(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), St
     Ok(())
 }
 
+/// Atomically check that no running process exists for `tool_name` and reserve the slot.
+/// Returns `Err` if the tool already has a running process or is being dispatched.
+pub fn acquire_tool_slot(state: &AppState, tool_name: &str) -> Result<(), String> {
+    let mut inner = state.lock().map_err(|e| e.to_string())?;
+    for (_id, proc) in inner.processes.iter() {
+        if proc.tool_name == tool_name && matches!(proc.status, ProcessStatus::Running) {
+            return Err(format!("{} is already running a task", tool_name));
+        }
+    }
+    if !inner.reserved_tools.insert(tool_name.to_string()) {
+        return Err(format!("{} is already being dispatched", tool_name));
+    }
+    Ok(())
+}
+
+/// Release a tool slot reservation. Idempotent.
+pub fn release_tool_slot(state: &AppState, tool_name: &str) {
+    if let Ok(mut inner) = state.lock() {
+        inner.reserved_tools.remove(tool_name);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +380,54 @@ mod tests {
         let result = send_to_process(&state, "nonexistent", "hello");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_acquire_tool_slot_success() {
+        use std::sync::{Arc, Mutex};
+        let state: AppState = Arc::new(Mutex::new(Default::default()));
+        assert!(acquire_tool_slot(&state, "claude").is_ok());
+        assert!(state.lock().unwrap().reserved_tools.contains("claude"));
+    }
+
+    #[test]
+    fn test_acquire_tool_slot_already_reserved() {
+        use std::sync::{Arc, Mutex};
+        let state: AppState = Arc::new(Mutex::new(Default::default()));
+        acquire_tool_slot(&state, "claude").unwrap();
+        let err = acquire_tool_slot(&state, "claude");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("already being dispatched"));
+    }
+
+    #[test]
+    fn test_acquire_tool_slot_running_process() {
+        use std::sync::{Arc, Mutex};
+        let state: AppState = Arc::new(Mutex::new(Default::default()));
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let (_ltx, lrx) = tokio::sync::watch::channel(0usize);
+        {
+            let mut inner = state.lock().unwrap();
+            inner.processes.insert("t1".to_string(), ProcessEntry {
+                pgid: 1, status: ProcessStatus::Running,
+                tool_name: "claude".to_string(), task_description: "test".to_string(),
+                started_at: 0, stdin_tx: None, output_lines: vec![],
+                completion_rx: rx, line_count_rx: lrx,
+            });
+        }
+        let err = acquire_tool_slot(&state, "claude");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("already running"));
+    }
+
+    #[test]
+    fn test_release_tool_slot() {
+        use std::sync::{Arc, Mutex};
+        let state: AppState = Arc::new(Mutex::new(Default::default()));
+        acquire_tool_slot(&state, "claude").unwrap();
+        release_tool_slot(&state, "claude");
+        assert!(!state.lock().unwrap().reserved_tools.contains("claude"));
+        // Can re-acquire
+        assert!(acquire_tool_slot(&state, "claude").is_ok());
     }
 }
