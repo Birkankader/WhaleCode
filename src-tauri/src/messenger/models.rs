@@ -13,7 +13,11 @@ pub enum MessageType {
     TaskAssigned,
     TaskCompleted,
     TaskFailed,
+    // Part of the serialized API; will be used by future orchestration features.
+    #[allow(dead_code)]
     AgentSummary,
+    // Part of the serialized API; will be used by future orchestration features.
+    #[allow(dead_code)]
     MasterDecision,
     DecompositionResult,
     ReviewResult,

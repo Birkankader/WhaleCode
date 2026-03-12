@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 export type ToolName = 'claude' | 'gemini' | 'codex';
 export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review';
+export type OrchestrationPhase = 'idle' | 'decomposing' | 'awaiting_approval' | 'executing' | 'reviewing' | 'completed' | 'failed';
 
 export interface TaskEntry {
   taskId: string;
@@ -62,6 +63,10 @@ interface TaskState {
   pendingQuestion: PendingQuestion | null;
   setPendingQuestion: (q: PendingQuestion | null) => void;
   updateAgentContext: (toolName: ToolName, info: AgentContextInfo) => void;
+  orchestrationPhase: OrchestrationPhase;
+  setOrchestrationPhase: (phase: OrchestrationPhase) => void;
+  decomposedTasks: SubTaskEntry[];
+  setDecomposedTasks: (tasks: SubTaskEntry[]) => void;
 }
 
 export const useTaskStore = create<TaskState>((set, get) => ({
@@ -126,5 +131,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       newContexts.set(toolName, info);
       return { agentContexts: newContexts };
     });
+  },
+
+  orchestrationPhase: 'idle',
+  setOrchestrationPhase: (phase) => {
+    set({ orchestrationPhase: phase });
+  },
+
+  decomposedTasks: [],
+  setDecomposedTasks: (tasks) => {
+    set({ decomposedTasks: tasks });
   },
 }));

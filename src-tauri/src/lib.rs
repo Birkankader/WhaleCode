@@ -1,6 +1,7 @@
 mod adapters;
 mod commands;
 mod credentials;
+mod detection;
 mod ipc;
 mod messenger;
 mod process;
@@ -12,7 +13,7 @@ mod state;
 
 use commands::{
     cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
-    delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key,
+    delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key, detect_agents,
     dispatch_orchestrated_task, dispatch_task, get_agent_context_info, get_context_summary,
     get_recent_changes, get_task_count, get_worktree_diff, has_claude_api_key, has_codex_api_key,
     has_gemini_api_key, list_worktrees, merge_worktree, optimize_prompt, pause_process,
@@ -21,6 +22,7 @@ use commands::{
     send_to_process, start_stream, suggest_tool, validate_claude_result, validate_codex_result,
     validate_gemini_result, cleanup_completed_processes,
     clear_orchestration_context, answer_user_question,
+    approve_decomposition, reject_decomposition,
 };
 use state::AppState;
 use tauri::Manager;
@@ -68,6 +70,9 @@ pub fn run() {
         cleanup_completed_processes,
         clear_orchestration_context,
         answer_user_question,
+        approve_decomposition,
+        reject_decomposition,
+        detect_agents,
     ]);
 
     #[cfg(debug_assertions)]

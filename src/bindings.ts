@@ -480,6 +480,30 @@ async answerUserQuestion(planId: string, answer: string) : Promise<Result<null, 
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async detectAgents() : Promise<Result<DetectedAgent[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("detect_agents") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async approveDecomposition(planId: string, modifiedTasks: SubTaskDef[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("approve_decomposition", { planId, modifiedTasks }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async rejectDecomposition(planId: string, feedback: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reject_decomposition", { planId, feedback }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -493,6 +517,8 @@ async answerUserQuestion(planId: string, answer: string) : Promise<Result<null, 
 
 /** user-defined types **/
 
+export type AuthStatus = "Authenticated" | "NeedsAuth" | "NotInstalled" | "Unknown"
+export type DetectedAgent = { tool_name: string; installed: boolean; binary_path: string | null; version: string | null; auth_status: AuthStatus; display_name: string }
 export type AgentConfig = { tool_name: string; sub_agent_count: number; is_master: boolean }
 export type AgentContextInfo = { tool_name: string; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cost_usd: number | null; status: string }
 export type ConflictFile = { path: string }

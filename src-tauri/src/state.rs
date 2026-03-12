@@ -9,6 +9,8 @@ use crate::prompt::models::PromptContext;
 
 pub type TaskId = String;
 
+// Fields are set during task creation and used for display/tracking.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct TaskInfo {
     pub description: String,

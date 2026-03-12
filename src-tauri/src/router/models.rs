@@ -11,6 +11,8 @@ pub struct RoutingSuggestion {
 }
 
 // Re-export orchestrator types for convenience
+// Note: these re-exports are used by downstream modules and the IPC boundary.
+#[allow(unused_imports)]
 pub use super::orchestrator::{
     AgentConfig, AgentContextInfo, DecompositionResult, OrchestrationPhase, OrchestrationPlan,
     OrchestratorConfig, SubTask, SubTaskDef, WorkerResult,

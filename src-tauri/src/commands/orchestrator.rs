@@ -81,6 +81,8 @@ async fn wait_for_turn_complete(
 // Helper: wait for a process to complete (watch channel based, no polling)
 // ---------------------------------------------------------------------------
 
+// Planned for future use: watch-channel-based process completion without polling.
+#[allow(dead_code)]
 async fn wait_for_process_completion(
     task_id: &str,
     state: &AppState,
@@ -853,6 +855,72 @@ pub async fn get_agent_context_info(
     }
 
     Ok(infos)
+}
+
+// ===========================================================================
+// approve_decomposition / reject_decomposition commands
+// ===========================================================================
+
+/// Approve the decomposed task list (optionally modified) and start execution.
+#[tauri::command]
+#[specta::specta]
+pub async fn approve_decomposition(
+    plan_id: String,
+    modified_tasks: Vec<crate::router::orchestrator::SubTaskDef>,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let plan = state
+        .orchestration_plans
+        .get_mut(&plan_id)
+        .ok_or_else(|| "Plan not found".to_string())?;
+
+    // Update decomposition with modified tasks
+    plan.decomposition = Some(crate::router::orchestrator::DecompositionResult {
+        tasks: modified_tasks,
+    });
+    plan.phase = crate::router::orchestrator::OrchestrationPhase::Executing;
+
+    Ok(())
+}
+
+/// Reject the decomposition and send feedback to the master for re-decomposition.
+#[tauri::command]
+#[specta::specta]
+pub async fn reject_decomposition(
+    plan_id: String,
+    feedback: String,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let plan = state
+        .orchestration_plans
+        .get_mut(&plan_id)
+        .ok_or_else(|| "Plan not found".to_string())?;
+
+    plan.phase = crate::router::orchestrator::OrchestrationPhase::Decomposing;
+
+    // Send feedback to master via stdin if master process is alive
+    if let Some(master_id) = &plan.master_process_id {
+        let master_id = master_id.clone();
+        if let Some(entry) = state.processes.get(&master_id) {
+            if let Some(tx) = &entry.stdin_tx {
+                let prompt = format!(
+                    "The user rejected your task decomposition with this feedback: {}\n\nPlease re-decompose the task addressing the user's concerns. Return the updated JSON task list.",
+                    feedback
+                );
+                tx.send(prompt).map_err(|_| "Master process is no longer running — cannot send feedback".to_string())?;
+            } else {
+                return Err("Master process has no stdin channel".to_string());
+            }
+        } else {
+            return Err("Master process not found — it may have exited".to_string());
+        }
+    } else {
+        return Err("No master process associated with this plan".to_string());
+    }
+
+    Ok(())
 }
 
 // ===========================================================================

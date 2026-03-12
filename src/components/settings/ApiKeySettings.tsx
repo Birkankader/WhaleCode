@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { commands } from '../../bindings';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import { useUIStore } from '../../stores/uiStore';
 
 type TabId = 'claude' | 'gemini' | 'codex';
 
@@ -266,6 +267,57 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       <p className="mt-4 text-xs text-zinc-600">
         Your API keys are stored securely in the macOS Keychain and are never logged or displayed.
       </p>
+
+      {/* Preferences */}
+      <div className="mt-6 pt-4 border-t border-white/5">
+        <h3 className="text-sm font-medium text-zinc-300 mb-3">Preferences</h3>
+        <div className="space-y-3">
+          <ToggleSetting
+            label="Auto Merge"
+            description="Automatically merge PRs after master agent code review"
+            storeKey="autoMerge"
+          />
+          <ToggleSetting
+            label="Developer Mode"
+            description="Enable direct terminal access to running agents"
+            storeKey="developerMode"
+          />
+        </div>
+      </div>
     </div>
+  );
+}
+
+function ToggleSetting({ label, description, storeKey }: {
+  label: string;
+  description: string;
+  storeKey: 'autoMerge' | 'developerMode';
+}) {
+  const value = useUIStore((s) => s[storeKey]);
+  const setter = useUIStore((s) =>
+    storeKey === 'autoMerge' ? s.setAutoMerge : s.setDeveloperMode,
+  );
+
+  return (
+    <label className="flex items-center justify-between cursor-pointer group">
+      <div>
+        <p className="text-xs font-medium text-zinc-300 group-hover:text-zinc-100 transition-colors">{label}</p>
+        <p className="text-[10px] text-zinc-600">{description}</p>
+      </div>
+      <button
+        role="switch"
+        aria-checked={value}
+        onClick={() => setter(!value)}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+          value ? 'bg-violet-600' : 'bg-zinc-700'
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+            value ? 'translate-x-4.5' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
+    </label>
   );
 }

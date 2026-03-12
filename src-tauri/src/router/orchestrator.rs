@@ -49,6 +49,7 @@ pub struct AgentContextInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 pub enum OrchestrationPhase {
     Decomposing,
+    AwaitingApproval,
     Executing,
     WaitingForInput,
     Reviewing,
@@ -155,6 +156,8 @@ impl Orchestrator {
     }
 
     /// Build the master agent's prompt that includes task decomposition instructions.
+    // Planned for future use: alternative orchestration flow.
+    #[allow(dead_code)]
     pub fn build_master_prompt(prompt: &str, agents: &[AgentConfig]) -> String {
         let worker_list: Vec<String> = agents
             .iter()

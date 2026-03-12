@@ -17,6 +17,8 @@ use super::{
 /// resilient parsing — the exact schema may vary across CLI versions.
 ///
 /// NOTE: Unlike Claude, Gemini's message content is a plain String (not Vec<ContentBlock>).
+// Fields are deserialized from JSON for completeness; not all are read directly in Rust.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum GeminiStreamEvent {
@@ -66,6 +68,8 @@ pub enum GeminiStreamEvent {
 }
 
 /// Statistics from a Gemini CLI result event.
+// Fields are deserialized from JSON for completeness; not all are read directly in Rust.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct GeminiStats {
     pub total_tokens: Option<u64>,
@@ -179,6 +183,7 @@ pub fn validate_result(event: &GeminiStreamEvent) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Information about a detected rate limit.
+#[allow(dead_code)]
 pub struct RateLimitInfo {
     pub retry_after_secs: Option<u64>,
 }
@@ -192,6 +197,7 @@ pub struct RateLimitInfo {
 /// - quota exceeded
 /// - Too Many Requests
 /// - rate limit
+#[allow(dead_code)]
 pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
     let lower = line.to_lowercase();
     if lower.contains("429")
@@ -213,12 +219,14 @@ pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
 // ---------------------------------------------------------------------------
 
 /// Exponential backoff retry policy for rate-limited Gemini CLI requests.
+#[allow(dead_code)]
 pub struct RetryPolicy {
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
 }
 
+#[allow(dead_code)]
 impl RetryPolicy {
     /// Default retry policy for Gemini CLI: 3 retries, 5s base, 60s max.
     pub fn default_gemini() -> Self {

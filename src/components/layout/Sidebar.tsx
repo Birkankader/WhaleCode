@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { Settings, Command, LayoutGrid, Terminal } from 'lucide-react';
+import { Settings, Command, LayoutGrid, Terminal, Kanban, BarChart3 } from 'lucide-react';
 import { ApiKeySettings } from '../settings/ApiKeySettings';
 import { Button } from '../ui/button';
 
@@ -8,6 +8,13 @@ export function Sidebar() {
   const [showSettings, setShowSettings] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+
+  const navItems = [
+    { path: '/', label: 'Orchestrator', icon: Terminal },
+    { path: '/kanban', label: 'Kanban', icon: Kanban },
+    { path: '/usage', label: 'Usage', icon: BarChart3 },
+    { path: '/worktrees', label: 'Worktrees', icon: LayoutGrid },
+  ];
 
   return (
     <aside
@@ -22,28 +29,21 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 px-4 space-y-1 mt-4">
-        <Button
-          variant="ghost"
-          onClick={() => navigate('/')}
-          className={`w-full justify-start gap-3 rounded-xl transition-all ${location.pathname === '/'
-              ? 'bg-white/10 text-zinc-100 shadow-sm'
-              : 'bg-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+        {navItems.map(({ path, label, icon: Icon }) => (
+          <Button
+            key={path}
+            variant="ghost"
+            onClick={() => navigate(path)}
+            className={`w-full justify-start gap-3 rounded-xl transition-all ${
+              location.pathname === path
+                ? 'bg-white/10 text-zinc-100 shadow-sm'
+                : 'bg-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
             }`}
-        >
-          <Terminal className={`w-4 h-4 ${location.pathname === '/' ? 'text-violet-400' : ''}`} />
-          <span className="font-medium">Orchestrator</span>
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => navigate('/worktrees')}
-          className={`w-full justify-start gap-3 rounded-xl transition-all ${location.pathname === '/worktrees'
-              ? 'bg-white/10 text-zinc-100 shadow-sm'
-              : 'bg-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
-            }`}
-        >
-          <LayoutGrid className={`w-4 h-4 ${location.pathname === '/worktrees' ? 'text-violet-400' : ''}`} />
-          <span className="font-medium">Worktrees</span>
-        </Button>
+          >
+            <Icon className={`w-4 h-4 ${location.pathname === path ? 'text-violet-400' : ''}`} />
+            <span className="font-medium">{label}</span>
+          </Button>
+        ))}
       </nav>
 
       {/* Settings button at bottom */}

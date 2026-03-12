@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod cleanup;
 pub mod codex;
+pub mod detection;
 pub mod gemini;
 pub mod context;
 pub mod orchestrator;
@@ -50,6 +51,7 @@ pub use prompt::optimize_prompt;
 pub use orchestrator::{
     dispatch_orchestrated_task, get_agent_context_info,
     clear_orchestration_context, answer_user_question,
+    approve_decomposition, reject_decomposition,
 };
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
@@ -58,6 +60,7 @@ pub use worktree::{
 };
 pub use stdin::send_to_process;
 pub use cleanup::cleanup_completed_processes;
+pub use detection::detect_agents;
 
 #[tauri::command]
 #[specta::specta]
