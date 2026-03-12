@@ -16,6 +16,8 @@ pub struct ContextEvent {
     pub created_at: String,
 }
 
+// Deserialized from SQLite; fields exist for data completeness.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
     pub id: i64,

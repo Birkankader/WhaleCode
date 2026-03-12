@@ -1,6 +1,7 @@
 import { useCallback, useState, useEffect, useMemo } from 'react';
 import { useProcessStore, type ProcessStatus } from '../../hooks/useProcess';
 import { useTaskDispatch } from '../../hooks/useTaskDispatch';
+import { useAgentDetection } from '../../hooks/useAgentDetection';
 import { commands } from '../../bindings';
 import type { RoutingSuggestion } from '../../bindings';
 import type { ToolName, OrchestratorConfig, AgentContextInfo } from '../../stores/taskStore';
@@ -65,6 +66,7 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
   const resumeProcess = useProcessStore((s) => s.resumeProcess);
 
   const { suggestTool, dispatchTask, dispatchOrchestratedTask, isToolBusy } = useTaskDispatch();
+  const { agents: detectedAgents, loading: detectionLoading } = useAgentDetection();
 
   const agentContexts = useTaskStore((s) => s.agentContexts);
 
@@ -170,24 +172,27 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
       if (!projectDir.trim()) return;
       setIsDispatching(true);
 
-      if (isMultiAgent) {
-        const results = await dispatchOrchestratedTask(
-          taskPrompt.trim(),
-          projectDir.trim(),
-          orchestratorConfig,
-        );
-        setMultiAgentTaskIds(results);
-        // Auto-switch to Messenger for orchestrated tasks
-        setActiveView('messenger');
-      } else {
-        const tool: ToolName = selectedTool ?? orchestratorConfig.agents[0]?.toolName ?? 'claude';
-        await dispatchTask(taskPrompt.trim(), projectDir.trim(), tool);
-      }
+      try {
+        if (isMultiAgent) {
+          const results = await dispatchOrchestratedTask(
+            taskPrompt.trim(),
+            projectDir.trim(),
+            orchestratorConfig,
+          );
+          setMultiAgentTaskIds(results);
+          // Auto-switch to Messenger for orchestrated tasks
+          setActiveView('messenger');
+        } else {
+          const tool: ToolName = selectedTool ?? orchestratorConfig.agents[0]?.toolName ?? 'claude';
+          await dispatchTask(taskPrompt.trim(), projectDir.trim(), tool);
+        }
 
-      setIsDispatching(false);
-      setTaskPrompt('');
-      setSuggestion(null);
-      setSelectedTool(null);
+        setTaskPrompt('');
+        setSuggestion(null);
+        setSelectedTool(null);
+      } finally {
+        setIsDispatching(false);
+      }
     }
   }, [taskPrompt, projectDir, selectedTool, dispatchTask, dispatchOrchestratedTask, isMultiAgent, orchestratorConfig, hasActiveRunningProcess, activeProcessId, multiAgentTaskIds, processes, handleClear]);
 
@@ -370,6 +375,8 @@ export function ProcessPanel({ projectDir }: ProcessPanelProps) {
           config={orchestratorConfig}
           onConfigChange={setOrchestratorConfig}
           apiKeyStatus={apiKeyStatus}
+          detectedAgents={detectedAgents}
+          detectionLoading={detectionLoading}
         />
 
         <div className="px-4 py-3 space-y-3">

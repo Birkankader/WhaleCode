@@ -6,6 +6,8 @@ use super::queries;
 ///
 /// Assembles recent history into a prompt prefix bounded by max_events and max_chars.
 /// Returns an empty string if no events exist (producing a clean prompt).
+// Planned for future use: context injection into agent prompts.
+#[allow(dead_code)]
 pub fn build_context_preamble(
     conn: &Connection,
     project_dir: &str,

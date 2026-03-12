@@ -7,6 +7,8 @@ pub enum OutputEvent {
     Stdout(String),
     Stderr(String),
     Exit(i32),
+    // Part of the serialized IPC API; used by the frontend.
+    #[allow(dead_code)]
     Error(String),
 }
 

@@ -18,17 +18,20 @@ pub struct ToolCommand {
 }
 
 /// Shared rate limit information returned by any adapter's detect_rate_limit.
+#[allow(dead_code)]
 pub struct RateLimitInfo {
     pub retry_after_secs: Option<u64>,
 }
 
 /// Shared exponential backoff retry policy for rate-limited requests.
+#[allow(dead_code)]
 pub struct RetryPolicy {
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
 }
 
+#[allow(dead_code)]
 impl RetryPolicy {
     /// Calculate the delay in milliseconds for a given attempt (0-indexed).
     /// Delay = base * 2^attempt, capped at max_delay_ms.
@@ -72,12 +75,14 @@ impl QuestionType {
 }
 
 /// Normalized display line for uniform agent output rendering.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct DisplayLine {
     pub content: String,
     pub line_type: DisplayLineType,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub enum DisplayLineType {
     AgentThinking,
@@ -101,6 +106,8 @@ pub struct AskUserResponse {
 /// Uses `&self` methods so adapters can be instantiated as zero-cost unit structs.
 /// This trait enables polymorphic dispatch in the Task Router (Phase 7) and ensures
 /// adding a third adapter requires only implementing this trait.
+// Some trait methods are not yet called from commands but are part of the public API.
+#[allow(dead_code)]
 pub trait ToolAdapter: Send + Sync {
     /// Build the CLI command for this tool with the given prompt, working directory, and API key.
     fn build_command(&self, prompt: &str, cwd: &str, api_key: &str) -> ToolCommand;

@@ -114,6 +114,8 @@ pub fn get_recent_events(
 }
 
 /// Extract file changes from Claude stream events (Write = created, Edit = modified).
+// Planned for future use: auto-recording file changes from agent output.
+#[allow(dead_code)]
 pub fn extract_file_changes_from_claude_events(
     events: &[ClaudeStreamEvent],
 ) -> Vec<(String, String)> {

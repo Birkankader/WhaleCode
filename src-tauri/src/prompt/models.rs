@@ -11,6 +11,8 @@ pub struct ContextEventSummary {
 }
 
 /// Context data used to enrich prompts with recent project history.
+// Fields are populated by the context system; project_dir is used for cache invalidation.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PromptContext {
     pub recent_events: Vec<ContextEventSummary>,

@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
-import { CheckSquare, Square, Circle } from 'lucide-react';
+import { CheckSquare, Square, Circle, AlertTriangle, XCircle } from 'lucide-react';
 import type { ToolName, OrchestratorConfig, AgentConfig } from '../../stores/taskStore';
+import type { DetectedAgent } from '../../hooks/useAgentDetection';
 
 const AGENT_META: Record<ToolName, { label: string; color: string; activeColor: string; borderColor: string }> = {
   claude: {
@@ -28,40 +29,54 @@ const ALL_TOOLS: ToolName[] = ['claude', 'gemini', 'codex'];
 interface AgentSelectorProps {
   config: OrchestratorConfig;
   onConfigChange: (config: OrchestratorConfig) => void;
-  apiKeyStatus: Record<ToolName, boolean | null>; // null = loading
+  apiKeyStatus: Record<ToolName, boolean | null>;
+  detectedAgents?: DetectedAgent[];
+  detectionLoading?: boolean;
 }
 
-export function AgentSelector({ config, onConfigChange, apiKeyStatus }: AgentSelectorProps) {
+export function AgentSelector({ config, onConfigChange, apiKeyStatus, detectedAgents, detectionLoading }: AgentSelectorProps) {
+  const getDetection = useCallback(
+    (tool: ToolName) => detectedAgents?.find((a) => a.tool_name === tool),
+    [detectedAgents],
+  );
+
   const isAgentEnabled = useCallback(
     (tool: ToolName) => config.agents.some((a) => a.toolName === tool),
     [config.agents],
   );
 
+  const canEnable = useCallback(
+    (tool: ToolName) => {
+      const detection = getDetection(tool);
+      if (!detection) return apiKeyStatus[tool] !== false;
+      return detection.installed && detection.auth_status === 'Authenticated';
+    },
+    [getDetection, apiKeyStatus],
+  );
+
   const toggleAgent = useCallback(
     (tool: ToolName) => {
+      if (!canEnable(tool)) return;
       const enabled = isAgentEnabled(tool);
       let newAgents: AgentConfig[];
 
       if (enabled) {
-        // Don't allow disabling the last agent
         if (config.agents.length <= 1) return;
         newAgents = config.agents.filter((a) => a.toolName !== tool);
       } else {
         newAgents = [...config.agents, { toolName: tool, subAgentCount: 1, isMaster: false }];
       }
 
-      // If master was removed, assign first agent as master
       let newMaster = config.masterAgent;
       if (!newAgents.some((a) => a.toolName === newMaster)) {
         newMaster = newAgents[0].toolName;
       }
 
-      // Update isMaster flags
       newAgents = newAgents.map((a) => ({ ...a, isMaster: a.toolName === newMaster }));
 
       onConfigChange({ agents: newAgents, masterAgent: newMaster });
     },
-    [config, isAgentEnabled, onConfigChange],
+    [config, isAgentEnabled, canEnable, onConfigChange],
   );
 
   const setMaster = useCallback(
@@ -97,21 +112,34 @@ export function AgentSelector({ config, onConfigChange, apiKeyStatus }: AgentSel
         const isMaster = config.masterAgent === tool;
         const keyStatus = apiKeyStatus[tool];
         const agentConfig = config.agents.find((a) => a.toolName === tool);
+        const detection = getDetection(tool);
+        const isAvailable = canEnable(tool);
 
         return (
           <div
             key={tool}
             className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${
-              enabled
-                ? `${meta.activeColor} ${meta.color}`
-                : 'bg-zinc-800/50 border-zinc-700 text-zinc-500'
+              !isAvailable
+                ? 'bg-zinc-900/50 border-zinc-800 text-zinc-600 opacity-60'
+                : enabled
+                  ? `${meta.activeColor} ${meta.color}`
+                  : 'bg-zinc-800/50 border-zinc-700 text-zinc-500'
             }`}
           >
             {/* Checkbox toggle */}
             <button
               onClick={() => toggleAgent(tool)}
-              className="hover:opacity-80 transition-opacity"
-              title={enabled ? `Disable ${meta.label}` : `Enable ${meta.label}`}
+              className={`hover:opacity-80 transition-opacity ${!isAvailable ? 'cursor-not-allowed' : ''}`}
+              title={
+                !isAvailable
+                  ? detection && !detection.installed
+                    ? `${meta.label} not installed`
+                    : `${meta.label} needs authentication`
+                  : enabled
+                    ? `Disable ${meta.label}`
+                    : `Enable ${meta.label}`
+              }
+              disabled={!isAvailable}
             >
               {enabled ? (
                 <CheckSquare className="w-3.5 h-3.5" />
@@ -123,23 +151,43 @@ export function AgentSelector({ config, onConfigChange, apiKeyStatus }: AgentSel
             {/* Agent name */}
             <span className="font-medium">{meta.label}</span>
 
-            {/* API key status dot */}
-            <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                keyStatus === true
-                  ? 'bg-green-500'
-                  : keyStatus === false
-                    ? 'bg-red-500'
-                    : 'bg-zinc-600 animate-pulse'
-              }`}
-              title={
-                keyStatus === true
-                  ? 'API key configured'
-                  : keyStatus === false
-                    ? 'No API key'
-                    : 'Checking...'
-              }
-            />
+            {/* Status indicator */}
+            {detectionLoading ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 animate-pulse shrink-0" title="Detecting..." />
+            ) : detection && !detection.installed ? (
+              <span title="Not installed" className="shrink-0">
+                <XCircle className="w-3 h-3 text-zinc-600" />
+              </span>
+            ) : detection && detection.auth_status === 'NeedsAuth' ? (
+              <span title="Needs authentication" className="shrink-0 flex items-center gap-0.5">
+                <AlertTriangle className="w-3 h-3 text-yellow-500" />
+                <span className="text-[9px] text-yellow-500 font-medium">Auth</span>
+              </span>
+            ) : (
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  keyStatus === true || detection?.auth_status === 'Authenticated'
+                    ? 'bg-green-500'
+                    : keyStatus === false
+                      ? 'bg-red-500'
+                      : 'bg-zinc-600 animate-pulse'
+                }`}
+                title={
+                  keyStatus === true || detection?.auth_status === 'Authenticated'
+                    ? 'Authenticated'
+                    : keyStatus === false
+                      ? 'No API key'
+                      : 'Checking...'
+                }
+              />
+            )}
+
+            {/* Version badge */}
+            {detection?.version && enabled && (
+              <span className="text-[9px] text-zinc-600 font-mono hidden sm:inline">
+                {detection.version.slice(0, 12)}
+              </span>
+            )}
 
             {/* Master radio */}
             {enabled && (

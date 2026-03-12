@@ -15,6 +15,8 @@ use super::{
 /// Represents a single line from Claude Code's `--output-format stream-json` NDJSON output.
 /// Uses serde tagged enum on the `type` field. All inner fields are `Option<T>` for
 /// resilient parsing — the exact schema may vary across CLI versions.
+// Fields are deserialized from JSON for completeness; not all are read directly in Rust.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClaudeStreamEvent {
@@ -60,6 +62,8 @@ pub enum ClaudeStreamEvent {
 }
 
 /// A content block inside a `message` event.
+// Fields are deserialized from JSON for completeness; not all are read directly in Rust.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ContentBlock {
     #[serde(rename = "type")]
@@ -179,12 +183,14 @@ pub fn validate_result(event: &ClaudeStreamEvent) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Information about a detected rate limit.
+#[allow(dead_code)]
 pub struct RateLimitInfo {
     pub retry_after_secs: Option<u64>,
 }
 
 /// Detect rate-limit or overload errors in a stderr/stdout line.
 /// Returns `Some(RateLimitInfo)` if the line indicates a rate limit.
+#[allow(dead_code)]
 pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
     if line.contains("rate_limit")
         || line.contains("Rate limit")
@@ -205,12 +211,14 @@ pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
 // ---------------------------------------------------------------------------
 
 /// Exponential backoff retry policy for rate-limited Claude Code requests.
+#[allow(dead_code)]
 pub struct RetryPolicy {
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
 }
 
+#[allow(dead_code)]
 impl RetryPolicy {
     /// Default retry policy for Claude Code: 3 retries, 5s base, 60s max.
     pub fn default_claude() -> Self {
