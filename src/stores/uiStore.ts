@@ -13,6 +13,12 @@ interface UIState {
   showReviewBanner: boolean;
   setShowReviewBanner: (show: boolean) => void;
 
+  // Project
+  sessionName: string;
+  setSessionName: (name: string) => void;
+  projectDir: string;
+  setProjectDir: (dir: string) => void;
+
   // Settings
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -24,6 +30,8 @@ interface UIState {
   setCodeReview: (enabled: boolean) => void;
   developerMode: boolean;
   setDeveloperMode: (enabled: boolean) => void;
+  showQuickTask: boolean;
+  setShowQuickTask: (show: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -37,6 +45,12 @@ export const useUIStore = create<UIState>((set) => ({
   showReviewBanner: false,
   setShowReviewBanner: (show) => set({ showReviewBanner: show }),
 
+  // Project
+  sessionName: '',
+  setSessionName: (name) => set({ sessionName: name }),
+  projectDir: '',
+  setProjectDir: (dir) => set({ projectDir: dir }),
+
   // Settings
   sidebarCollapsed: false,
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
@@ -48,4 +62,6 @@ export const useUIStore = create<UIState>((set) => ({
   setCodeReview: (enabled) => set({ codeReview: enabled }),
   developerMode: false,
   setDeveloperMode: (enabled) => set({ developerMode: enabled }),
+  showQuickTask: false,
+  setShowQuickTask: (show) => set({ showQuickTask: show }),
 }));

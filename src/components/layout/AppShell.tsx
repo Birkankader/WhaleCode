@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useCallback, useState } from 'react';
 import { C } from '@/lib/theme';
 import { Sidebar } from './Sidebar';
 import { useUIStore } from '@/stores/uiStore';
-import { useTaskStore } from '@/stores/taskStore';
+import { useTaskStore, type ToolName, type OrchestratorConfig } from '@/stores/taskStore';
 import { SetupPanel } from './SetupPanel';
+import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 
 interface AppShellProps {
   children: ReactNode;
@@ -16,13 +17,48 @@ export function AppShell({ children }: AppShellProps) {
   const setDeveloperMode = useUIStore((s) => s.setDeveloperMode);
   const showSetup = useUIStore((s) => s.showSetup);
   const setShowSetup = useUIStore((s) => s.setShowSetup);
-  const showReviewBanner = useUIStore((s) => s.showReviewBanner);
-  const setShowReviewBanner = useUIStore((s) => s.setShowReviewBanner);
+  const setProjectDir = useUIStore((s) => s.setProjectDir);
+  const storedSessionName = useUIStore((s) => s.sessionName);
+  const setSessionName = useUIStore((s) => s.setSessionName);
   const activePlan = useTaskStore((s) => s.activePlan);
+  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
   const tasks = useTaskStore((s) => s.tasks);
+  const pendingQuestion = useTaskStore((s) => s.pendingQuestion);
+  const { dispatchTask, dispatchOrchestratedTask } = useTaskDispatch();
+  const projectDir = useUIStore((s) => s.projectDir);
+  const showQuickTask = useUIStore((s) => s.showQuickTask);
+  const setShowQuickTask = useUIStore((s) => s.setShowQuickTask);
+  const [quickPrompt, setQuickPrompt] = useState('');
+  const [quickAgent, setQuickAgent] = useState<ToolName>('claude');
+  const [quickSubmitting, setQuickSubmitting] = useState(false);
 
-  const sessionName = activePlan ? 'Active Session' : 'No Session';
-  const sessionStatus = activePlan ? 'running' : 'idle';
+  const handleQuickTask = useCallback(async () => {
+    if (!quickPrompt.trim() || !projectDir || quickSubmitting) return;
+    setQuickSubmitting(true);
+    try {
+      await dispatchTask(quickPrompt.trim(), projectDir, quickAgent);
+      setQuickPrompt('');
+      setShowQuickTask(false);
+      useTaskStore.getState().addOrchestrationLog({
+        agent: quickAgent,
+        level: 'cmd',
+        message: `New task dispatched: ${quickPrompt.trim().slice(0, 80)}`,
+      });
+    } catch (e) {
+      console.error('Quick task failed:', e);
+      useTaskStore.getState().addOrchestrationLog({
+        agent: quickAgent,
+        level: 'error',
+        message: `Task failed: ${e}`,
+      });
+    } finally {
+      setQuickSubmitting(false);
+    }
+  }, [quickPrompt, projectDir, quickAgent, quickSubmitting, dispatchTask, setShowQuickTask]);
+
+  const sessionName = storedSessionName || (activePlan ? 'Active Session' : 'No Session');
+  const sessionStatus = orchestrationPhase === 'idle' ? 'idle' : 'running';
+  const hasReviewReady = orchestrationPhase === 'reviewing';
 
   const doneTasks = Array.from(tasks.values()).filter((t) => t.status === 'completed').length;
   const totalTasks = tasks.size;
@@ -32,6 +68,48 @@ export function AppShell({ children }: AppShellProps) {
     { key: 'terminal', label: 'Terminal', icon: '⌨' },
     { key: 'usage', label: 'Usage', icon: '◎' },
   ];
+
+  const handleLaunch = useCallback(
+    (config: { sessionName: string; projectDir: string; master: { cli: string; name: string } | null; workers: { agent: { cli: string; name: string }; count: number }[]; taskDescription: string }) => {
+      if (!config.master || !config.taskDescription.trim() || !config.projectDir.trim()) return;
+
+      const masterToolName = config.master.cli as ToolName;
+      const agents: OrchestratorConfig['agents'] = [
+        { toolName: masterToolName, subAgentCount: 1, isMaster: true },
+        ...config.workers.map((w) => ({
+          toolName: w.agent.cli as ToolName,
+          subAgentCount: w.count,
+          isMaster: false,
+        })),
+      ];
+      const orchestratorConfig: OrchestratorConfig = { agents, masterAgent: masterToolName };
+
+      // Store project dir, session name, and update UI
+      setProjectDir(config.projectDir);
+      setSessionName(config.sessionName);
+      setShowSetup(false);
+      setActiveView('terminal');
+
+      // Mark orchestration as executing
+      const store = useTaskStore.getState();
+      store.setOrchestrationPhase('executing');
+      store.clearOrchestrationLogs();
+
+      // Immediate feedback in terminal view
+      store.addOrchestrationLog({ agent: masterToolName, level: 'cmd', message: `Session "${config.sessionName}" starting...` });
+      store.addOrchestrationLog({ agent: masterToolName, level: 'info', message: `Master: ${config.master.name} | Project: ${config.projectDir}` });
+      store.addOrchestrationLog({ agent: masterToolName, level: 'info', message: config.taskDescription });
+
+      // Fire orchestration (async, errors logged to terminal)
+      dispatchOrchestratedTask(config.taskDescription, config.projectDir, orchestratorConfig)
+        .catch((e) => {
+          console.error('Launch failed:', e);
+          store.addOrchestrationLog({ agent: masterToolName, level: 'error', message: `Launch failed: ${e}` });
+          store.setOrchestrationPhase('failed');
+        });
+    },
+    [dispatchOrchestratedTask, setProjectDir, setSessionName, setShowSetup, setActiveView],
+  );
 
   return (
     <div
@@ -88,23 +166,100 @@ export function AppShell({ children }: AppShellProps) {
               ))}
             </div>
 
+            {/* Quick task button — only show when session is active */}
+            {activePlan && projectDir && (
+              <div className="relative ml-2">
+                <button
+                  onClick={() => setShowQuickTask(!showQuickTask)}
+                  className="flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold transition-all"
+                  style={{
+                    background: showQuickTask ? C.accent : 'transparent',
+                    color: showQuickTask ? '#fff' : C.textMuted,
+                    border: `1px solid ${showQuickTask ? C.accent : C.borderStrong}`,
+                  }}
+                >
+                  +
+                </button>
+
+                {showQuickTask && (
+                  <div
+                    className="absolute top-full left-0 mt-2 z-50 flex flex-col gap-2 p-3 rounded-xl"
+                    style={{
+                      width: 340,
+                      background: C.panel,
+                      border: `1px solid ${C.border}`,
+                      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={quickAgent}
+                        onChange={(e) => setQuickAgent(e.target.value as ToolName)}
+                        className="text-xs rounded-md px-2 py-1.5"
+                        style={{
+                          background: C.surface,
+                          color: C.textPrimary,
+                          border: `1px solid ${C.border}`,
+                          outline: 'none',
+                        }}
+                      >
+                        <option value="claude">Claude</option>
+                        <option value="gemini">Gemini</option>
+                        <option value="codex">Codex</option>
+                      </select>
+                      <input
+                        autoFocus
+                        type="text"
+                        value={quickPrompt}
+                        onChange={(e) => setQuickPrompt(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleQuickTask(); if (e.key === 'Escape') setShowQuickTask(false); }}
+                        placeholder="Describe the task..."
+                        className="flex-1 text-xs rounded-md px-2.5 py-1.5"
+                        style={{
+                          background: C.surface,
+                          color: C.textPrimary,
+                          border: `1px solid ${C.border}`,
+                          outline: 'none',
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs" style={{ color: C.textMuted }}>
+                        Project: {projectDir.split('/').pop()}
+                      </span>
+                      <button
+                        onClick={handleQuickTask}
+                        disabled={!quickPrompt.trim() || quickSubmitting}
+                        className="text-xs font-medium px-3 py-1 rounded-md transition-all"
+                        style={{
+                          background: quickPrompt.trim() ? C.accent : C.borderStrong,
+                          color: quickPrompt.trim() ? '#fff' : C.textMuted,
+                          opacity: quickSubmitting ? 0.5 : 1,
+                        }}
+                      >
+                        {quickSubmitting ? 'Sending...' : 'Run'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex-1" />
 
-            {/* Review notification */}
-            {activeView !== 'review' && activeView !== 'done' && (
+            {/* Review notification — only show when review is actually pending */}
+            {hasReviewReady && activeView !== 'review' && activeView !== 'done' && (
               <button
-                onClick={() => setShowReviewBanner(!showReviewBanner)}
-                className="relative mr-3 w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all"
+                onClick={() => setActiveView('review')}
+                className="mr-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all"
                 style={{
-                  background: showReviewBanner ? C.accentSoft : 'transparent',
-                  color: showReviewBanner ? C.accentText : C.textMuted,
+                  background: C.accentSoft,
+                  color: C.accentText,
+                  border: `1px solid ${C.accent}40`,
                 }}
               >
-                🔔
-                <span
-                  className="absolute top-1 right-1 w-2 h-2 rounded-full"
-                  style={{ background: C.amber }}
-                />
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.accent }} />
+                Review
               </button>
             )}
 
@@ -126,38 +281,21 @@ export function AppShell({ children }: AppShellProps) {
             </div>
           </div>
 
-          {/* Notification banner */}
-          {showReviewBanner && activeView !== 'review' && activeView !== 'done' && (
+          {/* Pending question banner */}
+          {pendingQuestion && activeView !== 'review' && (
             <div
               className="flex items-center gap-3 px-5 py-2.5 border-b flex-shrink-0"
-              style={{ background: '#0e0e20', borderColor: C.accent + '50' }}
+              style={{ background: '#0e0e20', borderColor: C.amber + '50' }}
             >
               <span
                 className="text-xs px-2 py-0.5 rounded-full font-bold"
-                style={{ background: C.accentSoft, color: C.accentText }}
+                style={{ background: C.amberBg, color: C.amber }}
               >
-                NEW
+                QUESTION
               </span>
               <span className="text-xs flex-1" style={{ color: C.textSecondary }}>
-                🟣 Master agent has completed code review. Ready for your approval.
+                {pendingQuestion.sourceAgent}: {pendingQuestion.content.slice(0, 120)}
               </span>
-              <button
-                onClick={() => {
-                  setActiveView('review');
-                  setShowReviewBanner(false);
-                }}
-                className="text-xs px-3 py-1 rounded-lg font-medium"
-                style={{
-                  background: C.accentSoft,
-                  color: C.accentText,
-                  border: `1px solid ${C.accent}50`,
-                }}
-              >
-                Open Review
-              </button>
-              <button onClick={() => setShowReviewBanner(false)} style={{ color: C.textMuted, fontSize: 12 }}>
-                ×
-              </button>
             </div>
           )}
 
@@ -197,7 +335,7 @@ export function AppShell({ children }: AppShellProps) {
         </div>
 
         {/* Setup overlay */}
-        {showSetup && <SetupPanel onLaunch={() => setShowSetup(false)} />}
+        {showSetup && <SetupPanel onLaunch={handleLaunch} />}
       </div>
 
       {/* Status bar */}
