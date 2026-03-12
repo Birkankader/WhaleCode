@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { C, STATUS, LOG_COLOR } from '@/lib/theme';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
+import { commands } from '@/bindings';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -49,7 +50,17 @@ export function TerminalView({ devMode }: TerminalViewProps) {
   const tasks = useTaskStore((s) => s.tasks);
   const logs = useTaskStore((s) => s.orchestrationLogs);
   const addLog = useTaskStore((s) => s.addOrchestrationLog);
+  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  const activePlan = useTaskStore((s) => s.activePlan);
   const [devInput, setDevInput] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom on new logs
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [logs.length]);
 
   // Subscribe to orchestration output events
   useEffect(() => {
@@ -68,7 +79,10 @@ export function TerminalView({ devMode }: TerminalViewProps) {
     return () => { unlisten.then(fn => fn()); };
   }, [addLog]);
 
-  // Gather agents from tasks
+  // Derive agent statuses from orchestration phase + tasks
+  const isRunning = orchestrationPhase !== 'idle' && orchestrationPhase !== 'failed';
+  const masterAgent = (activePlan?.master_agent as ToolName) || 'claude';
+
   const agents = new Map<ToolName, { status: string }>();
   for (const [, task] of tasks) {
     const existing = agents.get(task.toolName);
@@ -76,12 +90,10 @@ export function TerminalView({ devMode }: TerminalViewProps) {
       agents.set(task.toolName, { status: task.status });
     }
   }
-  // Ensure at least the default agents appear
-  if (agents.size === 0) {
-    agents.set('claude', { status: 'idle' });
-    agents.set('gemini', { status: 'idle' });
-    agents.set('codex', { status: 'idle' });
-  }
+  // Default agents with orchestration-aware status
+  if (!agents.has('claude')) agents.set('claude', { status: isRunning && masterAgent === 'claude' ? 'running' : 'idle' });
+  if (!agents.has('gemini')) agents.set('gemini', { status: isRunning && masterAgent === 'gemini' ? 'running' : 'idle' });
+  if (!agents.has('codex')) agents.set('codex', { status: isRunning && masterAgent === 'codex' ? 'running' : 'idle' });
 
   // Build merge queue from completed tasks
   const mergeQueue: MergeQueueItem[] = [];
@@ -121,6 +133,13 @@ export function TerminalView({ devMode }: TerminalViewProps) {
         fontFamily: 'Inter, sans-serif',
       }}
     >
+      {/* Thinking animation keyframes */}
+      <style>{`
+        @keyframes thinkPulse {
+          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+          40% { opacity: 1; transform: scale(1.2); }
+        }
+      `}</style>
       {/* ── Left: Agent list ──────────────────────────── */}
       <div
         style={{
@@ -149,6 +168,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
           <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {Array.from(agents.entries()).map(([name, info]) => {
               const icon = AGENT_ICON[name];
+              const isAgentRunning = info.status === 'running';
               return (
                 <div
                   key={name}
@@ -158,8 +178,9 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                     gap: 10,
                     padding: '10px 12px',
                     borderRadius: 12,
-                    background: C.surface,
-                    border: `1px solid ${C.border}`,
+                    background: isAgentRunning ? C.accentSoft : C.surface,
+                    border: `1px solid ${isAgentRunning ? C.accent + '60' : C.border}`,
+                    transition: 'all 0.3s',
                   }}
                 >
                   <div
@@ -198,18 +219,42 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                         marginTop: 3,
                       }}
                     >
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: agentStatusColor(info.status),
-                          flexShrink: 0,
-                        }}
-                      />
-                      <span style={{ fontSize: 10, color: C.textSecondary }}>
-                        {agentStatusLabel(info.status)}
-                      </span>
+                      {isAgentRunning ? (
+                        /* Thinking animation — three pulsing dots */
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                          {[0, 1, 2].map((i) => (
+                            <span
+                              key={i}
+                              className="thinking-dot"
+                              style={{
+                                width: 4,
+                                height: 4,
+                                borderRadius: '50%',
+                                background: C.accent,
+                                animation: `thinkPulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                              }}
+                            />
+                          ))}
+                          <span style={{ fontSize: 10, color: C.accentText, marginLeft: 3, fontWeight: 500 }}>
+                            Thinking
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          <span
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: '50%',
+                              background: agentStatusColor(info.status),
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span style={{ fontSize: 10, color: C.textSecondary }}>
+                            {agentStatusLabel(info.status)}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -257,7 +302,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
         </div>
 
         {/* Log lines */}
-        <ScrollArea style={{ flex: 1, padding: 16 }}>
+        <ScrollArea ref={scrollRef} style={{ flex: 1, padding: 16 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             {logs.length === 0 && (
               <div style={{ color: C.textMuted, fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', padding: '6px 0' }}>
@@ -334,9 +379,31 @@ export function TerminalView({ devMode }: TerminalViewProps) {
               type="text"
               value={devInput}
               onChange={(e) => setDevInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter' && devInput.trim()) {
+                  const input = devInput.trim();
                   setDevInput('');
+
+                  // Find active process to send to
+                  const plan = useTaskStore.getState().activePlan;
+                  const processId = plan?.master_process_id;
+
+                  if (!processId) {
+                    addLog({ agent: 'claude', level: 'error', message: 'No active process to send command to' });
+                    return;
+                  }
+
+                  // Echo the command in terminal
+                  addLog({ agent: (plan.master_agent as ToolName) || 'claude', level: 'cmd', message: `$ ${input}` });
+
+                  try {
+                    const result = await commands.sendToProcess(processId, input);
+                    if (result.status === 'error') {
+                      addLog({ agent: 'claude', level: 'error', message: `Send failed: ${result.error}` });
+                    }
+                  } catch (err) {
+                    addLog({ agent: 'claude', level: 'error', message: `Send failed: ${err}` });
+                  }
                 }
               }}
               placeholder="Type a command..."
