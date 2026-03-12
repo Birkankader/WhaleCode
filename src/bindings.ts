@@ -388,6 +388,10 @@ async suggestTool(prompt: string) : Promise<Result<RoutingSuggestion, string>> {
  * 
  * Enforces max 1 running process per tool. Routes to the correct spawn function
  * based on tool_name, then updates the ProcessEntry with tool metadata.
+ * 
+ * Uses an atomic reservation pattern to prevent TOCTOU races: the tool is reserved
+ * in the same lock scope as the running-process check, and a RAII guard ensures
+ * the reservation is always released (even on early error returns).
  */
 async dispatchTask(prompt: string, projectDir: string, toolName: string, taskId: string | null, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<string, string>> {
     try {
@@ -398,11 +402,14 @@ async dispatchTask(prompt: string, projectDir: string, toolName: string, taskId:
 }
 },
 /**
- * Dispatch an orchestrated multi-agent task using two-phase orchestration.
+ * Dispatch an orchestrated multi-agent task using interactive master process.
  * 
- * Phase 1 (Decompose): Master agent analyzes task, returns JSON sub-task assignments.
- * Phase 2 (Execute): Each sub-task dispatched to assigned agent in parallel.
- * Phase 3 (Review): Master agent reviews all worker results and provides summary.
+ * Phase 1 (Decompose): Master agent spawned in interactive mode, receives
+ * decompose prompt, returns JSON sub-task assignments.
+ * Phase 2 (Execute): Each sub-task dispatched to assigned agent. Worker
+ * questions are routed to the master for resolution.
+ * Phase 3 (Review): Master (same process) reviews all worker results.
+ * Master stays alive after completion for follow-up interactions.
  */
 async dispatchOrchestratedTask(prompt: string, projectDir: string, config: OrchestratorConfig, onEvent: TAURI_CHANNEL<OutputEvent>) : Promise<Result<OrchestrationPlan, string>> {
     try {
@@ -460,7 +467,8 @@ async cleanupCompletedProcesses() : Promise<Result<number, string>> {
 }
 },
 /**
- * Back up orchestration context to context.md and kill all agent processes.
+ * Clear orchestration context: back up master's context to context.md,
+ * kill all agent processes, and remove the plan.
  */
 async clearOrchestrationContext(planId: string, projectDir: string) : Promise<Result<string, string>> {
     try {
@@ -471,7 +479,8 @@ async clearOrchestrationContext(planId: string, projectDir: string) : Promise<Re
 }
 },
 /**
- * Send user's answer to the master agent's pending question.
+ * Answer a question from the master agent that was relayed to the user.
+ * Sends the user's answer to the master's stdin and resumes execution.
  */
 async answerUserQuestion(planId: string, answer: string) : Promise<Result<null, string>> {
     try {
@@ -481,14 +490,9 @@ async answerUserQuestion(planId: string, answer: string) : Promise<Result<null, 
     else return { status: "error", error: e  as any };
 }
 },
-async detectAgents() : Promise<Result<DetectedAgent[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("detect_agents") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
+/**
+ * Approve the decomposed task list (optionally modified) and start execution.
+ */
 async approveDecomposition(planId: string, modifiedTasks: SubTaskDef[]) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("approve_decomposition", { planId, modifiedTasks }) };
@@ -497,9 +501,20 @@ async approveDecomposition(planId: string, modifiedTasks: SubTaskDef[]) : Promis
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Reject the decomposition and send feedback to the master for re-decomposition.
+ */
 async rejectDecomposition(planId: string, feedback: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reject_decomposition", { planId, feedback }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async detectAgents() : Promise<Result<DetectedAgent[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("detect_agents") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -517,10 +532,9 @@ async rejectDecomposition(planId: string, feedback: string) : Promise<Result<nul
 
 /** user-defined types **/
 
-export type AuthStatus = "Authenticated" | "NeedsAuth" | "NotInstalled" | "Unknown"
-export type DetectedAgent = { tool_name: string; installed: boolean; binary_path: string | null; version: string | null; auth_status: AuthStatus; display_name: string }
 export type AgentConfig = { tool_name: string; sub_agent_count: number; is_master: boolean }
 export type AgentContextInfo = { tool_name: string; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cost_usd: number | null; status: string }
+export type AuthStatus = "Authenticated" | "NeedsAuth" | "NotInstalled" | "Unknown"
 export type ConflictFile = { path: string }
 export type ConflictReport = { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
 /**
@@ -528,13 +542,14 @@ export type ConflictReport = { has_conflicts: boolean; conflicting_files: Confli
  */
 export type ContextEventWithFiles = { id: number; task_id: string; tool_name: string; event_type: string; prompt: string | null; summary: string | null; project_dir: string; metadata: string | null; duration_ms: number | null; cost_usd: number | null; created_at: string; files: string[] }
 export type DecompositionResult = { tasks: SubTaskDef[] }
+export type DetectedAgent = { tool_name: string; installed: boolean; binary_path: string | null; version: string | null; auth_status: AuthStatus; display_name: string }
 export type FileChangeRecord = { file_path: string; change_type: string; tool_name: string; summary: string | null; created_at: string }
 export type FileDiff = { path: string; status: string; old_path: string | null; patch: string; additions: number; deletions: number }
 /**
  * An optimized prompt for a specific tool, ready for IPC export.
  */
 export type OptimizedPrompt = { tool_name: string; original_prompt: string; optimized_prompt: string }
-export type OrchestrationPhase = "Decomposing" | "Executing" | "WaitingForInput" | "Reviewing" | "Completed" | "Failed"
+export type OrchestrationPhase = "Decomposing" | "AwaitingApproval" | "Executing" | "WaitingForInput" | "Reviewing" | "Completed" | "Failed"
 export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string; phase: OrchestrationPhase; decomposition: DecompositionResult | null; worker_results: WorkerResult[]; master_process_id: string | null }
 export type OrchestratorConfig = { agents: AgentConfig[]; master_agent: string }
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
