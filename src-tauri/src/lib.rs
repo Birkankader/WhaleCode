@@ -100,17 +100,24 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .unwrap()
+        .expect("Failed to build Tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 println!("App exiting — killing all tracked processes");
                 let state: tauri::State<AppState> = app_handle.state();
-                let mut inner = state.lock().unwrap();
-                for (_id, proc) in inner.processes.drain() {
-                    let _ = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(proc.pgid),
-                        nix::sys::signal::Signal::SIGKILL,
-                    );
+                let lock_result = state.lock();
+                match lock_result {
+                    Ok(mut inner) => {
+                        for (_id, proc) in inner.processes.drain() {
+                            let _ = nix::sys::signal::killpg(
+                                nix::unistd::Pid::from_raw(proc.pgid),
+                                nix::sys::signal::Signal::SIGKILL,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to lock state during exit: {}", e);
+                    }
                 }
             }
         });
