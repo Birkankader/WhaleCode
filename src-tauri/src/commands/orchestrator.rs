@@ -335,7 +335,9 @@ pub async fn dispatch_orchestrated_task(
     )).ok();
 
     let adapter = get_adapter(&config.master_agent)?;
-    let api_key = get_api_key(&config.master_agent)?;
+    // API key is optional — CLIs like Claude Code use their own OAuth auth.
+    // build_env() already handles empty keys by simply not setting the env var.
+    let api_key = get_api_key(&config.master_agent).unwrap_or_default();
     let tool_command = adapter.build_interactive_command(&project_dir, &api_key);
 
     // Reserve tool slot for master agent before spawning
@@ -396,7 +398,11 @@ pub async fn dispatch_orchestrated_task(
 
     process::manager::send_to_process(state_ref, &master_task_id, &decompose_prompt)?;
 
-    // Wait for master's turn to complete
+    // Close stdin to signal EOF — CLI tools in non-TTY mode read until EOF
+    // before processing input. The master process will output results then exit.
+    process::manager::close_stdin(state_ref, &master_task_id)?;
+
+    // Wait for master's turn to complete (detects result event or process exit)
     let output_lines = wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()).await?;
 
     // Extract and parse decomposition result
@@ -464,6 +470,9 @@ pub async fn dispatch_orchestrated_task(
             format!("Assigned to {}: {}", sub_def.agent, sub_def.description),
             MessageType::TaskAssigned,
         ));
+        on_event.send(OutputEvent::Stdout(
+            format!("Assigned to {}: {}", sub_def.agent, sub_def.description)
+        )).ok();
 
         task_channels.push((sub_task_id, sub_def.agent.clone(), sub_def.prompt.clone()));
     }
@@ -535,6 +544,13 @@ pub async fn dispatch_orchestrated_task(
             ),
             msg_type,
         ));
+        on_event.send(OutputEvent::Stdout(
+            format!("{} (exit {}): {}",
+                if exit_code == 0 { "Completed" } else { "Failed" },
+                exit_code,
+                truncate(&output_summary, 200),
+            )
+        )).ok();
     }
 
     // Update plan with final worker results
@@ -546,7 +562,8 @@ pub async fn dispatch_orchestrated_task(
         }
     }
 
-    // === Phase 3: Review (same master process) ===
+    // === Phase 3: Review (new single-shot process) ===
+    // The master process from Phase 1 exits after EOF, so we spawn a fresh process.
     on_event.send(OutputEvent::Stdout(
         "[orchestrator] Phase 3: Master reviewing results...".to_string()
     )).ok();
@@ -555,11 +572,25 @@ pub async fn dispatch_orchestrated_task(
 
     let review_prompt = Orchestrator::build_review_prompt(&prompt, &plan.worker_results);
 
-    // Send review prompt to the still-alive master process
-    process::manager::send_to_process(state_ref, &master_task_id, &review_prompt)?;
+    // Spawn a new single-shot process for review using -p flag
+    let review_tool_command = adapter.build_command(&review_prompt, &project_dir, &api_key);
 
-    // Wait for master's review turn to complete
-    let review_lines = wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()).await;
+    process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
+
+    let review_task_id = process::manager::spawn_interactive(
+        review_tool_command,
+        &format!("Review: {}", truncate(&prompt, 60)),
+        &config.master_agent,
+        on_event.clone(),
+        state_ref,
+    ).await.map_err(|e| {
+        process::manager::release_tool_slot(state_ref, &config.master_agent);
+        e
+    })?;
+    process::manager::release_tool_slot(state_ref, &config.master_agent);
+
+    // Wait for review process to complete (single-shot with -p exits on its own)
+    let review_lines = wait_for_turn_complete(state_ref, &review_task_id, adapter.as_ref()).await;
 
     match review_lines {
         Ok(lines) => {

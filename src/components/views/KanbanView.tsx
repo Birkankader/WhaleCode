@@ -55,12 +55,12 @@ function mapColumn(status: TaskEntry['status']): ColumnKey {
   switch (status) {
     case 'pending':
     case 'routing':
+    case 'waiting':
       return 'queued';
     case 'running':
       return 'running';
     case 'completed':
     case 'review':
-    case 'waiting':
     case 'failed':
       return 'done';
     default:
