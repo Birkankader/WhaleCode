@@ -3,6 +3,8 @@ pub mod models;
 pub mod orchestrator;
 pub mod retry;
 
+use std::collections::HashMap;
+
 use models::RoutingSuggestion;
 
 pub struct TaskRouter;
@@ -164,6 +166,122 @@ impl TaskRouter {
         }
     }
 
+    /// Suggest with load balancing. Combines keyword scoring with process load penalty.
+    /// score *= 1.0 / (1.0 + process_count as f32) per agent.
+    pub fn suggest_with_load(prompt: &str, load_map: &HashMap<String, u32>) -> RoutingSuggestion {
+        let prompt_lower = prompt.to_lowercase();
+
+        // Same keyword scoring as suggest()
+        let claude_keywords: &[(&str, f32)] = &[
+            ("refactor", 0.8),
+            ("architect", 0.7),
+            ("redesign", 0.7),
+            ("fix bug", 0.8),
+            ("debug", 0.7),
+            ("implement", 0.6),
+            ("write test", 0.6),
+            ("type", 0.3),
+            ("fix", 0.5),
+            (".rs", 0.7),
+            (".py", 0.5),
+            ("backend", 0.5),
+            ("api", 0.4),
+        ];
+
+        let gemini_keywords: &[(&str, f32)] = &[
+            ("read", 0.6),
+            ("analyze", 0.7),
+            ("search", 0.6),
+            ("find", 0.5),
+            ("explain", 0.6),
+            ("summarize", 0.7),
+            ("review", 0.5),
+            ("understand", 0.5),
+            ("large", 0.4),
+            (".tsx", 0.6),
+            (".jsx", 0.6),
+            ("frontend", 0.5),
+            ("component", 0.5),
+            ("style", 0.4),
+        ];
+
+        let codex_keywords: &[(&str, f32)] = &[
+            ("generate", 0.7),
+            ("complete", 0.6),
+            ("code gen", 0.8),
+            ("openai", 0.9),
+            ("codex", 0.9),
+            ("scaffold", 0.6),
+            ("boilerplate", 0.6),
+            ("prototype", 0.5),
+            ("stub", 0.5),
+            (".css", 0.4),
+            ("config", 0.4),
+            ("simple", 0.3),
+        ];
+
+        // Calculate keyword scores
+        let mut scores: Vec<(&str, f32)> = vec![
+            ("claude", 0.0),
+            ("gemini", 0.0),
+            ("codex", 0.0),
+        ];
+
+        for (keyword, weight) in claude_keywords {
+            if prompt_lower.contains(keyword) {
+                scores[0].1 += weight;
+            }
+        }
+        for (keyword, weight) in gemini_keywords {
+            if prompt_lower.contains(keyword) {
+                scores[1].1 += weight;
+            }
+        }
+        for (keyword, weight) in codex_keywords {
+            if prompt_lower.contains(keyword) {
+                scores[2].1 += weight;
+            }
+        }
+
+        // Base score: every agent gets a minimum of 0.2 so load can differentiate
+        // idle agents from busy ones even when keywords only match one agent.
+        // Default bias: if no keywords matched, Claude gets an additional edge.
+        if scores.iter().all(|(_, s)| *s == 0.0) {
+            scores[0].1 = 0.5; // claude default
+            scores[1].1 = 0.4; // gemini default
+            scores[2].1 = 0.4; // codex default
+        } else {
+            // Ensure every agent has at least a base score for load differentiation
+            for (_, score) in scores.iter_mut() {
+                if *score < 0.2 {
+                    *score = 0.2;
+                }
+            }
+        }
+
+        // Apply load penalty: score *= 1.0 / (1.0 + process_count)
+        for (agent, score) in scores.iter_mut() {
+            let load = load_map.get(*agent).copied().unwrap_or(0);
+            *score *= 1.0 / (1.0 + load as f32);
+        }
+
+        // Sort by score descending
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let (suggested, winning_score) = (scores[0].0, scores[0].1);
+        let alternative = scores[1].0;
+        let confidence = (winning_score / 2.0).min(1.0);
+        let reason = Self::explain_choice(suggested, prompt, false);
+
+        RoutingSuggestion {
+            suggested_tool: suggested.to_string(),
+            confidence,
+            reason,
+            alternative_tool: Some(alternative.to_string()),
+            tool_available: true, // load-based doesn't track busy
+        }
+    }
+
     /// Build a human-readable explanation for the routing suggestion.
     fn explain_choice(tool: &str, prompt: &str, busy: bool) -> String {
         let truncated = if prompt.len() > 60 {
@@ -279,5 +397,32 @@ mod tests {
         let result2 = TaskRouter::suggest("anything", true, true, true);
         // all busy — the suggested tool is not available
         assert!(!result2.tool_available, "suggested tool should not be available when all are busy");
+    }
+
+    #[test]
+    fn routing_prefers_idle_agent() {
+        let load = std::collections::HashMap::from([
+            ("claude".to_string(), 3u32),
+            ("gemini".to_string(), 0u32),
+            ("codex".to_string(), 1u32),
+        ]);
+        let result = TaskRouter::suggest_with_load("do something", &load);
+        // gemini is idle, should be preferred when no keyword matches
+        assert_eq!(result.suggested_tool, "gemini");
+    }
+
+    #[test]
+    fn load_routing_combines_with_keywords() {
+        let load = std::collections::HashMap::from([
+            ("claude".to_string(), 5u32),
+            ("gemini".to_string(), 0u32),
+            ("codex".to_string(), 0u32),
+        ]);
+        // "refactor" strongly favors claude but heavy load should shift toward alternatives
+        let result = TaskRouter::suggest_with_load("refactor this code", &load);
+        // With claude at load 5, its score gets divided by 6 (1+5), bringing it low
+        // Even though refactor=0.8 for claude, 0.8/6 ≈ 0.13 which is less than gemini's default boost
+        // The exact result depends on implementation, but claude should NOT be top choice with heavy load
+        assert_ne!(result.suggested_tool, "claude");
     }
 }
