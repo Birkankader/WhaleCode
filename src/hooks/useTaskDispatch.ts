@@ -241,18 +241,20 @@ export function useTaskDispatch() {
 
           // --- Task lifecycle tracking from messenger/orchestrator messages ---
 
-          // "Assigned to <agent>: <desc>" → add sub-task as pending (Queued)
+          // "Assigned to <agent>: <desc>" → add sub-task
           const assignMatch = line.match(/^Assigned to (\w+): (.+)$/);
           if (assignMatch) {
             const [, agent, desc] = assignMatch;
             const subId = crypto.randomUUID();
+            // If Phase 2 message already arrived, create as 'running' directly
+            const phase2Already = useTaskStore.getState().orchestrationPhase === 'executing';
             useTaskStore.getState().addTask({
               taskId: subId,
               prompt: desc,
               toolName: agent as ToolName,
-              status: 'pending',
+              status: phase2Already ? 'running' : 'pending',
               description: desc.length > 60 ? desc.slice(0, 57) + '...' : desc,
-              startedAt: null,
+              startedAt: phase2Already ? Date.now() : null,
               dependsOn: null,
             });
           }
@@ -284,6 +286,69 @@ export function useTaskDispatch() {
             }
           }
 
+          // --- Phase transitions from orchestrator messages ---
+          if (line.includes('Phase 1:')) {
+            useTaskStore.getState().setOrchestrationPhase('decomposing');
+          } else if (line.includes('Phase 2: Executing')) {
+            // Phase 2 already handled above (pending→running transition)
+            useTaskStore.getState().setOrchestrationPhase('executing');
+          } else if (line.includes('Phase 3:')) {
+            useTaskStore.getState().setOrchestrationPhase('reviewing');
+          }
+
+          // Wave progress: "[orchestrator] Wave 2/3: 2 task(s)"
+          const waveMatch = line.match(/\[orchestrator\] Wave (\d+)\/(\d+): (\d+) task/);
+          if (waveMatch) {
+            const [, current, total] = waveMatch;
+            useTaskStore.getState().addOrchestrationLog({
+              agent: masterAgent,
+              level: 'info',
+              message: `\u27D0 Wave ${current}/${total}`,
+            });
+          }
+
+          // Skipped task (dependency failed): "[orchestrator] Skipping t2 (dependency failed)"
+          const skipMatch = line.match(/\[orchestrator\] Skipping (\S+) \(dependency failed\)/);
+          if (skipMatch) {
+            // Find a pending/running task and mark it as blocked
+            const taskState = useTaskStore.getState();
+            for (const [id, task] of taskState.tasks) {
+              if (task.status === 'pending' || task.status === 'running') {
+                useTaskStore.getState().updateTaskStatus(id, 'blocked');
+                break;
+              }
+            }
+          }
+
+          // Retry: "[orchestrator] Retrying t2 (attempt 1/2) after 5000ms..."
+          const retryMatch = line.match(/\[orchestrator\] Retrying (\S+) \(attempt (\d+)\/(\d+)\)/);
+          if (retryMatch) {
+            // Find a running/failed task and mark it as retrying
+            const taskState = useTaskStore.getState();
+            for (const [id, task] of taskState.tasks) {
+              if (task.status === 'running' || task.status === 'failed') {
+                useTaskStore.getState().updateTaskStatus(id, 'retrying');
+                break;
+              }
+            }
+          }
+
+          // Fallback: "[orchestrator] Falling back: t2 reassigned from claude to gemini"
+          const fallbackMatch = line.match(/\[orchestrator\] Falling back: (\S+) reassigned from (\w+) to (\w+)/);
+          if (fallbackMatch) {
+            const [, , , newAgent] = fallbackMatch;
+            // Find a retrying/running task and update its agent + status
+            const taskState = useTaskStore.getState();
+            for (const [id, task] of taskState.tasks) {
+              if (task.status === 'retrying' || task.status === 'running') {
+                const newTasks = new Map(taskState.tasks);
+                newTasks.set(id, { ...task, toolName: newAgent as ToolName, status: 'falling_back' });
+                useTaskStore.setState({ tasks: newTasks });
+                break;
+              }
+            }
+          }
+
           // Orchestrator status messages (always show)
           if (line.startsWith('[orchestrator]')) {
             useTaskStore.getState().addOrchestrationLog({
@@ -296,6 +361,7 @@ export function useTaskDispatch() {
             try {
               const ev = JSON.parse(line);
               if (ev.type === 'assistant' && ev.message?.content) {
+                // Claude NDJSON: message.content is array of content blocks
                 for (const block of ev.message.content) {
                   if (block.type === 'text' && block.text) {
                     useTaskStore.getState().addOrchestrationLog({
@@ -305,20 +371,35 @@ export function useTaskDispatch() {
                     });
                   }
                 }
+              } else if (ev.type === 'message' && ev.content) {
+                // Gemini NDJSON: content is a plain string
+                useTaskStore.getState().addOrchestrationLog({
+                  agent: masterAgent,
+                  level: 'info',
+                  message: ev.content,
+                });
               } else if (ev.type === 'result') {
-                if (ev.result) {
+                // Claude: ev.result, Gemini: ev.response
+                const resultText = ev.result || ev.response;
+                if (resultText) {
                   useTaskStore.getState().addOrchestrationLog({
                     agent: masterAgent,
                     level: 'success',
-                    message: ev.result,
+                    message: resultText,
                   });
                 }
                 // Extract usage data from result event
+                // Claude: total_cost_usd + usage.input_tokens/output_tokens
+                // Gemini: stats.input_tokens/output_tokens/total_tokens
+                const inputTokens = ev.usage?.input_tokens ?? ev.stats?.input_tokens ?? null;
+                const outputTokens = ev.usage?.output_tokens ?? ev.stats?.output_tokens ?? null;
+                const totalTokens = ev.usage?.total_tokens ?? ev.stats?.total_tokens
+                  ?? (inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null);
                 useTaskStore.getState().updateAgentContext(masterAgent, {
                   toolName: masterAgent,
-                  inputTokens: ev.stats?.input_tokens ?? null,
-                  outputTokens: ev.stats?.output_tokens ?? null,
-                  totalTokens: ev.stats?.total_tokens ?? null,
+                  inputTokens,
+                  outputTokens,
+                  totalTokens,
                   costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : null,
                   status: ev.is_error ? 'failed' : 'completed',
                 });

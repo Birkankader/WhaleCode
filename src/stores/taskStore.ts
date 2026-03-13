@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 export type ToolName = 'claude' | 'gemini' | 'codex';
-export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review';
+export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review' | 'blocked' | 'retrying' | 'falling_back';
 export type OrchestrationPhase = 'idle' | 'decomposing' | 'awaiting_approval' | 'executing' | 'reviewing' | 'completed' | 'failed';
 
 export interface TaskEntry {
@@ -31,6 +31,7 @@ export interface SubTaskEntry {
   assignedAgent: ToolName;
   status: TaskStatus;
   parentTaskId: string;
+  dependsOn: string[];
 }
 
 export interface AgentContextInfo {
@@ -55,6 +56,7 @@ interface TaskState {
   agentContexts: Map<string, AgentContextInfo>;
   addTask: (entry: TaskEntry) => void;
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
+  updateTaskAgent: (taskId: string, toolName: ToolName) => void;
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;
@@ -102,6 +104,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (!task) return state;
       const newTasks = new Map(state.tasks);
       newTasks.set(taskId, { ...task, status });
+      return { tasks: newTasks };
+    });
+  },
+
+  updateTaskAgent: (taskId, toolName) => {
+    set((state) => {
+      const task = state.tasks.get(taskId);
+      if (!task) return state;
+      const newTasks = new Map(state.tasks);
+      newTasks.set(taskId, { ...task, toolName });
       return { tasks: newTasks };
     });
   },

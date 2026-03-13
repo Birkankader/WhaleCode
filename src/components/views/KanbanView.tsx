@@ -27,6 +27,7 @@ interface MappedTask {
   duration: string | null;
   progress: number | null;
   branch: string;
+  status: TaskEntry['status'];
 }
 
 /* ── Constants ─────────────────────────────────────────── */
@@ -56,8 +57,11 @@ function mapColumn(status: TaskEntry['status']): ColumnKey {
     case 'pending':
     case 'routing':
     case 'waiting':
+    case 'blocked':
       return 'queued';
     case 'running':
+    case 'retrying':
+    case 'falling_back':
       return 'running';
     case 'completed':
     case 'review':
@@ -138,6 +142,7 @@ function TaskCard({
         border: `1.5px solid ${selected ? C.accent : C.border}`,
         cursor: 'pointer',
         transition: 'all 150ms ease',
+        opacity: task.status === 'blocked' ? 0.6 : 1,
         display: 'flex',
         flexDirection: 'column',
         gap: 10,
@@ -180,6 +185,23 @@ function TaskCard({
         </div>
         <span style={{ fontSize: 12, color: C.textSecondary }}>{AGENT_LABEL[task.agent]}</span>
       </div>
+
+      {/* Status badges for special states */}
+      {task.status === 'blocked' && (
+        <Pill bg="rgba(239,68,68,0.15)" color="#ef4444">
+          <span style={{ fontSize: 10 }}>&#x1F512;</span> Blocked
+        </Pill>
+      )}
+      {task.status === 'retrying' && (
+        <Pill bg="rgba(245,158,11,0.15)" color="#f59e0b">
+          <span style={{ fontSize: 10 }}>{'\u21BB'}</span> Retrying
+        </Pill>
+      )}
+      {task.status === 'falling_back' && (
+        <Pill bg="rgba(168,85,247,0.15)" color="#a855f7">
+          <span style={{ fontSize: 10 }}>{'\u21C4'}</span> Reassigning
+        </Pill>
+      )}
 
       {/* Progress bar (running) */}
       {task.progress !== null && (
@@ -249,6 +271,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
         duration: isDone && task.startedAt ? formatDuration(elapsed) : null,
         progress: isRunning ? Math.min(95, Math.floor((elapsed / 120_000) * 100)) : null,
         branch: `wc/${task.toolName}-${task.taskId.slice(0, 6)}`,
+        status: task.status,
       });
     }
     return result;
