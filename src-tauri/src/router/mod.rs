@@ -7,6 +7,47 @@ use std::collections::HashMap;
 
 use models::RoutingSuggestion;
 
+/// Resolve the best agent for a sub-task using 3-layer routing.
+/// Layer 1: Keyword + file extension matching
+/// Layer 2: Process load balancing
+/// Layer 3: Historical performance (optional)
+///
+/// Falls back to keyword-based suggestion if load/history is unavailable.
+pub fn resolve_agent(
+    prompt: &str,
+    suggested_agent: Option<&str>,
+    process_counts: &HashMap<String, u32>,
+    agent_stats: Option<&[(String, f64, f64)]>,
+) -> String {
+    // If a specific agent is suggested and it's not "auto", use it directly
+    if let Some(agent) = suggested_agent {
+        if agent != "auto" && !agent.is_empty() {
+            return agent.to_string();
+        }
+    }
+
+    // Layer 1+2: keyword + load-based routing
+    let mut suggestion = TaskRouter::suggest_with_load(prompt, process_counts);
+
+    // Layer 3: historical performance adjustment
+    if let Some(stats) = agent_stats {
+        if !stats.is_empty() {
+            // Find the best performing agent that has history
+            let best_agent = &stats[0].0; // already sorted by success_rate DESC
+            let best_rate = stats[0].1;
+
+            // If the historically best agent has significantly better success rate
+            // AND the keyword/load router didn't strongly favor another agent,
+            // prefer the historically best agent
+            if best_rate > 0.7 && suggestion.confidence < 0.5 {
+                suggestion.suggested_tool = best_agent.clone();
+            }
+        }
+    }
+
+    suggestion.suggested_tool
+}
+
 pub struct TaskRouter;
 
 impl TaskRouter {
@@ -424,5 +465,46 @@ mod tests {
         // Even though refactor=0.8 for claude, 0.8/6 ≈ 0.13 which is less than gemini's default boost
         // The exact result depends on implementation, but claude should NOT be top choice with heavy load
         assert_ne!(result.suggested_tool, "claude");
+    }
+
+    #[test]
+    fn resolve_agent_uses_explicit_suggestion() {
+        let load = HashMap::new();
+        let result = resolve_agent("some task", Some("gemini"), &load, None);
+        assert_eq!(result, "gemini");
+    }
+
+    #[test]
+    fn resolve_agent_auto_uses_routing() {
+        let load = HashMap::new();
+        let result = resolve_agent("refactor auth module", Some("auto"), &load, None);
+        assert_eq!(result, "claude"); // keyword match
+    }
+
+    #[test]
+    fn resolve_agent_considers_history() {
+        let load = HashMap::new();
+        let stats = vec![
+            ("gemini".to_string(), 0.95, 3000.0),
+            ("claude".to_string(), 0.50, 5000.0),
+        ];
+        // "do something" has no keyword match (low confidence),
+        // so history should kick in and pick gemini (95% success)
+        let result = resolve_agent("do something", Some("auto"), &load, Some(&stats));
+        assert_eq!(result, "gemini");
+    }
+
+    #[test]
+    fn resolve_agent_empty_suggestion_uses_routing() {
+        let load = HashMap::new();
+        let result = resolve_agent("refactor auth module", Some(""), &load, None);
+        assert_eq!(result, "claude"); // keyword match, empty string treated as auto
+    }
+
+    #[test]
+    fn resolve_agent_none_suggestion_uses_routing() {
+        let load = HashMap::new();
+        let result = resolve_agent("refactor auth module", None, &load, None);
+        assert_eq!(result, "claude"); // keyword match
     }
 }

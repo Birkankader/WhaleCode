@@ -233,6 +233,24 @@ async fn kill_process(state: &AppState, task_id: &str) -> Result<(), String> {
 // Shared helpers (kept from original)
 // ---------------------------------------------------------------------------
 
+/// Infer a broad task category from the prompt for performance tracking.
+fn infer_task_type(prompt: &str) -> String {
+    let lower = prompt.to_lowercase();
+    if lower.contains("refactor") || lower.contains("redesign") {
+        "refactor".to_string()
+    } else if lower.contains("analyze") || lower.contains("review") || lower.contains("read") {
+        "analyze".to_string()
+    } else if lower.contains("generate") || lower.contains("scaffold") || lower.contains("create") {
+        "generate".to_string()
+    } else if lower.contains("fix") || lower.contains("bug") || lower.contains("debug") {
+        "fix".to_string()
+    } else if lower.contains("test") {
+        "test".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
 fn emit_messenger(app_handle: &AppHandle, message: MessengerMessage) {
     let _ = app_handle.emit("messenger-event", &message);
 }
@@ -719,6 +737,18 @@ pub async fn dispatch_orchestrated_task(
                 failure_reason: if last_exit_code != 0 { failure_reason.clone() } else { None },
             };
             plan.worker_results.push(worker_result);
+
+            // Record task outcome for historical performance tracking
+            if let Some(&idx) = dag_id_to_idx.get(dag_id.as_str()) {
+                let (_, _, ref sub_prompt) = task_channels[idx];
+                let task_type = infer_task_type(sub_prompt);
+                let _ = context_store.record_task_outcome(
+                    &current_agent,
+                    &task_type,
+                    last_exit_code == 0,
+                    0, // duration approximation not yet implemented
+                );
+            }
 
             if last_exit_code != 0 {
                 failed_dag_ids.insert(dag_id.clone());
