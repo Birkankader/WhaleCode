@@ -46,6 +46,25 @@ impl ContextStore {
         })
     }
 
+    pub fn record_task_outcome(
+        &self,
+        agent: &str,
+        task_type: &str,
+        success: bool,
+        duration_ms: u64,
+    ) -> Result<i64, String> {
+        self.with_conn(|conn| {
+            super::queries::record_task_outcome(conn, agent, task_type, success, duration_ms)
+        })
+    }
+
+    pub fn query_agent_stats(
+        &self,
+        task_type: &str,
+    ) -> Result<Vec<(String, f64, f64)>, String> {
+        self.with_conn(|conn| super::queries::query_agent_stats(conn, task_type))
+    }
+
     pub fn db_path_for_project(app_data_dir: &Path, project_dir: &str) -> PathBuf {
         let mut hasher = DefaultHasher::new();
         project_dir.hash(&mut hasher);

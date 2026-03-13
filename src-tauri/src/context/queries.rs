@@ -113,6 +113,48 @@ pub fn get_recent_events(
     Ok(result)
 }
 
+/// Record a task outcome for performance tracking.
+pub fn record_task_outcome(
+    conn: &Connection,
+    agent: &str,
+    task_type: &str,
+    success: bool,
+    duration_ms: u64,
+) -> Result<i64, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO task_outcomes (agent, task_type, success, duration_ms) VALUES (?1, ?2, ?3, ?4)",
+        params![agent, task_type, success as i32, duration_ms as i64],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Query agent performance stats for a given task type.
+/// Returns Vec<(agent, success_rate, avg_duration_ms)> sorted by success_rate DESC.
+pub fn query_agent_stats(
+    conn: &Connection,
+    task_type: &str,
+) -> Result<Vec<(String, f64, f64)>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT agent,
+                AVG(CAST(success AS REAL)) as success_rate,
+                AVG(CAST(duration_ms AS REAL)) as avg_duration
+         FROM task_outcomes
+         WHERE task_type = ?1
+         GROUP BY agent
+         ORDER BY success_rate DESC, avg_duration ASC",
+    )?;
+
+    let rows = stmt.query_map(params![task_type], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, f64>(2)?,
+        ))
+    })?;
+
+    rows.collect()
+}
+
 /// Extract file changes from Claude stream events (Write = created, Edit = modified).
 // Planned for future use: auto-recording file changes from agent output.
 #[allow(dead_code)]
@@ -385,6 +427,37 @@ mod tests {
         assert_eq!(changes.len(), 2);
         assert_eq!(changes[0], ("/proj/src/main.rs".to_string(), "created".to_string()));
         assert_eq!(changes[1], ("/proj/src/lib.rs".to_string(), "modified".to_string()));
+    }
+
+    #[test]
+    fn test_record_and_query_task_outcomes() {
+        let conn = setup_db();
+
+        // Record some outcomes
+        record_task_outcome(&conn, "claude", "refactor", true, 5000).unwrap();
+        record_task_outcome(&conn, "claude", "refactor", true, 3000).unwrap();
+        record_task_outcome(&conn, "claude", "refactor", false, 8000).unwrap();
+        record_task_outcome(&conn, "gemini", "refactor", true, 4000).unwrap();
+        record_task_outcome(&conn, "gemini", "refactor", true, 6000).unwrap();
+
+        let stats = query_agent_stats(&conn, "refactor").unwrap();
+        assert_eq!(stats.len(), 2);
+
+        // Gemini: 2/2 = 1.0 success rate
+        assert_eq!(stats[0].0, "gemini");
+        assert!((stats[0].1 - 1.0).abs() < 0.01);
+
+        // Claude: 2/3 ~ 0.667 success rate
+        assert_eq!(stats[1].0, "claude");
+        assert!((stats[1].1 - 0.6667).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_query_agent_stats_empty() {
+        let conn = setup_db();
+
+        let stats = query_agent_stats(&conn, "nonexistent").unwrap();
+        assert!(stats.is_empty());
     }
 
     #[test]
