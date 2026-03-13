@@ -53,7 +53,7 @@ const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   masterAgent: 'claude',
 };
 
-type UISettingKey = 'developerMode' | 'autoMerge' | 'autoPr' | 'codeReview';
+type UISettingKey = 'developerMode' | 'autoMerge' | 'codeReview';
 
 interface ProcessPanelProps {
   projectDir: string;
@@ -136,7 +136,6 @@ function SetupSummaryPanel({
             {([
               ['Developer Mode', 'developerMode'],
               ['Auto Merge', 'autoMerge'],
-              ['Auto PR', 'autoPr'],
               ['Code Review', 'codeReview'],
             ] as const).map(([label, storeKey]) => (
               <SetupSettingToggle key={label} label={label} storeKey={storeKey} />
@@ -178,8 +177,6 @@ function SetupSettingToggle({
     switch (storeKey) {
       case 'autoMerge':
         return state.setAutoMerge;
-      case 'autoPr':
-        return state.setAutoPr;
       case 'codeReview':
         return state.setCodeReview;
       default:

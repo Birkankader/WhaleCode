@@ -14,7 +14,8 @@ const AGENT_META: Record<ToolName, { name: string; model: string; icon: { letter
 
 /* ── Helpers ───────────────────────────────────────────── */
 
-function formatTokens(n: number): string {
+function formatTokens(n: number | null): string {
+  if (n == null) return '--';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(n);
@@ -52,9 +53,10 @@ export function UsageView() {
   const usageList = Array.from(agentContexts.entries()).map(([toolName, ctx]) => ({
     toolName: toolName as ToolName,
     meta: AGENT_META[toolName as ToolName],
-    inputTokens: ctx.inputTokens ?? 0,
-    outputTokens: ctx.outputTokens ?? 0,
-    totalTokens: ctx.totalTokens ?? 0,
+    inputTokens: ctx.inputTokens,
+    outputTokens: ctx.outputTokens,
+    totalTokens: ctx.totalTokens,
+    costUsd: ctx.costUsd,
     status: ctx.status,
   }));
 
@@ -180,15 +182,15 @@ export function UsageView() {
                     }}
                   >
                     <div style={{ textAlign: 'center', padding: '8px 0' }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary }}>{formatTokens(agent.inputTokens)}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: agent.inputTokens != null ? C.textPrimary : C.textMuted }}>{formatTokens(agent.inputTokens)}</div>
                       <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>Input</div>
                     </div>
                     <div style={{ textAlign: 'center', padding: '8px 0' }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary }}>{formatTokens(agent.outputTokens)}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: agent.outputTokens != null ? C.textPrimary : C.textMuted }}>{formatTokens(agent.outputTokens)}</div>
                       <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>Output</div>
                     </div>
                     <div style={{ textAlign: 'center', padding: '8px 0' }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: C.accentText }}>{formatTokens(agent.totalTokens)}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: agent.totalTokens != null ? C.accentText : C.textMuted }}>{formatTokens(agent.totalTokens)}</div>
                       <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>Total</div>
                     </div>
                   </div>
@@ -205,8 +207,8 @@ export function UsageView() {
                     }}
                   >
                     <span style={{ fontSize: 12, color: C.textMuted }}>Estimated Cost</span>
-                    <span style={{ fontSize: 16, fontWeight: 700, color: C.green }}>
-                      ${(agentContexts.get(agent.toolName)?.costUsd ?? 0).toFixed(4)}
+                    <span style={{ fontSize: 16, fontWeight: 700, color: agent.costUsd != null ? C.green : C.textMuted }}>
+                      {agent.costUsd != null ? `$${agent.costUsd.toFixed(4)}` : '--'}
                     </span>
                   </div>
                 </div>

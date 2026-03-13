@@ -456,7 +456,7 @@ async sendToProcess(taskId: string, text: string) : Promise<Result<null, string>
 }
 },
 /**
- * Remove completed/failed processes older than 5 minutes from state.
+ * Remove completed/failed processes older than 30 seconds from state.
  */
 async cleanupCompletedProcesses() : Promise<Result<number, string>> {
     try {
@@ -512,9 +512,136 @@ async rejectDecomposition(planId: string, feedback: string) : Promise<Result<nul
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Approve the decomposed task list and start Phase 2 execution.
+ * Optionally accepts modified tasks (agent reassignments, removals).
+ */
+async approveOrchestration(planId: string, modifiedTasks: SubTaskDef[] | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("approve_orchestration", { planId, modifiedTasks }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async detectAgents() : Promise<Result<DetectedAgent[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("detect_agents") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitStatus(projectDir: string) : Promise<Result<GitStatusReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_status", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitStageFiles(projectDir: string, paths: string[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_stage_files", { projectDir, paths }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitUnstageFiles(projectDir: string, paths: string[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_unstage_files", { projectDir, paths }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitCommit(projectDir: string, message: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_commit", { projectDir, message }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitDiffFile(projectDir: string, filePath: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_diff_file", { projectDir, filePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitLog(projectDir: string, limit: number) : Promise<Result<GitLogEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_log", { projectDir, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitPull(projectDir: string) : Promise<Result<GitPullResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_pull", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async gitPush(projectDir: string) : Promise<Result<GitPushResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("git_push", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listDirectory(projectDir: string, relativePath: string) : Promise<Result<FsEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_directory", { projectDir, relativePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async readFile(projectDir: string, relativePath: string) : Promise<Result<FileContent, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("read_file", { projectDir, relativePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async writeFile(projectDir: string, relativePath: string, content: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("write_file", { projectDir, relativePath, content }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getConfig() : Promise<Result<AppConfig, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setConfig(config: AppConfig) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_config", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get orchestration history records.
+ */
+async getOrchestrationHistory(limit: number) : Promise<Result<OrchestrationRecord[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_orchestration_history", { limit }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -534,6 +661,35 @@ async detectAgents() : Promise<Result<DetectedAgent[], string>> {
 
 export type AgentConfig = { tool_name: string; sub_agent_count: number; is_master: boolean }
 export type AgentContextInfo = { tool_name: string; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cost_usd: number | null; status: string }
+/**
+ * App configuration with sensible defaults.
+ * Stored as `whalecode.json` in the app data directory.
+ */
+export type AppConfig = { 
+/**
+ * Master agent timeout in minutes (default: 10)
+ */
+master_timeout_minutes: number; 
+/**
+ * Worker agent timeout in minutes (default: 5)
+ */
+worker_timeout_minutes: number; 
+/**
+ * Maximum rate limit retries before failing (default: 3)
+ */
+max_rate_limit_retries: number; 
+/**
+ * Maximum worker retries before marking as failed (default: 2)
+ */
+max_worker_retries: number; 
+/**
+ * Seconds to wait before cleaning up completed plans (default: 60)
+ */
+plan_cleanup_delay_secs: number; 
+/**
+ * Maximum concurrent workers (default: 3)
+ */
+max_concurrent_workers: number }
 export type AuthStatus = "Authenticated" | "NeedsAuth" | "NotInstalled" | "Unknown"
 export type ConflictFile = { path: string }
 export type ConflictReport = { has_conflicts: boolean; conflicting_files: ConflictFile[]; worktree_a: string; worktree_b: string }
@@ -544,20 +700,28 @@ export type ContextEventWithFiles = { id: number; task_id: string; tool_name: st
 export type DecompositionResult = { tasks: SubTaskDef[] }
 export type DetectedAgent = { tool_name: string; installed: boolean; binary_path: string | null; version: string | null; auth_status: AuthStatus; display_name: string }
 export type FileChangeRecord = { file_path: string; change_type: string; tool_name: string; summary: string | null; created_at: string }
+export type FileContent = { content: string; truncated: boolean; size: number; language: string }
 export type FileDiff = { path: string; status: string; old_path: string | null; patch: string; additions: number; deletions: number }
+export type FsEntry = { name: string; path: string; is_dir: boolean; size: number; extension: string }
+export type GitFileEntry = { path: string; status: string; additions: number; deletions: number }
+export type GitLogEntry = { hash: string; message: string; author: string; time_ago: string }
+export type GitPullResult = { success: boolean; message: string }
+export type GitPushResult = { success: boolean; message: string }
+export type GitStatusReport = { branch: string; ahead: number; behind: number; staged: GitFileEntry[]; unstaged: GitFileEntry[]; untracked: string[] }
 /**
  * An optimized prompt for a specific tool, ready for IPC export.
  */
 export type OptimizedPrompt = { tool_name: string; original_prompt: string; optimized_prompt: string }
 export type OrchestrationPhase = "Decomposing" | "AwaitingApproval" | "Executing" | "WaitingForInput" | "Reviewing" | "Completed" | "Failed"
 export type OrchestrationPlan = { task_id: string; original_prompt: string; sub_tasks: SubTask[]; master_agent: string; phase: OrchestrationPhase; decomposition: DecompositionResult | null; worker_results: WorkerResult[]; master_process_id: string | null }
+export type OrchestrationRecord = { id: number; task_id: string; agent_count: number; duration_secs: number; success: boolean; created_at: string }
 export type OrchestratorConfig = { agents: AgentConfig[]; master_agent: string }
 export type OutputEvent = { event: "stdout"; data: string } | { event: "stderr"; data: string } | { event: "exit"; data: number } | { event: "error"; data: string }
 export type RoutingSuggestion = { suggested_tool: string; confidence: number; reason: string; alternative_tool: string | null; tool_available: boolean }
-export type SubTask = { id: string; prompt: string; assigned_agent: string; status: string; parent_task_id: string }
-export type SubTaskDef = { agent: string; prompt: string; description: string }
+export type SubTask = { id: string; prompt: string; assigned_agent: string; status: string; parent_task_id: string; depends_on?: string[] }
+export type SubTaskDef = { agent: string; prompt: string; description: string; depends_on?: string[] }
 export type TAURI_CHANNEL<TSend> = null
-export type WorkerResult = { task_id: string; agent: string; exit_code: number; output_summary: string }
+export type WorkerResult = { task_id: string; agent: string; exit_code: number; output_summary: string; retry_count?: number; original_agent?: string | null; failure_reason?: string | null }
 export type WorktreeDiffReport = { branch_name: string; default_branch: string; files: FileDiff[]; total_additions: number; total_deletions: number }
 export type WorktreeEntry = { task_id: string; worktree_name: string; branch_name: string; path: string; 
 /**

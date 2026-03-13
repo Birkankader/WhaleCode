@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod cleanup;
 pub mod codex;
+pub mod config;
 pub mod detection;
 pub mod gemini;
 pub mod context;
@@ -10,6 +11,11 @@ pub mod prompt;
 pub mod router;
 pub mod stdin;
 pub mod worktree;
+pub mod git;
+pub mod fs_explorer;
+
+#[cfg(test)]
+mod orchestrator_test;
 
 use std::path::PathBuf;
 use tauri::ipc::Channel;
@@ -45,13 +51,14 @@ pub use codex::{
     delete_codex_api_key, has_codex_api_key, set_codex_api_key, spawn_codex_task,
     validate_codex_result,
 };
-pub use context::{get_context_summary, get_recent_changes, record_task_completion_cmd};
+pub use context::{get_context_summary, get_orchestration_history, get_recent_changes, record_task_completion_cmd};
 pub use process::{cancel_process, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
 pub use orchestrator::{
     dispatch_orchestrated_task, get_agent_context_info,
     clear_orchestration_context, answer_user_question,
     approve_decomposition, reject_decomposition,
+    approve_orchestration,
 };
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
@@ -61,6 +68,12 @@ pub use worktree::{
 pub use stdin::send_to_process;
 pub use cleanup::cleanup_completed_processes;
 pub use detection::detect_agents;
+pub use git::{
+    git_commit, git_diff_file, git_log, git_pull, git_push, git_stage_files, git_status,
+    git_unstage_files,
+};
+pub use fs_explorer::{list_directory, read_file, write_file};
+pub use config::{get_config, set_config};
 
 #[tauri::command]
 #[specta::specta]

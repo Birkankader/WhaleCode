@@ -10,7 +10,11 @@ import {
   emitLocalProcessMessage,
   useProcessStore,
 } from './useProcess';
-import { useTaskStore, type ToolName, type TaskStatus, type OrchestratorConfig } from '../stores/taskStore';
+import { useTaskStore, type ToolName } from '../stores/taskStore';
+import { useOrchestratedDispatch } from './orchestration/useOrchestratedDispatch';
+
+// Re-export for consumers that may need the type
+export type { OrchEvent } from './orchestration/handleOrchEvent';
 
 /**
  * Unified task dispatch hook that composes useClaudeTask/useGeminiTask patterns
@@ -19,9 +23,12 @@ import { useTaskStore, type ToolName, type TaskStatus, type OrchestratorConfig }
  * Provides:
  * - suggestTool: get routing suggestion for a prompt
  * - dispatchTask: dispatch a task to the selected tool
+ * - dispatchOrchestratedTask: dispatch a multi-agent orchestrated task
  * - isToolBusy: check if a tool has a running process
  */
 export function useTaskDispatch() {
+  const { dispatchOrchestratedTask } = useOrchestratedDispatch();
+
   const suggestTool = useCallback(
     async (prompt: string): Promise<RoutingSuggestion | null> => {
       try {
@@ -95,6 +102,7 @@ export function useTaskDispatch() {
       const channel = new Channel<OutputEvent>();
       let resolvedTaskId: string | null = null;
       const earlyEvents: OutputEvent[] = [];
+      let singleTaskResultText = '';
 
       const formatEvent =
         toolName === 'claude' ? formatClaudeEvent :
@@ -108,6 +116,36 @@ export function useTaskDispatch() {
           const formatted = formatEvent(msg.data);
           if (!formatted) return; // Skip empty/suppressed events
           formattedMsg = { event: 'stdout', data: formatted };
+
+          // Capture result text from NDJSON events for single tasks
+          const rawLine = msg.data;
+          if (rawLine && rawLine.startsWith('{')) {
+            try {
+              const ev = JSON.parse(rawLine);
+              if (ev.type === 'result') {
+                const resultText = ev.result || ev.response;
+                if (resultText && typeof resultText === 'string') {
+                  singleTaskResultText = resultText.length > 800 ? resultText.slice(0, 797) + '...' : resultText;
+                }
+              }
+              // Capture assistant/message content (final response)
+              if (ev.type === 'message' || ev.type === 'assistant') {
+                let msgText = '';
+                if (typeof ev.content === 'string' && ev.content.trim()) {
+                  msgText = ev.content.trim();
+                } else if (Array.isArray(ev.content)) {
+                  msgText = ev.content
+                    .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
+                    .map((b: { text: string }) => b.text.trim())
+                    .filter(Boolean)
+                    .join('\n');
+                }
+                if (msgText && msgText.length > 10) {
+                  singleTaskResultText = msgText.length > 800 ? msgText.slice(0, 797) + '...' : msgText;
+                }
+              }
+            } catch { /* not valid JSON */ }
+          }
         }
 
         if (msg.event === 'exit') {
@@ -121,11 +159,14 @@ export function useTaskDispatch() {
             code,
           );
 
-          // Update task store status
+          // Update task store status + attach result text
           useTaskStore.getState().updateTaskStatus(
             tempId,
             code === 0 ? 'completed' : 'failed',
           );
+          if (singleTaskResultText) {
+            useTaskStore.getState().updateTaskResult(tempId, singleTaskResultText);
+          }
 
           // Emit the exit event
           emitProcessOutput(finalId, formattedMsg);
@@ -204,325 +245,6 @@ export function useTaskDispatch() {
         }
       }
       return false;
-    },
-    [],
-  );
-
-  const dispatchOrchestratedTask = useCallback(
-    async (
-      prompt: string,
-      projectDir: string,
-      orchestratorConfig: OrchestratorConfig,
-    ): Promise<Map<ToolName, string>> => {
-      const results = new Map<ToolName, string>();
-
-      // Create channel for orchestration output (all phases stream through this)
-      const channel = new Channel<OutputEvent>();
-      const orchestrationId = crypto.randomUUID();
-
-      channel.onmessage = (msg: OutputEvent) => {
-        if (msg.event === 'exit') {
-          const code = Number(msg.data);
-          useProcessStore.getState()._updateStatus(
-            orchestrationId,
-            code === 0 ? 'completed' : 'failed',
-            code,
-          );
-          emitProcessOutput(orchestrationId, msg);
-          return;
-        }
-        emitProcessOutput(orchestrationId, msg);
-
-        // Route meaningful stdout to orchestrationLogs for TerminalView display.
-        // Filter out raw NDJSON events — only show orchestrator messages and parsed agent output.
-        if (msg.event === 'stdout' && msg.data) {
-          const line = msg.data;
-          const masterAgent = orchestratorConfig.masterAgent;
-
-          // --- Task lifecycle tracking from messenger/orchestrator messages ---
-
-          // "Assigned to <agent>: <desc>" → add sub-task
-          const assignMatch = line.match(/^Assigned to (\w+): (.+)$/);
-          if (assignMatch) {
-            const [, agent, desc] = assignMatch;
-            const subId = crypto.randomUUID();
-            // If Phase 2 message already arrived, create as 'running' directly
-            const phase2Already = useTaskStore.getState().orchestrationPhase === 'executing';
-            useTaskStore.getState().addTask({
-              taskId: subId,
-              prompt: desc,
-              toolName: agent as ToolName,
-              status: phase2Already ? 'running' : 'pending',
-              description: desc.length > 60 ? desc.slice(0, 57) + '...' : desc,
-              startedAt: phase2Already ? Date.now() : null,
-              dependsOn: null,
-            });
-          }
-
-          // "Phase 2: Executing..." → move all pending tasks to running (In Progress)
-          if (line.includes('Phase 2: Executing')) {
-            const taskState = useTaskStore.getState();
-            const newTasks = new Map(taskState.tasks);
-            for (const [id, task] of newTasks) {
-              if (task.status === 'pending') {
-                newTasks.set(id, { ...task, status: 'running', startedAt: Date.now() });
-              }
-            }
-            useTaskStore.setState({ tasks: newTasks });
-          }
-
-          // "Completed (exit 0): ..." or "Failed (exit X): ..." → mark task done
-          const completionMatch = line.match(/^(Completed|Failed) \(exit (\d+)\)/);
-          if (completionMatch) {
-            const [, result] = completionMatch;
-            const status: TaskStatus = result === 'Completed' ? 'completed' : 'failed';
-            // Find a running task and mark it as completed/failed
-            const taskState = useTaskStore.getState();
-            for (const [id, task] of taskState.tasks) {
-              if (task.status === 'running') {
-                useTaskStore.getState().updateTaskStatus(id, status);
-                break;
-              }
-            }
-          }
-
-          // --- Phase transitions from orchestrator messages ---
-          if (line.includes('Phase 1:')) {
-            useTaskStore.getState().setOrchestrationPhase('decomposing');
-          } else if (line.includes('Phase 2: Executing')) {
-            // Phase 2 already handled above (pending→running transition)
-            useTaskStore.getState().setOrchestrationPhase('executing');
-          } else if (line.includes('Phase 3:')) {
-            useTaskStore.getState().setOrchestrationPhase('reviewing');
-          }
-
-          // Wave progress: "[orchestrator] Wave 2/3: 2 task(s)"
-          const waveMatch = line.match(/\[orchestrator\] Wave (\d+)\/(\d+): (\d+) task/);
-          if (waveMatch) {
-            const [, current, total] = waveMatch;
-            useTaskStore.getState().addOrchestrationLog({
-              agent: masterAgent,
-              level: 'info',
-              message: `\u27D0 Wave ${current}/${total}`,
-            });
-          }
-
-          // Skipped task (dependency failed): "[orchestrator] Skipping t2 (dependency failed)"
-          const skipMatch = line.match(/\[orchestrator\] Skipping (\S+) \(dependency failed\)/);
-          if (skipMatch) {
-            // Find a pending/running task and mark it as blocked
-            const taskState = useTaskStore.getState();
-            for (const [id, task] of taskState.tasks) {
-              if (task.status === 'pending' || task.status === 'running') {
-                useTaskStore.getState().updateTaskStatus(id, 'blocked');
-                break;
-              }
-            }
-          }
-
-          // Retry: "[orchestrator] Retrying t2 (attempt 1/2) after 5000ms..."
-          const retryMatch = line.match(/\[orchestrator\] Retrying (\S+) \(attempt (\d+)\/(\d+)\)/);
-          if (retryMatch) {
-            // Find a running/failed task and mark it as retrying
-            const taskState = useTaskStore.getState();
-            for (const [id, task] of taskState.tasks) {
-              if (task.status === 'running' || task.status === 'failed') {
-                useTaskStore.getState().updateTaskStatus(id, 'retrying');
-                break;
-              }
-            }
-          }
-
-          // Fallback: "[orchestrator] Falling back: t2 reassigned from claude to gemini"
-          const fallbackMatch = line.match(/\[orchestrator\] Falling back: (\S+) reassigned from (\w+) to (\w+)/);
-          if (fallbackMatch) {
-            const [, , , newAgent] = fallbackMatch;
-            // Find a retrying/running task and update its agent + status
-            const taskState = useTaskStore.getState();
-            for (const [id, task] of taskState.tasks) {
-              if (task.status === 'retrying' || task.status === 'running') {
-                const newTasks = new Map(taskState.tasks);
-                newTasks.set(id, { ...task, toolName: newAgent as ToolName, status: 'falling_back' });
-                useTaskStore.setState({ tasks: newTasks });
-                break;
-              }
-            }
-          }
-
-          // Orchestrator status messages (always show)
-          if (line.startsWith('[orchestrator]')) {
-            useTaskStore.getState().addOrchestrationLog({
-              agent: masterAgent,
-              level: 'cmd',
-              message: line,
-            });
-          } else if (line.startsWith('{')) {
-            // Try to extract meaningful content from NDJSON
-            try {
-              const ev = JSON.parse(line);
-              if (ev.type === 'assistant' && ev.message?.content) {
-                // Claude NDJSON: message.content is array of content blocks
-                for (const block of ev.message.content) {
-                  if (block.type === 'text' && block.text) {
-                    useTaskStore.getState().addOrchestrationLog({
-                      agent: masterAgent,
-                      level: 'info',
-                      message: block.text,
-                    });
-                  }
-                }
-              } else if (ev.type === 'message' && ev.content) {
-                // Gemini NDJSON: content is a plain string
-                useTaskStore.getState().addOrchestrationLog({
-                  agent: masterAgent,
-                  level: 'info',
-                  message: ev.content,
-                });
-              } else if (ev.type === 'result') {
-                // Claude: ev.result, Gemini: ev.response
-                const resultText = ev.result || ev.response;
-                if (resultText) {
-                  useTaskStore.getState().addOrchestrationLog({
-                    agent: masterAgent,
-                    level: 'success',
-                    message: resultText,
-                  });
-                }
-                // Extract usage data from result event
-                // Claude: total_cost_usd + usage.input_tokens/output_tokens
-                // Gemini: stats.input_tokens/output_tokens/total_tokens
-                const inputTokens = ev.usage?.input_tokens ?? ev.stats?.input_tokens ?? null;
-                const outputTokens = ev.usage?.output_tokens ?? ev.stats?.output_tokens ?? null;
-                const totalTokens = ev.usage?.total_tokens ?? ev.stats?.total_tokens
-                  ?? (inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null);
-                useTaskStore.getState().updateAgentContext(masterAgent, {
-                  toolName: masterAgent,
-                  inputTokens,
-                  outputTokens,
-                  totalTokens,
-                  costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : null,
-                  status: ev.is_error ? 'failed' : 'completed',
-                });
-              }
-            } catch {
-              // Not valid JSON — skip
-            }
-          } else if (line.trim()) {
-            // Non-JSON, non-orchestrator text — show as-is
-            useTaskStore.getState().addOrchestrationLog({
-              agent: masterAgent,
-              level: 'info',
-              message: line,
-            });
-          }
-        }
-      };
-
-      // Register orchestration as a single process in frontend
-      const store = useProcessStore.getState();
-      const newProcesses = new Map(store.processes);
-      const description = prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
-      newProcesses.set(orchestrationId, {
-        taskId: orchestrationId,
-        cmd: `orchestration: ${description}`,
-        status: 'running',
-        channel,
-        startedAt: Date.now(),
-        hasOutput: false,
-        lastEventAt: Date.now(),
-        lastOutputPreview: 'Master orchestration started. Worker output will stream here.',
-      });
-      useProcessStore.setState({
-        processes: newProcesses,
-        activeProcessId: orchestrationId,
-      });
-
-      emitLocalProcessMessage(orchestrationId, `$ ${prompt}`);
-
-      try {
-        // Convert frontend config format (camelCase) to backend format (snake_case)
-        const backendConfig = {
-          agents: orchestratorConfig.agents.map(a => ({
-            tool_name: a.toolName,
-            sub_agent_count: a.subAgentCount,
-            is_master: a.isMaster,
-          })),
-          master_agent: orchestratorConfig.masterAgent,
-        };
-
-        const result = await commands.dispatchOrchestratedTask(
-          prompt,
-          projectDir,
-          backendConfig,
-          channel,
-        );
-
-        if (result.status === 'ok') {
-          const plan = result.data;
-          const taskState = useTaskStore.getState();
-
-          // Add any sub-tasks that weren't already tracked via real-time events
-          for (const subTask of plan.sub_tasks) {
-            results.set(subTask.assigned_agent as ToolName, subTask.id);
-            const alreadyTracked = Array.from(taskState.tasks.values()).some(
-              t => t.prompt === subTask.prompt
-            );
-            if (!alreadyTracked) {
-              taskState.addTask({
-                taskId: subTask.id,
-                prompt: subTask.prompt,
-                toolName: subTask.assigned_agent as ToolName,
-                status: 'completed',
-                description: subTask.prompt.length > 60 ? subTask.prompt.slice(0, 57) + '...' : subTask.prompt,
-                startedAt: Date.now(),
-                dependsOn: null,
-              });
-            }
-          }
-
-          // If no sub-tasks (master handled directly), add the master as a completed task
-          if (plan.sub_tasks.length === 0 && useTaskStore.getState().tasks.size === 0) {
-            taskState.addTask({
-              taskId: plan.task_id,
-              prompt,
-              toolName: plan.master_agent as ToolName,
-              status: 'completed',
-              description: description,
-              startedAt: Date.now(),
-              dependsOn: null,
-            });
-          }
-
-          // Store active plan for /clear command
-          taskState.setActivePlan({
-            task_id: plan.task_id,
-            master_agent: plan.master_agent,
-            master_process_id: plan.master_process_id,
-          });
-
-          // Mark orchestration phase as completed
-          const phaseStr = plan.phase as string;
-          if (phaseStr === 'Completed' || phaseStr === 'Failed') {
-            taskState.setOrchestrationPhase(phaseStr === 'Completed' ? 'completed' : 'failed');
-          } else {
-            taskState.setOrchestrationPhase('completed');
-          }
-
-          useProcessStore.getState()._updateStatus(orchestrationId, 'completed', 0);
-        } else {
-          console.error('Orchestration failed:', result.error);
-          useProcessStore.getState()._updateStatus(orchestrationId, 'failed', -1);
-          useTaskStore.getState().setOrchestrationPhase('failed');
-          throw new Error(result.error);
-        }
-      } catch (e) {
-        console.error('Orchestration error:', e);
-        useProcessStore.getState()._updateStatus(orchestrationId, 'failed', -1);
-        useTaskStore.getState().setOrchestrationPhase('failed');
-        throw e;
-      }
-
-      return results;
     },
     [],
   );

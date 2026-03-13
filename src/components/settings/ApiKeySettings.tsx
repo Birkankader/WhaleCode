@@ -278,11 +278,6 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
             storeKey="autoMerge"
           />
           <ToggleSetting
-            label="Auto PR"
-            description="Create PRs automatically for worker branches"
-            storeKey="autoPr"
-          />
-          <ToggleSetting
             label="Code Review"
             description="Keep review step enabled before final merge"
             storeKey="codeReview"
@@ -301,15 +296,13 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
 function ToggleSetting({ label, description, storeKey }: {
   label: string;
   description: string;
-  storeKey: 'autoMerge' | 'autoPr' | 'codeReview' | 'developerMode';
+  storeKey: 'autoMerge' | 'codeReview' | 'developerMode';
 }) {
   const value = useUIStore((s) => s[storeKey]);
   const setter = useUIStore((s) => {
     switch (storeKey) {
       case 'autoMerge':
         return s.setAutoMerge;
-      case 'autoPr':
-        return s.setAutoPr;
       case 'codeReview':
         return s.setCodeReview;
       default:

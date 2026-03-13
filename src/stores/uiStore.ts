@@ -1,6 +1,7 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
-export type AppView = 'kanban' | 'terminal' | 'usage' | 'review' | 'done' | 'settings';
+export type AppView = 'kanban' | 'terminal' | 'usage' | 'review' | 'done' | 'settings' | 'git' | 'code';
 
 interface UIState {
   // Navigation
@@ -24,8 +25,6 @@ interface UIState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   autoMerge: boolean;
   setAutoMerge: (enabled: boolean) => void;
-  autoPr: boolean;
-  setAutoPr: (enabled: boolean) => void;
   codeReview: boolean;
   setCodeReview: (enabled: boolean) => void;
   developerMode: boolean;
@@ -34,7 +33,7 @@ interface UIState {
   setShowQuickTask: (show: boolean) => void;
 }
 
-export const useUIStore = create<UIState>((set) => ({
+export const useUIStore = create<UIState>()(persist((set) => ({
   // Navigation
   activeView: 'kanban',
   setActiveView: (view) => set({ activeView: view }),
@@ -56,12 +55,20 @@ export const useUIStore = create<UIState>((set) => ({
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   autoMerge: false,
   setAutoMerge: (enabled) => set({ autoMerge: enabled }),
-  autoPr: true,
-  setAutoPr: (enabled) => set({ autoPr: enabled }),
   codeReview: true,
   setCodeReview: (enabled) => set({ codeReview: enabled }),
   developerMode: false,
   setDeveloperMode: (enabled) => set({ developerMode: enabled }),
   showQuickTask: false,
   setShowQuickTask: (show) => set({ showQuickTask: show }),
+}), {
+  name: 'whalecode-ui',
+  partialize: (state) => ({
+    projectDir: state.projectDir,
+    sessionName: state.sessionName,
+    sidebarCollapsed: state.sidebarCollapsed,
+    autoMerge: state.autoMerge,
+    codeReview: state.codeReview,
+    developerMode: state.developerMode,
+  }),
 }));

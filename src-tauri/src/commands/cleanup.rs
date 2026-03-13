@@ -1,7 +1,7 @@
 use crate::router::orchestrator::OrchestrationPhase;
 use crate::state::{AppState, ProcessStatus};
 
-/// Remove completed/failed processes older than 5 minutes from state.
+/// Remove completed/failed processes older than 30 seconds from state.
 #[tauri::command]
 #[specta::specta]
 pub async fn cleanup_completed_processes(
@@ -9,7 +9,7 @@ pub async fn cleanup_completed_processes(
 ) -> Result<u32, String> {
     let mut inner = state.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp_millis();
-    let five_min_ms = 5 * 60 * 1000;
+    let thirty_sec_ms = 30 * 1000;
 
     let stale_ids: Vec<String> = inner
         .processes
@@ -18,7 +18,7 @@ pub async fn cleanup_completed_processes(
             matches!(
                 entry.status,
                 ProcessStatus::Completed(_) | ProcessStatus::Failed(_)
-            ) && (now - entry.started_at) > five_min_ms
+            ) && (now - entry.started_at) > thirty_sec_ms
         })
         .map(|(id, _)| id.clone())
         .collect();

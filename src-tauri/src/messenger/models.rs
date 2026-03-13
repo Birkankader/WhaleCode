@@ -30,7 +30,7 @@ pub enum MessageType {
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct MessengerMessage {
     pub id: String,
-    pub timestamp: i64, // millis since epoch (for specta compat)
+    pub timestamp: f64, // millis since epoch (f64 for JS/specta compat)
     pub source: MessageSource,
     pub content: String,
     pub message_type: MessageType,
@@ -41,7 +41,7 @@ impl MessengerMessage {
     pub fn system(plan_id: &str, content: String, message_type: MessageType) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis() as f64,
             source: MessageSource::System,
             content,
             message_type,
@@ -52,7 +52,7 @@ impl MessengerMessage {
     pub fn agent(plan_id: &str, agent: &str, content: String, message_type: MessageType) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis() as f64,
             source: MessageSource::Agent(agent.to_string()),
             content,
             message_type,

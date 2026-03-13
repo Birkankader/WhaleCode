@@ -252,6 +252,20 @@ fn extract_usage_from_output(entry: &mut ProcessEntry) {
                 if let Some(cost) = parsed.get("total_cost_usd").and_then(|v| v.as_f64()) {
                     entry.cost_usd = Some(cost);
                 }
+                // Claude: usage.input_tokens, usage.output_tokens (if present)
+                if let Some(usage) = parsed.get("usage") {
+                    if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        entry.input_tokens = Some(input);
+                    }
+                    if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        entry.output_tokens = Some(output);
+                    }
+                    if let Some(total) = usage.get("total_tokens").and_then(|v| v.as_u64()) {
+                        entry.total_tokens = Some(total);
+                    } else if entry.input_tokens.is_some() && entry.output_tokens.is_some() {
+                        entry.total_tokens = Some(entry.input_tokens.unwrap() + entry.output_tokens.unwrap());
+                    }
+                }
                 // Gemini: stats.input_tokens, stats.output_tokens, stats.total_tokens
                 if let Some(stats) = parsed.get("stats") {
                     if let Some(input) = stats.get("input_tokens").and_then(|v| v.as_u64()) {
@@ -316,7 +330,7 @@ pub fn send_to_process(
         .as_ref()
         .ok_or_else(|| format!("Process {} has no stdin channel", task_id))?;
     stdin_tx
-        .send(format!("{}\n", message))
+        .send(message.to_string())
         .map_err(|e| format!("Failed to send to stdin: {}", e))
 }
 
@@ -336,23 +350,37 @@ pub fn close_stdin(state: &AppState, task_id: &str) -> Result<(), String> {
 
 /// Cancel a running process by sending SIGTERM then SIGKILL to its process group.
 pub async fn cancel(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    kill_and_remove(task_id, &state).await
+}
+
+/// Kill a process and remove it from state. Works with `&AppState` directly
+/// so it can be called from orchestration code (not just Tauri commands).
+///
+/// 1. Sends SIGTERM → waits 2s → SIGKILL to the process group.
+/// 2. Removes the process entry from state entirely.
+///
+/// Idempotent: returns Ok(()) if the process was already removed or never existed.
+pub async fn kill_and_remove(task_id: &str, state: &AppState) -> Result<(), String> {
     let pgid = {
         let inner = state.lock().map_err(|e| e.to_string())?;
-        let entry = inner
-            .processes
-            .get(task_id)
-            .ok_or_else(|| format!("Process not found: {}", task_id))?;
-        entry.pgid
+        match inner.processes.get(task_id) {
+            Some(entry) => match entry.status {
+                // Already dead — just remove below
+                ProcessStatus::Completed(_) | ProcessStatus::Failed(_) => None,
+                _ => Some(entry.pgid),
+            },
+            None => return Ok(()), // Already removed — nothing to do
+        }
     };
 
-    signals::graceful_kill(pgid).await;
+    if let Some(pgid) = pgid {
+        signals::graceful_kill(pgid).await;
+    }
 
-    // Update status
+    // Remove from state entirely (don't just mark Failed — that leaks memory)
     {
         let mut inner = state.lock().map_err(|e| e.to_string())?;
-        if let Some(entry) = inner.processes.get_mut(task_id) {
-            entry.status = ProcessStatus::Failed("Cancelled".to_string());
-        }
+        inner.processes.remove(task_id);
     }
 
     Ok(())

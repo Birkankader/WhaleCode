@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::migrations::run_migrations;
+use super::models::OrchestrationRecord;
 
 #[derive(Clone)]
 pub struct ContextStore {
@@ -63,6 +64,25 @@ impl ContextStore {
         task_type: &str,
     ) -> Result<Vec<(String, f64, f64)>, String> {
         self.with_conn(|conn| super::queries::query_agent_stats(conn, task_type))
+    }
+
+    pub fn record_orchestration_stats(
+        &self,
+        task_id: &str,
+        agent_count: u32,
+        duration_secs: u64,
+        success: bool,
+    ) -> Result<(), String> {
+        self.with_conn(|conn| {
+            super::queries::record_orchestration_stats(conn, task_id, agent_count, duration_secs, success)
+        })
+    }
+
+    pub fn get_orchestration_history(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<OrchestrationRecord>, String> {
+        self.with_conn(|conn| super::queries::get_orchestration_history(conn, limit))
     }
 
     pub fn db_path_for_project(app_data_dir: &Path, project_dir: &str) -> PathBuf {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
 import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
 // taskStore types available via: import { useTaskStore } from '@/stores/taskStore'
@@ -53,13 +54,16 @@ const STEP_LABELS = ['Session', 'Agents', 'Task'] as const;
 // Props
 // ---------------------------------------------------------------------------
 
+export interface LaunchConfig {
+  sessionName: string;
+  projectDir: string;
+  master: DetectedAgent | null;
+  workers: { agent: DetectedAgent; count: number }[];
+  taskDescription: string;
+}
+
 interface SetupPanelProps {
-  onLaunch?: (config: {
-    sessionName: string;
-    master: DetectedAgent | null;
-    workers: { agent: DetectedAgent; count: number }[];
-    taskDescription: string;
-  }) => void;
+  onLaunch?: (config: LaunchConfig) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,14 +79,15 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
   const setDeveloperMode = useUIStore((s) => s.setDeveloperMode);
   const autoMerge = useUIStore((s) => s.autoMerge);
   const setAutoMerge = useUIStore((s) => s.setAutoMerge);
-  const autoPr = useUIStore((s) => s.autoPr);
-  const setAutoPr = useUIStore((s) => s.setAutoPr);
   const codeReview = useUIStore((s) => s.codeReview);
   const setCodeReview = useUIStore((s) => s.setCodeReview);
+
+  const globalProjectDir = useUIStore((s) => s.projectDir);
 
   // Local state
   const [step, setStep] = useState(0);
   const [sessionName, setSessionName] = useState('');
+  const [projectDir, setProjectDir] = useState(globalProjectDir || '');
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [master, setMaster] = useState<string | null>(null);
@@ -118,11 +123,12 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
     if (showSetup) {
       setStep(0);
       setSessionName('');
+      setProjectDir(globalProjectDir || '');
       setMaster(null);
       setWorkerCounts({});
       setTaskDescription('');
     }
-  }, [showSetup]);
+  }, [showSetup, globalProjectDir]);
 
   // Worker helpers
   const toggleWorker = useCallback((agentId: string) => {
@@ -158,11 +164,11 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
   );
 
   const canContinue = useMemo(() => {
-    if (step === 0) return sessionName.trim().length > 0;
+    if (step === 0) return sessionName.trim().length > 0 && projectDir.trim().length > 0;
     if (step === 1) return master !== null;
     if (step === 2) return taskDescription.trim().length > 0;
     return false;
-  }, [step, sessionName, master, taskDescription]);
+  }, [step, sessionName, projectDir, master, taskDescription]);
 
   // Handlers
   const close = useCallback(() => setShowSetup(false), [setShowSetup]);
@@ -170,12 +176,13 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
   const handleLaunch = useCallback(() => {
     onLaunch?.({
       sessionName: sessionName.trim(),
+      projectDir: projectDir.trim(),
       master: masterAgent,
       workers: workerAgents,
       taskDescription: taskDescription.trim(),
     });
-    setShowSetup(false);
-  }, [onLaunch, sessionName, masterAgent, workerAgents, taskDescription, setShowSetup]);
+    // AppShell.handleLaunch already closes the panel
+  }, [onLaunch, sessionName, projectDir, masterAgent, workerAgents, taskDescription]);
 
   if (!showSetup) return null;
 
@@ -361,13 +368,81 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
           />
         </div>
 
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            Project Directory
+          </label>
+          <button
+            type="button"
+            onClick={async () => {
+              const selected = await open({ directory: true, multiple: false, title: 'Select Project Directory' });
+              if (selected) setProjectDir(selected as string);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              width: '100%',
+              marginTop: 8,
+              padding: projectDir ? '10px 14px' : '20px 14px',
+              background: C.surface,
+              border: `1.5px dashed ${projectDir ? C.accent : C.borderStrong}`,
+              borderRadius: 12,
+              cursor: 'pointer',
+              textAlign: 'left',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = C.accent;
+              e.currentTarget.style.background = C.surfaceHover;
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = projectDir ? C.accent : C.borderStrong;
+              e.currentTarget.style.background = C.surface;
+            }}
+          >
+            {projectDir ? (
+              <>
+                <div style={{
+                  width: 32, height: 32, borderRadius: 8,
+                  background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0,
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M2 4.5C2 3.67 2.67 3 3.5 3H6.29a1 1 0 0 1 .7.29L8 4.3h4.5c.83 0 1.5.67 1.5 1.5V12c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5Z" fill={C.accent} opacity="0.9"/>
+                  </svg>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {projectDir.split('/').pop()}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                    {projectDir}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: C.accentText, fontWeight: 500, flexShrink: 0 }}>Change</div>
+              </>
+            ) : (
+              <div style={{ width: '100%', textAlign: 'center' }}>
+                <div style={{ marginBottom: 4 }}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style={{ display: 'inline-block' }}>
+                    <path d="M3 6C3 4.9 3.9 4 5 4H8.17a1 1 0 0 1 .71.29L10 5.41h5c1.1 0 2 .9 2 2V15c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V6Z" stroke={C.textMuted} strokeWidth="1.5" fill="none"/>
+                  </svg>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary }}>
+                  Click to select project folder
+                </div>
+              </div>
+            )}
+          </button>
+        </div>
+
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
             Settings
           </div>
           {renderToggle('Developer Mode', developerMode, setDeveloperMode, 'Show raw output and debug info')}
           {renderToggle('Auto Merge', autoMerge, setAutoMerge, 'Merge worktree branches automatically')}
-          {renderToggle('Auto PR', autoPr, setAutoPr, 'Create pull requests on completion')}
           {renderToggle('Code Review Gate', codeReview, setCodeReview, 'Require review before merging')}
         </div>
       </div>
@@ -686,7 +761,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
             onMouseEnter={(e) => { e.currentTarget.style.background = C.surfaceHover; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >
-            \u00D7
+            &times;
           </button>
         </div>
 

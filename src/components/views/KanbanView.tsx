@@ -1,7 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect, useState, useCallback } from 'react';
+import { toast } from 'sonner';
 import { C, STATUS } from '@/lib/theme';
+import { AGENTS } from '@/lib/agents';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { useTaskStore, type TaskEntry, type ToolName } from '@/stores/taskStore';
+import { useUIStore } from '@/stores/uiStore';
+import { useTaskDispatch } from '@/hooks/useTaskDispatch';
+import { EmptyState } from '@/components/shared/EmptyState';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -26,8 +32,9 @@ interface MappedTask {
   startedAt: number | null;
   duration: string | null;
   progress: number | null;
-  branch: string;
   status: TaskEntry['status'];
+  role?: 'master' | 'worker';
+  resultSummary?: string;
 }
 
 /* ── Constants ─────────────────────────────────────────── */
@@ -37,18 +44,6 @@ const COLUMNS: ColumnDef[] = [
   { key: 'running', label: 'In Progress', statusKey: 'running' },
   { key: 'done', label: 'Done', statusKey: 'done' },
 ];
-
-const AGENT_ICON: Record<ToolName, { letter: string; gradient: string }> = {
-  claude: { letter: 'C', gradient: 'linear-gradient(135deg, #6d5efc 0%, #8b5cf6 100%)' },
-  gemini: { letter: 'G', gradient: 'linear-gradient(135deg, #0ea5e9 0%, #38bdf8 100%)' },
-  codex: { letter: 'X', gradient: 'linear-gradient(135deg, #22c55e 0%, #4ade80 100%)' },
-};
-
-const AGENT_LABEL: Record<ToolName, string> = {
-  claude: 'Claude',
-  gemini: 'Gemini',
-  codex: 'Codex',
-};
 
 /* ── Helpers ───────────────────────────────────────────── */
 
@@ -62,10 +57,10 @@ function mapColumn(status: TaskEntry['status']): ColumnKey {
     case 'running':
     case 'retrying':
     case 'falling_back':
+    case 'failed':           // Failed stays in In Progress — user can retry
       return 'running';
     case 'completed':
     case 'review':
-    case 'failed':
       return 'done';
     default:
       return 'queued';
@@ -118,28 +113,85 @@ function Pill({ children, bg, color }: { children: React.ReactNode; bg: string; 
   );
 }
 
+function PulsingDot({ color }: { color: string }) {
+  const [opacity, setOpacity] = useState(1);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setOpacity((prev) => (prev === 1 ? 0.3 : 1));
+    }, 800);
+    return () => clearInterval(interval);
+  }, []);
+  return (
+    <span
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        background: color,
+        display: 'inline-block',
+        flexShrink: 0,
+        opacity,
+        transition: 'opacity 600ms ease',
+      }}
+    />
+  );
+}
+
+function RoleBadge({ role }: { role: 'master' | 'worker' }) {
+  const isMaster = role === 'master';
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 3,
+        padding: '1px 6px',
+        borderRadius: 6,
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+        background: isMaster ? 'rgba(245,158,11,0.15)' : 'rgba(109,94,252,0.12)',
+        color: isMaster ? '#f59e0b' : '#8b5cf6',
+        flexShrink: 0,
+      }}
+    >
+      {isMaster ? '\u2605' : '\u25CB'} {role}
+    </span>
+  );
+}
+
 function TaskCard({
   task,
   selected,
   onClick,
+  onRetry,
 }: {
   task: MappedTask;
   selected: boolean;
   onClick: () => void;
+  onRetry?: (task: MappedTask) => void;
 }) {
-  const agent = AGENT_ICON[task.agent];
+  const agent = AGENTS[task.agent];
+  const isFailed = task.status === 'failed';
+  const isRunning = task.column === 'running' && !isFailed;
+  const isDone = task.column === 'done';
+  const truncatedResult = task.resultSummary
+    ? task.resultSummary.length > 120 ? task.resultSummary.slice(0, 117) + '...' : task.resultSummary
+    : null;
 
   return (
     <button
       type="button"
       onClick={onClick}
+      className="kanban-card-slide"
       style={{
         width: '100%',
         textAlign: 'left',
         padding: 14,
         borderRadius: 16,
-        background: C.surface,
-        border: `1.5px solid ${selected ? C.accent : C.border}`,
+        background: isFailed ? C.redBg : C.surface,
+        border: `1.5px solid ${selected ? C.accent : isFailed ? '#ef4444' + '60' : isRunning ? C.amber + '60' : C.border}`,
         cursor: 'pointer',
         transition: 'all 150ms ease',
         opacity: task.status === 'blocked' ? 0.6 : 1,
@@ -149,22 +201,32 @@ function TaskCard({
         fontFamily: 'Inter, sans-serif',
       }}
     >
-      {/* Title */}
-      <span
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: C.textPrimary,
-          lineHeight: '20px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {task.title}
-      </span>
+      {/* Title row with status indicator */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {isRunning && <PulsingDot color={C.amber} />}
+        {isDone && (
+          <span style={{ fontSize: 12, flexShrink: 0 }}>{'\u2713'}</span>
+        )}
+        {isFailed && (
+          <span style={{ fontSize: 12, flexShrink: 0, color: '#ef4444' }}>{'\u2717'}</span>
+        )}
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: C.textPrimary,
+            lineHeight: '20px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+          }}
+        >
+          {task.title}
+        </span>
+      </div>
 
-      {/* Agent row */}
+      {/* Agent row with role badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div
           style={{
@@ -183,7 +245,8 @@ function TaskCard({
         >
           {agent.letter}
         </div>
-        <span style={{ fontSize: 12, color: C.textSecondary }}>{AGENT_LABEL[task.agent]}</span>
+        <span style={{ fontSize: 12, color: C.textSecondary }}>{AGENTS[task.agent].label}</span>
+        {task.role && <RoleBadge role={task.role} />}
       </div>
 
       {/* Status badges for special states */}
@@ -203,8 +266,41 @@ function TaskCard({
         </Pill>
       )}
 
+      {/* Failed state — retry button */}
+      {isFailed && onRetry && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onRetry(task); }}
+          style={{
+            width: '100%',
+            padding: '7px 12px',
+            borderRadius: 10,
+            background: 'rgba(239,68,68,0.12)',
+            border: `1px solid rgba(239,68,68,0.3)`,
+            color: '#f87171',
+            fontSize: 12,
+            fontWeight: 600,
+            fontFamily: 'Inter, sans-serif',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            transition: 'all 150ms ease',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(239,68,68,0.2)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'rgba(239,68,68,0.12)';
+          }}
+        >
+          {'\u21BB'} Retry
+        </button>
+      )}
+
       {/* Progress bar (running) */}
-      {task.progress !== null && (
+      {task.progress !== null && !isFailed && (
         <div
           style={{
             width: '100%',
@@ -226,32 +322,89 @@ function TaskCard({
         </div>
       )}
 
+      {/* Result summary (done cards) */}
+      {isDone && truncatedResult && (
+        <div
+          style={{
+            fontSize: 11,
+            lineHeight: '16px',
+            color: C.textSecondary,
+            padding: '8px 10px',
+            borderRadius: 10,
+            background: C.panel,
+            border: `1px solid ${C.border}`,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: 64,
+            overflow: 'hidden',
+          }}
+        >
+          {truncatedResult}
+        </div>
+      )}
+
       {/* Duration (done) */}
       {task.duration && (
         <span style={{ fontSize: 11, color: C.textMuted }}>{task.duration}</span>
       )}
-
-      {/* Branch */}
-      <span
-        style={{
-          fontSize: 11,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-          color: C.textMuted,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {task.branch}
-      </span>
     </button>
   );
 }
+
+/* ── Animation styles are defined in index.css ─────────── */
 
 /* ── Main Component ────────────────────────────────────── */
 
 export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
   const tasks = useTaskStore((s) => s.tasks);
+  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  const projectDir = useUIStore((s) => s.projectDir);
+  const { dispatchTask } = useTaskDispatch();
+  const { confirm, ConfirmDialogElement } = useConfirmDialog();
+
+  // Force re-render every 5s so progress bars update
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Retry: confirm, then dispatch a new task, then remove the old failed one
+  const handleRetry = useCallback(async (failedTask: MappedTask) => {
+    if (!projectDir) return;
+    const taskState = useTaskStore.getState();
+    const original = taskState.tasks.get(failedTask.id);
+    if (!original) return;
+
+    const ok = await confirm({
+      title: 'Retry Task',
+      description: `Retry "${original.description}" with ${AGENTS[original.toolName].label}?`,
+      confirmLabel: 'Retry',
+    });
+    if (!ok) return;
+
+    taskState.addOrchestrationLog({
+      agent: original.toolName,
+      level: 'info',
+      message: `Retrying: ${original.description}`,
+    });
+
+    const newTaskId = await dispatchTask(original.prompt, projectDir, original.toolName);
+
+    if (newTaskId) {
+      useTaskStore.getState().removeTask(failedTask.id);
+      const ts = useTaskStore.getState();
+      const newTask = ts.tasks.get(newTaskId);
+      if (newTask) {
+        const newTasks = new Map(ts.tasks);
+        newTasks.set(newTask.taskId, { ...newTask, role: 'worker' });
+        useTaskStore.setState({ tasks: newTasks });
+      }
+      toast.success('Task retried');
+    } else {
+      toast.error('Retry failed');
+    }
+  }, [projectDir, dispatchTask, confirm]);
 
   const mapped: MappedTask[] = useMemo(() => {
     const result: MappedTask[] = [];
@@ -270,8 +423,9 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
         startedAt: task.startedAt,
         duration: isDone && task.startedAt ? formatDuration(elapsed) : null,
         progress: isRunning ? Math.min(95, Math.floor((elapsed / 120_000) * 100)) : null,
-        branch: `wc/${task.toolName}-${task.taskId.slice(0, 6)}`,
         status: task.status,
+        role: task.role,
+        resultSummary: task.resultSummary,
       });
     }
     return result;
@@ -285,7 +439,21 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
     return map;
   }, [mapped]);
 
+  if (tasks.size === 0 && orchestrationPhase === 'idle') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+        <EmptyState
+          icon={'\uD83D\uDCCB'}
+          title="No tasks yet"
+          description="Launch an orchestration to get started"
+        />
+      </div>
+    );
+  }
+
   return (
+    <>
+    {ConfirmDialogElement}
     <div
       style={{
         display: 'flex',
@@ -344,7 +512,13 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
                       borderRadius: 14,
                     }}
                   >
-                    No tasks
+                    {orchestrationPhase === 'idle'
+                      ? 'No tasks'
+                      : col.key === 'queued'
+                        ? 'Waiting for sub-tasks...'
+                        : col.key === 'running' && orchestrationPhase === 'decomposing'
+                          ? 'Decomposing task...'
+                          : 'No tasks'}
                   </div>
                 ) : (
                   items.map((task) => (
@@ -353,6 +527,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
                       task={task}
                       selected={selectedTask === task.id}
                       onClick={() => setSelectedTask(task.id)}
+                      onRetry={task.status === 'failed' ? handleRetry : undefined}
                     />
                   ))
                 )}
@@ -362,5 +537,6 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
         );
       })}
     </div>
+    </>
   );
 }

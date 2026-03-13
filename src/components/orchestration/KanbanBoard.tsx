@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import { CheckCircle2, Clock3, GitMerge, Loader2, Play, XCircle } from 'lucide-react';
 import type { ToolName } from '../../stores/taskStore';
+import { AGENTS } from '@/lib/agents';
 
 export type KanbanStatus = 'backlog' | 'in_progress' | 'review' | 'merge_waiting' | 'done' | 'failed';
 
@@ -83,12 +84,6 @@ const AGENT_STYLES: Record<ToolName, { dot: string; badge: string }> = {
   },
 };
 
-const AGENT_LABELS: Record<ToolName, string> = {
-  claude: 'Claude',
-  gemini: 'Gemini',
-  codex: 'Codex',
-};
-
 function formatElapsed(startedAt?: number, completedAt?: number): string {
   if (!startedAt) return '';
   const end = completedAt ?? Date.now();
@@ -143,14 +138,14 @@ function KanbanCard({ task, onTaskClick, editable, availableAgents, onAgentChang
           >
             {availableAgents.map((agent) => (
               <option key={agent} value={agent}>
-                {AGENT_LABELS[agent]}
+                {AGENTS[agent].label}
               </option>
             ))}
           </select>
         ) : (
           <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] ${agentStyle.badge}`}>
             <span className={`size-2 rounded-full ${agentStyle.dot}`} />
-            <span>{AGENT_LABELS[task.assignedAgent]}</span>
+            <span>{AGENTS[task.assignedAgent].label}</span>
           </div>
         )}
 

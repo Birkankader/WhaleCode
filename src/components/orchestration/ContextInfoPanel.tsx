@@ -1,5 +1,6 @@
 import { RefreshCw } from 'lucide-react';
 import type { ToolName, AgentContextInfo } from '../../stores/taskStore';
+import { AGENTS } from '@/lib/agents';
 
 const AGENT_COLORS: Record<ToolName, string> = {
   claude: 'text-violet-400',
@@ -11,12 +12,6 @@ const AGENT_BAR_COLORS: Record<ToolName, { input: string; output: string }> = {
   claude: { input: 'bg-violet-600', output: 'bg-violet-400' },
   gemini: { input: 'bg-blue-600', output: 'bg-blue-400' },
   codex: { input: 'bg-emerald-600', output: 'bg-emerald-400' },
-};
-
-const AGENT_LABELS: Record<ToolName, string> = {
-  claude: 'Claude',
-  gemini: 'Gemini',
-  codex: 'Codex',
 };
 
 function formatTokens(n: number | null): string {
@@ -64,7 +59,7 @@ export function ContextInfoPanel({ contexts, onRefresh, className = '' }: Contex
         return (
           <div key={tool} className="flex items-center gap-1.5 min-w-0">
             <span className={`text-xs font-medium shrink-0 ${AGENT_COLORS[tool]}`}>
-              {AGENT_LABELS[tool]}
+              {AGENTS[tool].label}
             </span>
 
             {/* Token bar */}

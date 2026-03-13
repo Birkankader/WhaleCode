@@ -1,5 +1,5 @@
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::adapters::{AskUserResponse, ToolAdapter};
 use crate::context::store::ContextStore;
@@ -13,6 +13,28 @@ use crate::router::orchestrator::{
 };
 use crate::router::retry::{RetryConfig, should_retry, retry_delay_ms, select_fallback_agent};
 use crate::state::{AppState, ProcessStatus};
+use tokio::time::{timeout, Duration};
+
+// Timeout defaults (overridden by AppConfig at runtime)
+const MASTER_TIMEOUT_MS: u64 = 600_000; // 10 minutes
+const WORKER_TIMEOUT_MS: u64 = 300_000; // 5 minutes
+
+// ---------------------------------------------------------------------------
+// Structured orchestrator events
+// ---------------------------------------------------------------------------
+
+/// Sends a structured JSON event through the channel.
+/// Events are prefixed with `@@orch::` so the frontend can distinguish
+/// them from regular NDJSON process output.
+fn emit_orch(channel: &Channel<OutputEvent>, event_type: &str, data: serde_json::Value) {
+    let mut obj = match data {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert("type".to_string(), serde_json::Value::String(event_type.to_string()));
+    let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+    channel.send(OutputEvent::Stdout(format!("@@orch::{}", json))).ok();
+}
 
 // ---------------------------------------------------------------------------
 // Helper: get adapter by agent name
@@ -319,6 +341,16 @@ pub async fn dispatch_orchestrated_task(
     // spawn_interactive / send_to_process which accept &AppState, not tauri::State.
     let state_ref: &AppState = &state;
 
+    // Load config for timeouts/retries
+    let app_config = {
+        let app_data_dir = app_handle.path().app_data_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        crate::config::AppConfig::load(&app_data_dir)
+    };
+    let master_timeout = Duration::from_secs(app_config.master_timeout_minutes as u64 * 60);
+    let worker_timeout = Duration::from_secs(app_config.worker_timeout_minutes as u64 * 60);
+    let cleanup_delay = Duration::from_secs(app_config.plan_cleanup_delay_secs as u64);
+
     let mut plan = Orchestrator::create_plan(&prompt, &config);
 
     // Store plan
@@ -335,9 +367,9 @@ pub async fn dispatch_orchestrated_task(
     ));
 
     // === Phase 1: Decompose (master agent) ===
-    on_event.send(OutputEvent::Stdout(
-        "[orchestrator] Phase 1: Spawning master agent...".to_string()
-    )).ok();
+    emit_orch(&on_event, "phase_changed", serde_json::json!({
+        "phase": "decomposing", "detail": "Spawning master agent"
+    }));
 
     let adapter = get_adapter(&config.master_agent)?;
     // API key is optional — CLIs like Claude Code use their own OAuth auth.
@@ -369,9 +401,9 @@ pub async fn dispatch_orchestrated_task(
     // Reserve tool slot for master agent before spawning
     process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
 
-    on_event.send(OutputEvent::Stdout(
-        "[orchestrator] Phase 1: Decomposing task via master agent...".to_string()
-    )).ok();
+    emit_orch(&on_event, "phase_changed", serde_json::json!({
+        "phase": "decomposing", "detail": "Decomposing task via master agent"
+    }));
 
     // Determine spawn strategy:
     // - Claude supports interactive mode (piped stdin + EOF triggers processing)
@@ -394,10 +426,12 @@ pub async fn dispatch_orchestrated_task(
 
         if let Err(e) = process::manager::send_to_process(state_ref, &task_id, &decompose_prompt) {
             let _ = kill_process(state_ref, &task_id).await;
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
             return Err(e);
         }
         if let Err(e) = process::manager::close_stdin(state_ref, &task_id) {
             let _ = kill_process(state_ref, &task_id).await;
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
             return Err(e);
         }
         task_id
@@ -432,11 +466,21 @@ pub async fn dispatch_orchestrated_task(
     }
 
     // Wait for master's turn to complete (detects result event or process exit)
-    let output_lines = match wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()).await {
-        Ok(lines) => lines,
-        Err(e) => {
+    let output_lines = match timeout(
+        master_timeout,
+        wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()),
+    ).await {
+        Ok(Ok(lines)) => lines,
+        Ok(Err(e)) => {
             let _ = kill_process(state_ref, &master_task_id).await;
             return Err(e);
+        }
+        Err(_) => {
+            let _ = kill_process(state_ref, &master_task_id).await;
+            emit_orch(&on_event, "master_timeout", serde_json::json!({
+                "timeout_minutes": app_config.master_timeout_minutes
+            }));
+            return Err("Master agent timed out".to_string());
         }
     };
 
@@ -466,27 +510,85 @@ pub async fn dispatch_orchestrated_task(
                 "Decomposition failed: could not parse JSON from master agent output".to_string(),
                 MessageType::TaskFailed,
             ));
+            // Schedule plan cleanup after configured delay
+            let cleanup_state = state_ref.clone();
+            let cleanup_plan_id = plan.task_id.clone();
+            let cleanup_delay_inner = cleanup_delay;
+            tokio::spawn(async move {
+                tokio::time::sleep(cleanup_delay_inner).await;
+                if let Ok(mut guard) = cleanup_state.lock() {
+                    guard.orchestration_plans.remove(&cleanup_plan_id);
+                }
+            });
             return Ok(plan);
         }
     };
 
-    // Store decomposition
+    // Store decomposition and enter approval phase
     plan.decomposition = Some(decomposition.clone());
-    plan.phase = OrchestrationPhase::Executing;
+    plan.phase = OrchestrationPhase::AwaitingApproval;
     {
         let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
             p.decomposition = plan.decomposition.clone();
-            p.phase = OrchestrationPhase::Executing;
+            p.phase = OrchestrationPhase::AwaitingApproval;
         }
     }
 
+    // Send task_assigned events so frontend can show the approval screen
+    for sub_def in &decomposition.tasks {
+        emit_orch(&on_event, "task_assigned", serde_json::json!({
+            "agent": sub_def.agent,
+            "description": sub_def.description
+        }));
+    }
+
+    // Emit awaiting_approval event
+    emit_orch(&on_event, "phase_changed", serde_json::json!({
+        "phase": "awaiting_approval",
+        "detail": format!("{} sub-tasks ready for review", decomposition.tasks.len()),
+        "task_count": decomposition.tasks.len()
+    }));
+
+    // Wait for user approval (frontend sets phase to Executing via approve_orchestration)
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let phase = {
+            let inner = state_ref.lock().map_err(|e| e.to_string())?;
+            inner.orchestration_plans.get(&plan.task_id)
+                .map(|p| p.phase.clone())
+        };
+        match phase {
+            Some(OrchestrationPhase::Executing) => break,
+            Some(OrchestrationPhase::Failed) | None => {
+                let _ = kill_process(state_ref, &master_task_id).await;
+                return Err("Orchestration cancelled during approval".to_string());
+            }
+            _ => {} // Keep waiting
+        }
+    }
+
+    // Re-read decomposition in case user modified it during approval
+    let decomposition = {
+        let inner = state_ref.lock().map_err(|e| e.to_string())?;
+        inner.orchestration_plans.get(&plan.task_id)
+            .and_then(|p| p.decomposition.clone())
+            .ok_or_else(|| "Decomposition lost during approval".to_string())?
+    };
+    plan.decomposition = Some(decomposition.clone());
+    plan.phase = OrchestrationPhase::Executing;
+
     // === Phase 2: Execute (workers with question routing) ===
 
-    // Build sub-tasks from decomposition and send assignment messages FIRST.
-    // The frontend creates tasks from "Assigned to" messages, so these must
-    // arrive before the "Phase 2: Executing" message which transitions them
-    // from pending → running.
+    // For non-interactive (single-shot) masters, the master process has already
+    // exited after Phase 1. Clean it up so its tool slot is free for workers.
+    // Interactive masters (Claude) stay alive for question routing.
+    if !use_interactive {
+        let _ = kill_process(state_ref, &master_task_id).await;
+    }
+
+    // Build sub-tasks from decomposition. Task assignment messages were already
+    // sent during approval phase, so we only build internal state here.
     plan.sub_tasks.clear();
     let mut task_channels: Vec<(String, String, String)> = Vec::new(); // (sub_task_id, agent, prompt)
 
@@ -501,15 +603,6 @@ pub async fn dispatch_orchestrated_task(
             parent_task_id: plan.task_id.clone(),
             depends_on: sub_def.depends_on.clone(),
         });
-
-        emit_messenger(&app_handle, MessengerMessage::system(
-            &plan.task_id,
-            format!("Assigned to {}: {}", sub_def.agent, sub_def.description),
-            MessageType::TaskAssigned,
-        ));
-        on_event.send(OutputEvent::Stdout(
-            format!("Assigned to {}: {}", sub_def.agent, sub_def.description)
-        )).ok();
 
         task_channels.push((sub_task_id, sub_def.agent.clone(), sub_def.prompt.clone()));
     }
@@ -531,27 +624,30 @@ pub async fn dispatch_orchestrated_task(
         Ok(w) => w,
         Err(e) => {
             // DAG error — fall back to single wave (all tasks in parallel)
-            on_event.send(OutputEvent::Stdout(
-                format!("[orchestrator] DAG warning: {}. Running all tasks in one wave.", e)
-            )).ok();
+            emit_orch(&on_event, "info", serde_json::json!({
+                "message": format!("DAG warning: {}. Running all tasks in one wave.", e)
+            }));
             vec![dag_nodes.iter().map(|n| n.id.clone()).collect()]
         }
     };
 
     // Now send Phase 2 message — frontend handler transitions pending tasks to running
-    on_event.send(OutputEvent::Stdout(format!(
-        "[orchestrator] Phase 2: Executing {} sub-tasks in {} wave(s)...",
-        decomposition.tasks.len(),
-        waves.len(),
-    ))).ok();
+    emit_orch(&on_event, "phase_changed", serde_json::json!({
+        "phase": "executing",
+        "detail": format!("{} sub-tasks in {} wave(s)", decomposition.tasks.len(), waves.len()),
+        "task_count": decomposition.tasks.len(),
+        "wave_count": waves.len()
+    }));
 
     let mut worker_task_ids: Vec<(String, String)> = Vec::new(); // (process_task_id, agent)
     let mut failed_dag_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (wave_idx, wave_ids) in waves.iter().enumerate() {
-        on_event.send(OutputEvent::Stdout(
-            format!("[orchestrator] Wave {}/{}: {} task(s)", wave_idx + 1, waves.len(), wave_ids.len())
-        )).ok();
+        emit_orch(&on_event, "wave_progress", serde_json::json!({
+            "current": wave_idx + 1,
+            "total": waves.len(),
+            "task_count": wave_ids.len()
+        }));
 
         let mut wave_task_ids: Vec<(String, String, String)> = Vec::new(); // (process_task_id, agent, dag_id)
 
@@ -567,9 +663,9 @@ pub async fn dispatch_orchestrated_task(
 
             let has_failed_dep = dag_node.depends_on.iter().any(|dep| failed_dag_ids.contains(dep));
             if has_failed_dep {
-                on_event.send(OutputEvent::Stdout(
-                    format!("[orchestrator] Skipping {} (dependency failed)", dag_id)
-                )).ok();
+                emit_orch(&on_event, "task_skipped", serde_json::json!({
+                    "dag_id": dag_id, "reason": "dependency_failed"
+                }));
                 failed_dag_ids.insert(dag_id.clone());
                 continue;
             }
@@ -595,9 +691,9 @@ pub async fn dispatch_orchestrated_task(
                         format!("Failed to dispatch to {}: {}", agent, e),
                         MessageType::TaskFailed,
                     ));
-                    on_event.send(OutputEvent::Stdout(
-                        format!("[orchestrator] Failed to dispatch {}: {}", dag_id, e)
-                    )).ok();
+                    emit_orch(&on_event, "dispatch_error", serde_json::json!({
+                        "dag_id": dag_id, "error": e.to_string()
+                    }));
                     failed_dag_ids.insert(dag_id.clone());
                 }
             }
@@ -623,17 +719,29 @@ pub async fn dispatch_orchestrated_task(
             loop {
                 let worker_adapter = get_adapter(&current_agent)?;
 
-                let exit_code = wait_for_worker_with_questions(
-                    state_ref,
-                    &current_task_id,
-                    &current_agent,
-                    worker_adapter.as_ref(),
-                    &master_task_id,
-                    adapter.as_ref(),
-                    &plan.task_id,
-                    &app_handle,
-                    &on_event,
-                ).await;
+                let exit_code = match timeout(
+                    worker_timeout,
+                    wait_for_worker_with_questions(
+                        state_ref,
+                        &current_task_id,
+                        &current_agent,
+                        worker_adapter.as_ref(),
+                        &master_task_id,
+                        adapter.as_ref(),
+                        &plan.task_id,
+                        &app_handle,
+                        &on_event,
+                    ),
+                ).await {
+                    Ok(code) => code,
+                    Err(_) => {
+                        let _ = kill_process(state_ref, &current_task_id).await;
+                        emit_orch(&on_event, "worker_timeout", serde_json::json!({
+                            "dag_id": dag_id, "timeout_minutes": app_config.worker_timeout_minutes
+                        }));
+                        -1 // treat as failure
+                    }
+                };
 
                 last_exit_code = exit_code;
                 last_output_summary = get_process_output_summary(&current_task_id, state_ref);
@@ -645,14 +753,33 @@ pub async fn dispatch_orchestrated_task(
 
                 failure_reason = Some(truncate(&last_output_summary, 200).to_string());
 
+                // Check if failure was due to rate limiting
+                let was_rate_limited = {
+                    let state_guard = state_ref.lock().map_err(|e| e.to_string())?;
+                    if let Some(entry) = state_guard.processes.get(&current_task_id) {
+                        let rl_adapter = get_adapter(&current_agent)?;
+                        entry.output_lines.iter().any(|line| rl_adapter.detect_rate_limit(line).is_some())
+                    } else {
+                        false
+                    }
+                };
+
+                if was_rate_limited {
+                    let rate_limit_delay = 30_000u64; // 30 seconds
+                    emit_orch(&on_event, "rate_limited", serde_json::json!({
+                        "dag_id": dag_id, "wait_seconds": 30
+                    }));
+                    tokio::time::sleep(Duration::from_millis(rate_limit_delay)).await;
+                }
+
                 // Try retry with same agent
                 if should_retry(attempt, &retry_config) {
                     attempt += 1;
                     let delay = retry_delay_ms(attempt - 1, &retry_config);
-                    on_event.send(OutputEvent::Stdout(
-                        format!("[orchestrator] Retrying {} (attempt {}/{}) after {}ms...",
-                            dag_id, attempt, retry_config.max_retries, delay)
-                    )).ok();
+                    emit_orch(&on_event, "task_retrying", serde_json::json!({
+                        "dag_id": dag_id, "attempt": attempt,
+                        "max_retries": retry_config.max_retries, "delay_ms": delay
+                    }));
 
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 
@@ -677,9 +804,9 @@ pub async fn dispatch_orchestrated_task(
                             continue;
                         }
                         Err(e) => {
-                            on_event.send(OutputEvent::Stdout(
-                                format!("[orchestrator] Retry dispatch failed for {}: {}", dag_id, e)
-                            )).ok();
+                            emit_orch(&on_event, "dispatch_error", serde_json::json!({
+                                "dag_id": dag_id, "error": e.to_string(), "context": "retry"
+                            }));
                             break;
                         }
                     }
@@ -687,10 +814,9 @@ pub async fn dispatch_orchestrated_task(
 
                 // Retries exhausted — try fallback agent
                 if let Some(fallback) = select_fallback_agent(&current_agent, &available_agents) {
-                    on_event.send(OutputEvent::Stdout(
-                        format!("[orchestrator] Falling back: {} reassigned from {} to {}",
-                            dag_id, current_agent, fallback)
-                    )).ok();
+                    emit_orch(&on_event, "task_fallback", serde_json::json!({
+                        "dag_id": dag_id, "from_agent": current_agent, "to_agent": &fallback
+                    }));
                     current_agent = fallback;
                     attempt = 0; // Reset attempt counter for new agent
 
@@ -714,9 +840,9 @@ pub async fn dispatch_orchestrated_task(
                             continue;
                         }
                         Err(e) => {
-                            on_event.send(OutputEvent::Stdout(
-                                format!("[orchestrator] Fallback dispatch failed for {}: {}", dag_id, e)
-                            )).ok();
+                            emit_orch(&on_event, "dispatch_error", serde_json::json!({
+                                "dag_id": dag_id, "error": e.to_string(), "context": "fallback"
+                            }));
                             break;
                         }
                     }
@@ -765,13 +891,13 @@ pub async fn dispatch_orchestrated_task(
                 ),
                 msg_type,
             ));
-            on_event.send(OutputEvent::Stdout(
-                format!("{} (exit {}): {}",
-                    if last_exit_code == 0 { "Completed" } else { "Failed" },
-                    last_exit_code,
-                    truncate(&last_output_summary, 200),
-                )
-            )).ok();
+            emit_orch(&on_event, if last_exit_code == 0 { "task_completed" } else { "task_failed" },
+                serde_json::json!({
+                    "dag_id": dag_id,
+                    "exit_code": last_exit_code,
+                    "summary": truncate(&last_output_summary, 200)
+                })
+            );
         }
     }
 
@@ -785,6 +911,16 @@ pub async fn dispatch_orchestrated_task(
             "All worker tasks failed".to_string(),
             MessageType::TaskFailed,
         ));
+        // Schedule plan cleanup after configured delay
+        let cleanup_state = state_ref.clone();
+        let cleanup_plan_id = plan.task_id.clone();
+        let cleanup_delay_inner = cleanup_delay;
+        tokio::spawn(async move {
+            tokio::time::sleep(cleanup_delay_inner).await;
+            if let Ok(mut guard) = cleanup_state.lock() {
+                guard.orchestration_plans.remove(&cleanup_plan_id);
+            }
+        });
         return Ok(plan);
     }
 
@@ -799,9 +935,9 @@ pub async fn dispatch_orchestrated_task(
 
     // === Phase 3: Review (new single-shot process) ===
     // The master process from Phase 1 exits after EOF, so we spawn a fresh process.
-    on_event.send(OutputEvent::Stdout(
-        "[orchestrator] Phase 3: Master reviewing results...".to_string()
-    )).ok();
+    emit_orch(&on_event, "phase_changed", serde_json::json!({
+        "phase": "reviewing", "detail": "Master reviewing results"
+    }));
     plan.phase = OrchestrationPhase::Reviewing;
     update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Reviewing)?;
 
@@ -841,7 +977,19 @@ pub async fn dispatch_orchestrated_task(
     };
 
     // Wait for review process to complete (single-shot with -p exits on its own)
-    let review_lines = wait_for_turn_complete(state_ref, &review_task_id, adapter.as_ref()).await;
+    let review_lines = match timeout(
+        master_timeout,
+        wait_for_turn_complete(state_ref, &review_task_id, adapter.as_ref()),
+    ).await {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = kill_process(state_ref, &review_task_id).await;
+            emit_orch(&on_event, "review_timeout", serde_json::json!({
+                "timeout_minutes": app_config.master_timeout_minutes
+            }));
+            Err("Review agent timed out".to_string())
+        }
+    };
 
     match review_lines {
         Ok(lines) => {
@@ -882,6 +1030,16 @@ pub async fn dispatch_orchestrated_task(
         "Orchestration completed".to_string(),
         MessageType::TaskCompleted,
     ));
+
+    // Schedule plan cleanup after configured delay
+    let cleanup_state = state_ref.clone();
+    let cleanup_plan_id = plan.task_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(cleanup_delay).await;
+        if let Ok(mut guard) = cleanup_state.lock() {
+            guard.orchestration_plans.remove(&cleanup_plan_id);
+        }
+    });
 
     Ok(plan)
 }
@@ -963,10 +1121,9 @@ async fn wait_for_worker_with_questions(
         for line in current_lines.iter().skip(lines_seen) {
             if let Some(question) = worker_adapter.detect_question(line) {
                 // Route question to master
-                on_event.send(OutputEvent::Stdout(format!(
-                    "[orchestrator] {} asks: {}",
-                    worker_agent, question.content
-                ))).ok();
+                emit_orch(on_event, "question", serde_json::json!({
+                    "agent": worker_agent, "content": question.content, "plan_id": plan_id
+                }));
 
                 let relay_prompt = Orchestrator::build_question_relay_prompt(
                     worker_agent,
@@ -1030,10 +1187,9 @@ async fn wait_for_worker_with_questions(
                             }
                         } else {
                             // Master answered directly — send answer to worker's stdin
-                            on_event.send(OutputEvent::Stdout(format!(
-                                "[orchestrator] Master answered {}'s question",
-                                worker_agent
-                            ))).ok();
+                            emit_orch(on_event, "question_answered", serde_json::json!({
+                                "agent": worker_agent
+                            }));
                             let _ = process::manager::send_to_process(
                                 state,
                                 worker_task_id,
@@ -1071,6 +1227,39 @@ async fn wait_for_worker_with_questions(
         },
         None => -1,
     }
+}
+
+// ===========================================================================
+// approve_orchestration command
+// ===========================================================================
+
+/// Approve the decomposed task list and start Phase 2 execution.
+/// Optionally accepts modified tasks (agent reassignments, removals).
+#[tauri::command]
+#[specta::specta]
+pub async fn approve_orchestration(
+    state: tauri::State<'_, AppState>,
+    plan_id: String,
+    modified_tasks: Option<Vec<crate::router::orchestrator::SubTaskDef>>,
+) -> Result<(), String> {
+    let state_ref: &AppState = &state;
+    let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+    let plan = inner.orchestration_plans.get_mut(&plan_id)
+        .ok_or_else(|| format!("No orchestration plan found for: {}", plan_id))?;
+
+    if plan.phase != OrchestrationPhase::AwaitingApproval {
+        return Err(format!("Plan is not awaiting approval (current phase: {:?})", plan.phase));
+    }
+
+    // Apply modifications if provided
+    if let Some(tasks) = modified_tasks {
+        if let Some(ref mut decomp) = plan.decomposition {
+            decomp.tasks = tasks;
+        }
+    }
+
+    plan.phase = OrchestrationPhase::Executing;
+    Ok(())
 }
 
 // ===========================================================================

@@ -41,6 +41,18 @@ const MIGRATIONS: &[M] = &[
         CREATE INDEX IF NOT EXISTS idx_task_outcomes_agent ON task_outcomes(agent);
         CREATE INDEX IF NOT EXISTS idx_task_outcomes_type ON task_outcomes(task_type);",
     ),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS orchestration_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent_count INTEGER NOT NULL,
+            duration_secs INTEGER NOT NULL,
+            success INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_orch_history_task ON orchestration_history(task_id);
+        CREATE INDEX IF NOT EXISTS idx_orch_history_created ON orchestration_history(created_at);",
+    ),
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite_migration::Error> {

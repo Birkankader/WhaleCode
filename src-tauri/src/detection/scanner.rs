@@ -141,11 +141,19 @@ async fn check_claude_auth() -> AuthStatus {
     AuthStatus::NeedsAuth
 }
 
-/// Check Gemini auth: keychain API key or GEMINI_API_KEY / GOOGLE_API_KEY env var.
+/// Check Gemini auth: keychain API key, ~/.gemini/oauth_creds.json, or env vars.
 async fn check_gemini_auth() -> AuthStatus {
     // Check keychain
     if gemini_keychain::has_gemini_api_key() {
         return AuthStatus::Authenticated;
+    }
+
+    // Check for Gemini CLI OAuth credentials (~/.gemini/oauth_creds.json)
+    if let Ok(home) = std::env::var("HOME") {
+        let oauth_creds = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
+        if oauth_creds.exists() {
+            return AuthStatus::Authenticated;
+        }
     }
 
     // Check env vars

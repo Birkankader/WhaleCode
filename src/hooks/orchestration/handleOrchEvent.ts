@@ -1,0 +1,173 @@
+import { useTaskStore, type ToolName, type TaskStatus } from '../../stores/taskStore';
+
+/* ── Structured orchestrator event handler ───────────────── */
+
+export interface OrchEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+export function handleOrchEvent(
+  ev: OrchEvent,
+  masterAgent: ToolName,
+  subTaskQueue: string[],
+  dagToFrontendId: Map<string, string>,
+  dagCounter: number,
+) {
+  const store = useTaskStore.getState();
+  type LogLevel = 'info' | 'success' | 'warn' | 'cmd' | 'error';
+  const log = (level: LogLevel, message: string) =>
+    store.addOrchestrationLog({ agent: masterAgent, level, message });
+
+  switch (ev.type) {
+    case 'phase_changed': {
+      const phase = ev.phase as string;
+      if (phase === 'decomposing') {
+        store.setOrchestrationPhase('decomposing');
+        log('cmd', `Phase 1: ${ev.detail || 'Decomposing'}`);
+      } else if (phase === 'awaiting_approval') {
+        store.setOrchestrationPhase('awaiting_approval');
+        log('info', `${ev.task_count} sub-tasks ready for approval`);
+      } else if (phase === 'executing') {
+        store.setOrchestrationPhase('executing');
+        // Move pending worker tasks to running
+        const newTasks = new Map(store.tasks);
+        for (const [id, task] of newTasks) {
+          if (task.status === 'pending' && task.role === 'worker') {
+            newTasks.set(id, { ...task, status: 'running', startedAt: Date.now() });
+          }
+        }
+        useTaskStore.setState({ tasks: newTasks });
+        log('cmd', `Phase 2: Executing ${ev.task_count ?? ''} sub-tasks in ${ev.wave_count ?? ''} wave(s)`);
+      } else if (phase === 'reviewing') {
+        store.setOrchestrationPhase('reviewing');
+        log('cmd', `Phase 3: ${ev.detail || 'Reviewing'}`);
+      }
+      break;
+    }
+
+    case 'task_assigned': {
+      const agent = ev.agent as string;
+      const desc = ev.description as string;
+      const subId = crypto.randomUUID();
+      const phase2Already = store.orchestrationPhase === 'executing';
+      store.addTask({
+        taskId: subId,
+        prompt: desc,
+        toolName: agent as ToolName,
+        status: phase2Already ? 'running' : 'pending',
+        description: desc.length > 60 ? desc.slice(0, 57) + '...' : desc,
+        startedAt: phase2Already ? Date.now() : null,
+        dependsOn: null,
+        role: 'worker',
+      });
+      subTaskQueue.push(subId);
+      dagToFrontendId.set(`t${dagCounter + 1}`, subId);
+      log('info', `Assigned to ${agent}: ${desc}`);
+      break;
+    }
+
+    case 'task_completed':
+    case 'task_failed': {
+      const status: TaskStatus = ev.type === 'task_completed' ? 'completed' : 'failed';
+      const targetId = subTaskQueue.shift();
+      if (targetId) {
+        store.updateTaskStatus(targetId, status);
+      }
+      const summary = (ev.summary as string) || '';
+      log(
+        ev.type === 'task_completed' ? 'success' : 'error',
+        `${ev.type === 'task_completed' ? 'Completed' : 'Failed'} (exit ${ev.exit_code}): ${summary.slice(0, 200)}`,
+      );
+      break;
+    }
+
+    case 'wave_progress': {
+      log('info', `\u27D0 Wave ${ev.current}/${ev.total}`);
+      break;
+    }
+
+    case 'task_skipped': {
+      const dagId = ev.dag_id as string;
+      const frontendId = dagToFrontendId.get(dagId);
+      if (frontendId) {
+        store.updateTaskStatus(frontendId, 'blocked');
+        const qIdx = subTaskQueue.indexOf(frontendId);
+        if (qIdx !== -1) subTaskQueue.splice(qIdx, 1);
+      }
+      log('warn', `Skipping ${dagId}: ${ev.reason}`);
+      break;
+    }
+
+    case 'task_retrying': {
+      const dagId = ev.dag_id as string;
+      const frontendId = dagToFrontendId.get(dagId);
+      if (frontendId) {
+        store.updateTaskStatus(frontendId, 'retrying');
+        const qIdx = subTaskQueue.indexOf(frontendId);
+        if (qIdx !== -1) subTaskQueue.splice(qIdx, 1);
+        subTaskQueue.push(frontendId);
+      }
+      log('info', `Retrying ${dagId} (attempt ${ev.attempt}/${ev.max_retries})`);
+      break;
+    }
+
+    case 'task_fallback': {
+      const dagId = ev.dag_id as string;
+      const newAgent = ev.to_agent as string;
+      const frontendId = dagToFrontendId.get(dagId);
+      if (frontendId) {
+        const task = store.tasks.get(frontendId);
+        if (task) {
+          const newTasks = new Map(store.tasks);
+          newTasks.set(frontendId, { ...task, toolName: newAgent as ToolName, status: 'falling_back' });
+          useTaskStore.setState({ tasks: newTasks });
+        }
+      }
+      log('info', `Falling back: ${dagId} reassigned from ${ev.from_agent} to ${newAgent}`);
+      break;
+    }
+
+    case 'rate_limited': {
+      log('warn', `Rate limited on ${ev.dag_id} — waiting ${ev.wait_seconds}s`);
+      break;
+    }
+
+    case 'master_timeout':
+    case 'worker_timeout':
+    case 'review_timeout': {
+      log('error', `${ev.type.replace('_', ' ')} after ${ev.timeout_minutes} minutes`);
+      break;
+    }
+
+    case 'question': {
+      log('info', `${ev.agent} asks: ${ev.content}`);
+      // Set pending question so the UI shows the answer prompt
+      if (ev.plan_id) {
+        store.setPendingQuestion({
+          questionId: `q-${Date.now()}`,
+          sourceAgent: ev.agent as string,
+          content: ev.content as string,
+          planId: ev.plan_id as string,
+        });
+      }
+      break;
+    }
+
+    case 'question_answered': {
+      log('info', `Master answered ${ev.agent}'s question`);
+      store.setPendingQuestion(null);
+      break;
+    }
+
+    case 'dispatch_error': {
+      log('error', `Dispatch failed for ${ev.dag_id}: ${ev.error}`);
+      break;
+    }
+
+    case 'info': {
+      log('info', ev.message as string);
+      break;
+    }
+  }
+}

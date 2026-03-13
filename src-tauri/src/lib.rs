@@ -1,5 +1,6 @@
 mod adapters;
 mod commands;
+mod config;
 mod credentials;
 mod detection;
 mod ipc;
@@ -10,19 +11,26 @@ mod prompt;
 mod router;
 mod worktree;
 mod state;
+mod git;
+mod fs_explorer;
+mod error;
 
 use commands::{
     cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
     delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key, detect_agents,
     dispatch_orchestrated_task, dispatch_task, get_agent_context_info, get_context_summary,
-    get_recent_changes, get_task_count, get_worktree_diff, has_claude_api_key, has_codex_api_key,
+    get_orchestration_history, get_recent_changes, get_task_count, get_worktree_diff, has_claude_api_key, has_codex_api_key,
     has_gemini_api_key, list_worktrees, merge_worktree, optimize_prompt, pause_process,
     record_task_completion_cmd, resume_process, set_claude_api_key, set_codex_api_key,
     set_gemini_api_key, spawn_claude_task, spawn_codex_task, spawn_gemini_task, spawn_process,
     send_to_process, start_stream, suggest_tool, validate_claude_result, validate_codex_result,
     validate_gemini_result, cleanup_completed_processes,
     clear_orchestration_context, answer_user_question,
-    approve_decomposition, reject_decomposition,
+    approve_decomposition, reject_decomposition, approve_orchestration,
+    git_status, git_stage_files, git_unstage_files, git_commit,
+    git_diff_file, git_log, git_pull, git_push,
+    list_directory, read_file, write_file,
+    get_config, set_config,
 };
 use state::AppState;
 use tauri::Manager;
@@ -72,7 +80,22 @@ pub fn run() {
         answer_user_question,
         approve_decomposition,
         reject_decomposition,
+        approve_orchestration,
         detect_agents,
+        git_status,
+        git_stage_files,
+        git_unstage_files,
+        git_commit,
+        git_diff_file,
+        git_log,
+        git_pull,
+        git_push,
+        list_directory,
+        read_file,
+        write_file,
+        get_config,
+        set_config,
+        get_orchestration_history,
     ]);
 
     #[cfg(debug_assertions)]

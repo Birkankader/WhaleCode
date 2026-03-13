@@ -35,3 +35,13 @@ pub struct FileChangeRecord {
     pub summary: Option<String>,
     pub created_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct OrchestrationRecord {
+    pub id: i32,
+    pub task_id: String,
+    pub agent_count: u32,
+    pub duration_secs: u32,
+    pub success: bool,
+    pub created_at: String,
+}

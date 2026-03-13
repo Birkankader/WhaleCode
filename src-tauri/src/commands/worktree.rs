@@ -157,6 +157,16 @@ pub async fn merge_worktree(
             }
         }
 
+        // Dry-run merge check: simulate `git merge --no-commit --no-ff` to catch
+        // any conflicts that the tree-level check might miss (e.g., index-level issues).
+        let dry_run_conflicts = conflict::dry_run_merge_check(&project_path, &branch_name)?;
+        if !dry_run_conflicts.is_empty() {
+            return Err(format!(
+                "Merge blocked (dry-run): conflicts detected in files: {}",
+                dry_run_conflicts.join(", ")
+            ));
+        }
+
         // Choose merge strategy based on accepted_files
         if let Some(ref files) = accepted_files {
             // Selective merge: only apply accepted files

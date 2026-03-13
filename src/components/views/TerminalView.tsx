@@ -1,11 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { C, STATUS, LOG_COLOR } from '@/lib/theme';
+import { AGENTS } from '@/lib/agents';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
+import { useProcessStore, registerProcessOutput, unregisterProcessOutput } from '@/hooks/useProcess';
+import type { OutputEvent } from '@/bindings';
 import { commands } from '@/bindings';
+import { EmptyState } from '@/components/shared/EmptyState';
 
 /* ── Types ─────────────────────────────────────────────── */
+
+type TerminalMode = 'orchestration' | 'standalone';
 
 interface TerminalViewProps {
   devMode: boolean;
@@ -17,19 +23,13 @@ interface MergeQueueItem {
   status: 'ready' | 'merging' | 'merged';
 }
 
+interface StandaloneOutput {
+  id: string;
+  text: string;
+  stream: 'stdout' | 'stderr' | 'system';
+}
+
 /* ── Constants ─────────────────────────────────────────── */
-
-const AGENT_ICON: Record<ToolName, { letter: string; gradient: string }> = {
-  claude: { letter: 'C', gradient: 'linear-gradient(135deg, #6d5efc 0%, #8b5cf6 100%)' },
-  gemini: { letter: 'G', gradient: 'linear-gradient(135deg, #0ea5e9 0%, #38bdf8 100%)' },
-  codex: { letter: 'X', gradient: 'linear-gradient(135deg, #22c55e 0%, #4ade80 100%)' },
-};
-
-const AGENT_LABEL: Record<ToolName, string> = {
-  claude: 'Claude',
-  gemini: 'Gemini',
-  codex: 'Codex',
-};
 
 /* ── Helpers ───────────────────────────────────────────── */
 
@@ -54,6 +54,66 @@ export function TerminalView({ devMode }: TerminalViewProps) {
   const activePlan = useTaskStore((s) => s.activePlan);
   const [devInput, setDevInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const standaloneScrollRef = useRef<HTMLDivElement>(null);
+
+  // Terminal mode: orchestration (log view) or standalone (process output)
+  const [mode, setMode] = useState<TerminalMode>('orchestration');
+  const [standaloneLines, setStandaloneLines] = useState<StandaloneOutput[]>([]);
+  const prevPhaseRef = useRef(orchestrationPhase);
+
+  // Auto-switch to standalone when orchestration completes/fails
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = orchestrationPhase;
+    if (
+      (prev === 'executing' || prev === 'reviewing') &&
+      (orchestrationPhase === 'completed' || orchestrationPhase === 'failed')
+    ) {
+      setMode('standalone');
+    }
+    // Auto-switch to orchestration when a new orchestration starts
+    if (prev === 'idle' && orchestrationPhase === 'decomposing') {
+      setMode('orchestration');
+    }
+  }, [orchestrationPhase]);
+
+  // Subscribe to active process output for standalone mode
+  const activeProcessId = useProcessStore((s) => s.activeProcessId);
+  useEffect(() => {
+    if (mode !== 'standalone' || !activeProcessId) return;
+    setStandaloneLines([]);
+    const handler = (event: OutputEvent) => {
+      let text = '';
+      let stream: StandaloneOutput['stream'] = 'stdout';
+      if (event.event === 'stdout') {
+        text = event.data;
+        stream = 'stdout';
+      } else if (event.event === 'stderr') {
+        text = event.data;
+        stream = 'stderr';
+      } else if (event.event === 'error') {
+        text = `Error: ${event.data}`;
+        stream = 'stderr';
+      } else if (event.event === 'exit') {
+        text = `Process exited with code ${event.data}`;
+        stream = 'system';
+      }
+      if (!text) return;
+      setStandaloneLines((prev) => [
+        ...prev.slice(-999),
+        { id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, stream },
+      ]);
+    };
+    registerProcessOutput(activeProcessId, handler);
+    return () => unregisterProcessOutput(activeProcessId);
+  }, [mode, activeProcessId]);
+
+  // Auto-scroll standalone output
+  useEffect(() => {
+    if (standaloneScrollRef.current) {
+      standaloneScrollRef.current.scrollTop = standaloneScrollRef.current.scrollHeight;
+    }
+  }, [standaloneLines.length]);
 
   // Auto-scroll to bottom on new logs
   useEffect(() => {
@@ -81,19 +141,42 @@ export function TerminalView({ devMode }: TerminalViewProps) {
 
   // Derive agent statuses from orchestration phase + tasks
   const isRunning = orchestrationPhase !== 'idle' && orchestrationPhase !== 'failed';
-  const masterAgent = (activePlan?.master_agent as ToolName) || 'claude';
+  const orchestrationPlan = useTaskStore((s) => s.orchestrationPlan);
 
-  const agents = new Map<ToolName, { status: string }>();
+  // Master agent: prefer orchestrationPlan (set at launch) over activePlan (set after completion)
+  const masterAgent: ToolName = (orchestrationPlan?.masterAgent as ToolName)
+    || (activePlan?.master_agent as ToolName)
+    || 'claude';
+
+  // Build role-aware agent status from orchestration config + task state
+  const configuredAgents = new Set<ToolName>();
+  if (orchestrationPlan) {
+    for (const a of orchestrationPlan.agents) {
+      configuredAgents.add(a.toolName);
+    }
+  }
+
+  const agents = new Map<ToolName, { status: string; role: string }>();
   for (const [, task] of tasks) {
     const existing = agents.get(task.toolName);
     if (!existing || task.status === 'running') {
-      agents.set(task.toolName, { status: task.status });
+      const role = task.toolName === masterAgent ? 'master' : 'worker';
+      agents.set(task.toolName, { status: task.status, role });
     }
   }
-  // Default agents with orchestration-aware status
-  if (!agents.has('claude')) agents.set('claude', { status: isRunning && masterAgent === 'claude' ? 'running' : 'idle' });
-  if (!agents.has('gemini')) agents.set('gemini', { status: isRunning && masterAgent === 'gemini' ? 'running' : 'idle' });
-  if (!agents.has('codex')) agents.set('codex', { status: isRunning && masterAgent === 'codex' ? 'running' : 'idle' });
+  // Default agents with orchestration-aware status and roles
+  const allAgents: ToolName[] = ['claude', 'gemini', 'codex'];
+  for (const name of allAgents) {
+    if (!agents.has(name)) {
+      const isMaster = name === masterAgent;
+      const isInSession = configuredAgents.has(name) || !isRunning;
+      const role = isMaster ? 'master' : isInSession ? 'worker' : '';
+      const status = isRunning && isMaster ? 'running'
+        : isRunning && isInSession ? 'waiting'
+        : 'idle';
+      agents.set(name, { status, role });
+    }
+  }
 
   // Build merge queue from completed tasks
   const mergeQueue: MergeQueueItem[] = [];
@@ -120,7 +203,16 @@ export function TerminalView({ devMode }: TerminalViewProps) {
     return C.textMuted;
   };
 
-  const agentStatusLabel = (status: string): string => {
+  const agentStatusLabel = (status: string, role: string): string => {
+    if (status === 'running' && role === 'master') return 'Thinking';
+    if (status === 'running' && role === 'worker') return 'Working';
+    if (status === 'waiting' && role === 'worker') {
+      // Show phase-aware standby message for workers
+      if (orchestrationPhase === 'decomposing') return 'Waiting for plan';
+      if (orchestrationPhase === 'executing') return 'Queued';
+      return 'Standby';
+    }
+    if (status === 'waiting') return 'Standby';
     const s = STATUS[status];
     return s ? s.label : 'Idle';
   };
@@ -167,8 +259,10 @@ export function TerminalView({ devMode }: TerminalViewProps) {
         <ScrollArea style={{ flex: 1 }}>
           <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {Array.from(agents.entries()).map(([name, info]) => {
-              const icon = AGENT_ICON[name];
+              const icon = AGENTS[name];
               const isAgentRunning = info.status === 'running';
+              const isWaiting = info.status === 'waiting';
+              const notInSession = isRunning && !info.role;
               return (
                 <div
                   key={name}
@@ -181,6 +275,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                     background: isAgentRunning ? C.accentSoft : C.surface,
                     border: `1px solid ${isAgentRunning ? C.accent + '60' : C.border}`,
                     transition: 'all 0.3s',
+                    opacity: notInSession ? 0.4 : 1,
                   }}
                 >
                   <div
@@ -203,13 +298,29 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div
                       style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: C.textPrimary,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
                         lineHeight: '16px',
                       }}
                     >
-                      {AGENT_LABEL[name]}
+                      <span style={{ fontSize: 12, fontWeight: 600, color: C.textPrimary }}>
+                        {AGENTS[name].label}
+                      </span>
+                      {info.role && isRunning && (
+                        <span style={{
+                          fontSize: 8,
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          padding: '1px 5px',
+                          borderRadius: 4,
+                          background: info.role === 'master' ? C.accent + '30' : C.borderStrong,
+                          color: info.role === 'master' ? C.accentText : C.textMuted,
+                        }}>
+                          {info.role}
+                        </span>
+                      )}
                     </div>
                     <div
                       style={{
@@ -220,7 +331,6 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                       }}
                     >
                       {isAgentRunning ? (
-                        /* Thinking animation — three pulsing dots */
                         <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                           {[0, 1, 2].map((i) => (
                             <span
@@ -236,7 +346,14 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                             />
                           ))}
                           <span style={{ fontSize: 10, color: C.accentText, marginLeft: 3, fontWeight: 500 }}>
-                            Thinking
+                            {agentStatusLabel(info.status, info.role)}
+                          </span>
+                        </div>
+                      ) : isWaiting ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.amber, flexShrink: 0, opacity: 0.6 }} />
+                          <span style={{ fontSize: 10, color: C.amber, opacity: 0.8 }}>
+                            {agentStatusLabel(info.status, info.role)}
                           </span>
                         </div>
                       ) : (
@@ -251,7 +368,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                             }}
                           />
                           <span style={{ fontSize: 10, color: C.textSecondary }}>
-                            {agentStatusLabel(info.status)}
+                            {agentStatusLabel(info.status, info.role)}
                           </span>
                         </>
                       )}
@@ -274,13 +391,13 @@ export function TerminalView({ devMode }: TerminalViewProps) {
           background: '#08080f',
         }}
       >
-        {/* macOS dots header */}
+        {/* Header with mode tabs */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 8,
-            padding: '12px 16px',
+            padding: '8px 16px',
             borderBottom: `1px solid ${C.border}`,
             background: C.panel,
           }}
@@ -288,79 +405,139 @@ export function TerminalView({ devMode }: TerminalViewProps) {
           <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#ef4444' }} />
           <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#eab308' }} />
           <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#22c55e' }} />
-          <span
-            style={{
-              marginLeft: 12,
-              fontSize: 12,
-              fontWeight: 600,
-              color: C.textSecondary,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-            }}
-          >
-            orchestration-output
-          </span>
+          <div style={{ marginLeft: 12, display: 'flex', gap: 2, background: C.surface, borderRadius: 8, padding: 2 }}>
+            {(['orchestration', 'standalone'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                style={{
+                  padding: '4px 12px',
+                  borderRadius: 6,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  background: mode === m ? C.accent + '30' : 'transparent',
+                  color: mode === m ? C.accentText : C.textMuted,
+                  transition: 'all 0.15s',
+                }}
+              >
+                {m === 'orchestration' ? 'Orchestration' : 'Standalone'}
+              </button>
+            ))}
+          </div>
+          {mode === 'standalone' && activeProcessId && (
+            <span style={{ fontSize: 10, color: C.textMuted, marginLeft: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+              pid:{activeProcessId.slice(0, 8)}
+            </span>
+          )}
         </div>
 
-        {/* Log lines */}
-        <ScrollArea ref={scrollRef} style={{ flex: 1, padding: 16 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {logs.length === 0 && (
-              <div style={{ color: C.textMuted, fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', padding: '6px 0' }}>
-                Waiting for orchestration events...
-              </div>
-            )}
-            {logs.map((line) => {
-              const dotColor = LOG_COLOR[line.level] ?? C.textSecondary;
-              const icon = AGENT_ICON[line.agent];
-              return (
+        {/* Orchestration mode: log lines */}
+        {mode === 'orchestration' && (
+          <ScrollArea ref={scrollRef} style={{ flex: 1, padding: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {logs.length === 0 && (
+                <EmptyState
+                  icon={'\uD83D\uDCBB'}
+                  title="No output yet"
+                  description="Terminal output will appear when a task starts"
+                />
+              )}
+              {logs.map((line) => {
+                const dotColor = LOG_COLOR[line.level] ?? C.textSecondary;
+                const icon = AGENTS[line.agent];
+                return (
+                  <div
+                    key={line.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 10,
+                      padding: '6px 0',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontSize: 12,
+                      lineHeight: '20px',
+                    }}
+                  >
+                    <span style={{ color: C.textMuted, flexShrink: 0, width: 62 }}>
+                      {line.timestamp}
+                    </span>
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: '50%',
+                        background: dotColor,
+                        flexShrink: 0,
+                        marginTop: 6,
+                      }}
+                    />
+                    <span
+                      style={{
+                        width: 18,
+                        height: 18,
+                        borderRadius: 5,
+                        background: icon.gradient,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 9,
+                        fontWeight: 700,
+                        color: '#fff',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {icon.letter}
+                    </span>
+                    <span style={{ color: C.textPrimary }}>{line.message}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        )}
+
+        {/* Standalone mode: raw process output */}
+        {mode === 'standalone' && (
+          <ScrollArea ref={standaloneScrollRef} style={{ flex: 1, padding: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {standaloneLines.length === 0 && !activeProcessId && (
+                <EmptyState
+                  icon={'\u2328\uFE0F'}
+                  title="No active process"
+                  description="Start a task to see its output here"
+                />
+              )}
+              {standaloneLines.length === 0 && activeProcessId && (
+                <EmptyState
+                  icon={'\u23F3'}
+                  title="Waiting for output"
+                  description="Process is running, output will appear shortly"
+                />
+              )}
+              {standaloneLines.map((line) => (
                 <div
                   key={line.id}
                   style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 10,
-                    padding: '6px 0',
                     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                     fontSize: 12,
                     lineHeight: '20px',
+                    padding: '1px 0',
+                    color: line.stream === 'stderr' ? C.red
+                      : line.stream === 'system' ? C.textMuted
+                      : C.textPrimary,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
                   }}
                 >
-                  <span style={{ color: C.textMuted, flexShrink: 0, width: 62 }}>
-                    {line.timestamp}
-                  </span>
-                  <span
-                    style={{
-                      width: 7,
-                      height: 7,
-                      borderRadius: '50%',
-                      background: dotColor,
-                      flexShrink: 0,
-                      marginTop: 6,
-                    }}
-                  />
-                  <span
-                    style={{
-                      width: 18,
-                      height: 18,
-                      borderRadius: 5,
-                      background: icon.gradient,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 9,
-                      fontWeight: 700,
-                      color: '#fff',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {icon.letter}
-                  </span>
-                  <span style={{ color: C.textPrimary }}>{line.message}</span>
+                  {line.text}
                 </div>
-              );
-            })}
-          </div>
-        </ScrollArea>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
 
         {/* Dev mode input bar */}
         {devMode && (
@@ -384,25 +561,49 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                   const input = devInput.trim();
                   setDevInput('');
 
-                  // Find active process to send to
+                  // Find an active running process to send to.
+                  // Priority: 1) master process (if still alive), 2) any running process
                   const plan = useTaskStore.getState().activePlan;
-                  const processId = plan?.master_process_id;
+                  let processId = plan?.master_process_id ?? null;
+                  let agentName: ToolName = (plan?.master_agent as ToolName) || 'claude';
+
+                  // Check if the master process is still running, if not find another
+                  const processes = useProcessStore.getState().processes;
+                  if (processId && (!processes.has(processId) || processes.get(processId)?.status !== 'running')) {
+                    processId = null; // Master is dead, look for alternatives
+                  }
+
+                  // Find the most recent running process if master is unavailable
+                  if (!processId) {
+                    let latestStart = 0;
+                    for (const [id, proc] of processes) {
+                      if (proc.status === 'running' && proc.startedAt > latestStart) {
+                        processId = id;
+                        latestStart = proc.startedAt;
+                        // Extract agent name from cmd prefix (e.g., "claude: ...")
+                        const cmdAgent = proc.cmd.split(':')[0] as ToolName;
+                        if (['claude', 'gemini', 'codex'].includes(cmdAgent)) {
+                          agentName = cmdAgent;
+                        }
+                      }
+                    }
+                  }
 
                   if (!processId) {
-                    addLog({ agent: 'claude', level: 'error', message: 'No active process to send command to' });
+                    addLog({ agent: agentName, level: 'warn', message: 'No running process. All tasks have completed. Use "+ New Task" to start a new one.' });
                     return;
                   }
 
                   // Echo the command in terminal
-                  addLog({ agent: (plan.master_agent as ToolName) || 'claude', level: 'cmd', message: `$ ${input}` });
+                  addLog({ agent: agentName, level: 'cmd', message: `$ ${input}` });
 
                   try {
                     const result = await commands.sendToProcess(processId, input);
                     if (result.status === 'error') {
-                      addLog({ agent: 'claude', level: 'error', message: `Send failed: ${result.error}` });
+                      addLog({ agent: agentName, level: 'error', message: `Send failed: ${result.error}` });
                     }
                   } catch (err) {
-                    addLog({ agent: 'claude', level: 'error', message: `Send failed: ${err}` });
+                    addLog({ agent: agentName, level: 'error', message: `Send failed: ${err}` });
                   }
                 }
               }}
@@ -454,7 +655,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
             )}
             {mergeQueue.map((item) => {
               const ms = mergeStatusStyle(item.status);
-              const icon = AGENT_ICON[item.agent];
+              const icon = AGENTS[item.agent];
               return (
                 <div
                   key={item.branch}

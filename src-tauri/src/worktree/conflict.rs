@@ -80,6 +80,79 @@ pub fn detect_conflicts(
     })
 }
 
+/// Perform a dry-run merge check using `git merge --no-commit --no-ff` via Command.
+///
+/// This is a more thorough conflict check than `detect_conflicts` because it
+/// simulates the actual merge operation git would perform, including index-level
+/// checks. After the check, any merge state is cleaned up via `git merge --abort`.
+///
+/// Returns a list of conflicting file paths, or an empty vec if clean.
+pub fn dry_run_merge_check(
+    repo_path: &Path,
+    branch_name: &str,
+) -> Result<Vec<String>, String> {
+    use std::process::Command;
+
+    // Run git merge --no-commit --no-ff to simulate the merge
+    let output = Command::new("git")
+        .args(["merge", "--no-commit", "--no-ff", branch_name])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to run git merge dry-run: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if output.status.success() {
+        // Merge succeeded without conflicts — abort to restore original state
+        let _ = Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(repo_path)
+            .output();
+        // Also try reset in case --abort doesn't work (merge was successful)
+        let _ = Command::new("git")
+            .args(["reset", "--merge"])
+            .current_dir(repo_path)
+            .output();
+        return Ok(Vec::new());
+    }
+
+    // Parse conflicting files from the output
+    let mut conflicting_files = Vec::new();
+    let combined = format!("{}\n{}", stdout, stderr);
+    for line in combined.lines() {
+        // Git outputs "CONFLICT (content): Merge conflict in <file>"
+        if let Some(rest) = line.strip_prefix("CONFLICT") {
+            if let Some(idx) = rest.find("Merge conflict in ") {
+                let file = rest[idx + "Merge conflict in ".len()..].trim();
+                if !file.is_empty() {
+                    conflicting_files.push(file.to_string());
+                }
+            }
+            // Also handle "CONFLICT (modify/delete): <file> deleted in ..."
+            // and other CONFLICT patterns where the file appears after ):
+            else if let Some(after_paren) = rest.strip_prefix(" (") {
+                if let Some(close_idx) = after_paren.find("): ") {
+                    let after = &after_paren[close_idx + 3..];
+                    // The file path is typically the first word
+                    let file = after.split_whitespace().next().unwrap_or("");
+                    if !file.is_empty() && !conflicting_files.contains(&file.to_string()) {
+                        conflicting_files.push(file.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Abort the merge to restore original state
+    let _ = Command::new("git")
+        .args(["merge", "--abort"])
+        .current_dir(repo_path)
+        .output();
+
+    Ok(conflicting_files)
+}
+
 /// Auto-commit all uncommitted changes in a worktree with a standard message.
 ///
 /// Returns Ok(true) if changes were committed, Ok(false) if the worktree was clean.

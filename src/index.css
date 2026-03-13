@@ -5,6 +5,29 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* WhaleCode design tokens */
+  --color-wc-bg: #09090f;
+  --color-wc-sidebar: #0c0c14;
+  --color-wc-panel: #0f0f1a;
+  --color-wc-surface: #13131f;
+  --color-wc-surface-hover: #191926;
+  --color-wc-border: #1c1c2e;
+  --color-wc-border-strong: #252538;
+  --color-wc-accent: #6366f1;
+  --color-wc-accent-soft: #1e1b4b;
+  --color-wc-accent-text: #a5b4fc;
+  --color-wc-text-primary: #e2e8f0;
+  --color-wc-text-secondary: #8b8fa8;
+  --color-wc-text-muted: #4b4d66;
+  --color-wc-green: #4ade80;
+  --color-wc-green-bg: #052e16;
+  --color-wc-green-border: #14532d;
+  --color-wc-amber: #f59e0b;
+  --color-wc-amber-bg: #1c1000;
+  --color-wc-amber-border: #78350f;
+  --color-wc-red: #f87171;
+  --color-wc-red-bg: #1f0000;
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -145,6 +168,39 @@
     color: hsl(var(--muted-foreground));
     pointer-events: none;
   }
+}
+
+/* Shiki overrides for dark theme consistency */
+.shiki-container .shiki {
+  background-color: transparent !important;
+}
+.shiki-container .shiki code {
+  counter-reset: line;
+}
+.shiki-container .shiki code .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 2.5em;
+  margin-right: 1em;
+  text-align: right;
+  color: #4b4d66;
+  font-size: 11px;
+}
+
+/* Kanban card slide-in animation */
+@keyframes kanbanSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.kanban-card-slide {
+  animation: kanbanSlideIn 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 ::-webkit-scrollbar {

@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 
-use super::models::{ContextEvent, FileChangeRecord};
+use super::models::{ContextEvent, FileChangeRecord, OrchestrationRecord};
 use crate::adapters::claude::ClaudeStreamEvent;
 
 /// Record a task completion event with associated file changes in a single transaction.
@@ -150,6 +150,48 @@ pub fn query_agent_stats(
             row.get::<_, f64>(1)?,
             row.get::<_, f64>(2)?,
         ))
+    })?;
+
+    rows.collect()
+}
+
+/// Record orchestration stats for a completed orchestration run.
+pub fn record_orchestration_stats(
+    conn: &Connection,
+    task_id: &str,
+    agent_count: u32,
+    duration_secs: u64,
+    success: bool,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO orchestration_history (task_id, agent_count, duration_secs, success) VALUES (?1, ?2, ?3, ?4)",
+        params![task_id, agent_count as i64, duration_secs as i64, success as i32],
+    )?;
+    Ok(())
+}
+
+/// Get recent orchestration history records, ordered by created_at DESC.
+pub fn get_orchestration_history(
+    conn: &Connection,
+    limit: u32,
+) -> Result<Vec<OrchestrationRecord>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, agent_count, duration_secs, success, created_at
+         FROM orchestration_history
+         ORDER BY created_at DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = stmt.query_map(params![limit], |row| {
+        let success_int: i32 = row.get(4)?;
+        Ok(OrchestrationRecord {
+            id: row.get::<_, i64>(0)? as i32,
+            task_id: row.get(1)?,
+            agent_count: row.get::<_, i64>(2)? as u32,
+            duration_secs: row.get::<_, i64>(3)? as u32,
+            success: success_int != 0,
+            created_at: row.get(5)?,
+        })
     })?;
 
     rows.collect()

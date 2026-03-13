@@ -1,7 +1,7 @@
 use serde::Serialize;
 use specta::Type;
 
-use crate::context::models::FileChangeRecord;
+use crate::context::models::{FileChangeRecord, OrchestrationRecord};
 use crate::context::queries;
 use crate::context::store::ContextStore;
 
@@ -67,6 +67,16 @@ pub fn get_recent_changes(
     store: tauri::State<'_, ContextStore>,
 ) -> Result<Vec<FileChangeRecord>, String> {
     store.with_conn(|conn| queries::get_recent_file_changes(conn, &project_dir, limit))
+}
+
+/// Get orchestration history records.
+#[tauri::command]
+#[specta::specta]
+pub fn get_orchestration_history(
+    limit: u32,
+    store: tauri::State<'_, ContextStore>,
+) -> Result<Vec<OrchestrationRecord>, String> {
+    store.get_orchestration_history(limit)
 }
 
 /// Get a summary of recent context events with their file paths.

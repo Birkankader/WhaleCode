@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware';
 
 export type ToolName = 'claude' | 'gemini' | 'codex';
 export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review' | 'blocked' | 'retrying' | 'falling_back';
@@ -12,6 +13,8 @@ export interface TaskEntry {
   description: string;       // prompt truncated to 60 chars for display
   startedAt: number | null;  // Date.now() when dispatched
   dependsOn: string | null;  // taskId of dependency (optional, manual)
+  role?: 'master' | 'worker'; // Role in orchestration
+  resultSummary?: string;     // Agent's final response/output summary
 }
 
 export interface AgentConfig {
@@ -57,6 +60,7 @@ interface TaskState {
   addTask: (entry: TaskEntry) => void;
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   updateTaskAgent: (taskId: string, toolName: ToolName) => void;
+  updateTaskResult: (taskId: string, resultSummary: string) => void;
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;
@@ -74,7 +78,48 @@ interface TaskState {
   clearOrchestrationLogs: () => void;
 }
 
-export const useTaskStore = create<TaskState>((set, get) => ({
+// Custom storage that handles Map serialization for the tasks field
+type PersistedTaskSlice = Pick<TaskState, 'tasks' | 'orchestrationPhase' | 'orchestrationLogs'>;
+
+interface SerializedTaskSlice {
+  tasks: [string, TaskEntry][];
+  orchestrationPhase: OrchestrationPhase;
+  orchestrationLogs: TaskState['orchestrationLogs'];
+}
+
+const taskStorage: PersistStorage<PersistedTaskSlice> = {
+  getItem: (name) => {
+    const raw = localStorage.getItem(name);
+    if (!raw) return null;
+    try {
+      const parsed: StorageValue<SerializedTaskSlice> = JSON.parse(raw);
+      return {
+        ...parsed,
+        state: {
+          ...parsed.state,
+          tasks: new Map(parsed.state.tasks),
+        },
+      };
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name, value) => {
+    const serialized: StorageValue<SerializedTaskSlice> = {
+      ...value,
+      state: {
+        ...value.state,
+        tasks: [...value.state.tasks.entries()],
+      },
+    };
+    localStorage.setItem(name, JSON.stringify(serialized));
+  },
+  removeItem: (name) => {
+    localStorage.removeItem(name);
+  },
+};
+
+export const useTaskStore = create<TaskState>()(persist((set, get) => ({
   tasks: new Map(),
   orchestrationPlan: null,
   agentContexts: new Map(),
@@ -114,6 +159,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (!task) return state;
       const newTasks = new Map(state.tasks);
       newTasks.set(taskId, { ...task, toolName });
+      return { tasks: newTasks };
+    });
+  },
+
+  updateTaskResult: (taskId, resultSummary) => {
+    set((state) => {
+      const task = state.tasks.get(taskId);
+      if (!task) return state;
+      const newTasks = new Map(state.tasks);
+      newTasks.set(taskId, { ...task, resultSummary });
       return { tasks: newTasks };
     });
   },
@@ -172,4 +227,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }));
   },
   clearOrchestrationLogs: () => set({ orchestrationLogs: [] }),
+}), {
+  name: 'whalecode-tasks',
+  storage: taskStorage,
+  partialize: (state) => ({
+    tasks: state.tasks,
+    orchestrationPhase: state.orchestrationPhase,
+    orchestrationLogs: state.orchestrationLogs.slice(-100),
+  }),
 }));

@@ -29,6 +29,9 @@ export const STATUS: Record<string, { dot: string; label: string; bg: string; te
   queued: { dot: C.textMuted, label: "Queued", bg: "#0f0f1a", text: C.textSecondary },
   review: { dot: C.accentText, label: "Review", bg: C.accentSoft, text: C.accentText },
   orchestrating: { dot: "#8b5cf6", label: "Orchestrating", bg: C.accentSoft, text: C.accentText },
+  failed: { dot: C.red, label: "Failed", bg: C.redBg, text: C.red },
+  blocked: { dot: C.red, label: "Blocked", bg: C.redBg, text: C.red },
+  retrying: { dot: C.amber, label: "Retrying", bg: C.amberBg, text: C.amber },
   idle: { dot: "#4b5563", label: "Idle", bg: "#0f0f1a", text: "#6b7280" },
 };
 

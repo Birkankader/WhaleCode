@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Columns, Layers } from 'lucide-react';
 import type { ToolName } from '../../stores/taskStore';
+import { AGENTS } from '@/lib/agents';
 import { useProcessStore, type ProcessStatus } from '../../hooks/useProcess';
 import { OutputConsole } from '../terminal/OutputConsole';
 
@@ -20,12 +21,6 @@ const AGENT_COLORS: Record<ToolName, { tab: string; activeTab: string; badge: st
     activeTab: 'bg-emerald-600/20 text-emerald-300 border-emerald-500',
     badge: 'bg-emerald-600/30 text-emerald-300',
   },
-};
-
-const AGENT_LABELS: Record<ToolName, string> = {
-  claude: 'Claude',
-  gemini: 'Gemini',
-  codex: 'Codex',
 };
 
 function statusDot(status: ProcessStatus): string {
@@ -108,7 +103,7 @@ export function MultiAgentOutput({ taskIds }: MultiAgentOutputProps) {
               {proc && (
                 <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(proc.status)}`} />
               )}
-              <span>{AGENT_LABELS[tool]}</span>
+              <span>{AGENTS[tool].label}</span>
               {proc && (
                 <span className={`px-1 py-0 rounded text-[10px] ${colors.badge}`}>
                   {statusText(proc.status)}
@@ -156,7 +151,7 @@ export function MultiAgentOutput({ taskIds }: MultiAgentOutputProps) {
                   {/* Agent header */}
                   <div className={`flex items-center gap-1.5 px-2 py-1 bg-zinc-900/50 border-b border-zinc-800`}>
                     <span className={`text-xs font-medium ${colors.tab.split(' ')[0]}`}>
-                      {AGENT_LABELS[tool]}
+                      {AGENTS[tool].label}
                     </span>
                     {processes.get(taskId) && (
                       <span className={`w-1.5 h-1.5 rounded-full ${statusDot(processes.get(taskId)!.status)}`} />
