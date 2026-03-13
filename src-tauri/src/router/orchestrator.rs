@@ -120,8 +120,12 @@ impl Orchestrator {
              Available agents:\n{}\n\n\
              Task: {}\n\n\
              Return format (strict JSON, no markdown fences):\n\
-             {{\"tasks\": [{{\"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt for this agent>\", \"description\": \"<short description>\"}}]}}\n\n\
+             {{\"tasks\": [{{\"id\": \"t1\", \"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt>\", \"description\": \"<short description>\", \"depends_on\": [\"t0\"]}}]}}\n\n\
              Rules:\n\
+             - Give each task a short id like t1, t2, t3\n\
+             - Use depends_on to specify which task IDs must complete before this task can start\n\
+             - Tasks with no dependencies should have an empty depends_on array\n\
+             - Tasks that CAN run in parallel SHOULD have independent dependencies\n\
              - Assign each sub-task to the most appropriate agent\n\
              - Each agent can receive multiple tasks\n\
              - Prompts should be self-contained and detailed\n\
@@ -299,6 +303,7 @@ mod tests {
         assert!(prompt.contains("claude"));
         assert!(prompt.contains("refactor auth"));
         assert!(prompt.contains("JSON"));
+        assert!(prompt.contains("depends_on"));
     }
 
     #[test]
