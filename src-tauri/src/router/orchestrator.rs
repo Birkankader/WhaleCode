@@ -79,6 +79,12 @@ pub struct WorkerResult {
     pub agent: String,
     pub exit_code: i32,
     pub output_summary: String, // last N lines of output
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(default)]
+    pub original_agent: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +319,9 @@ mod tests {
             agent: "gemini".to_string(),
             exit_code: 0,
             output_summary: "Analysis complete".to_string(),
+            retry_count: 0,
+            original_agent: None,
+            failure_reason: None,
         }];
         let prompt = Orchestrator::build_review_prompt("fix bugs", &results);
         assert!(prompt.contains("fix bugs"));
@@ -444,6 +453,9 @@ mod tests {
             agent: "gemini".to_string(),
             exit_code: 0,
             output_summary: "Done".to_string(),
+            retry_count: 0,
+            original_agent: None,
+            failure_reason: None,
         }];
         let rv = Orchestrator::build_review_prompt("fix auth", &results);
         assert!(rv.contains("fix auth") && rv.contains("Done"));
@@ -476,5 +488,21 @@ mod tests {
         assert_eq!(pq.question.source_agent, "gemini");
         assert_eq!(pq.question.content, "Need clarification");
         assert!(matches!(pq.question.question_type, crate::adapters::QuestionType::Clarification));
+    }
+
+    #[test]
+    fn test_worker_result_with_retry_info() {
+        let result = WorkerResult {
+            task_id: "t1".to_string(),
+            agent: "gemini".to_string(),
+            exit_code: 0,
+            output_summary: "Done".to_string(),
+            retry_count: 1,
+            original_agent: Some("claude".to_string()),
+            failure_reason: Some("Rate limited".to_string()),
+        };
+        assert_eq!(result.retry_count, 1);
+        assert_eq!(result.original_agent.unwrap(), "claude");
+        assert_eq!(result.failure_reason.unwrap(), "Rate limited");
     }
 }

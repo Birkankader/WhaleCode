@@ -607,6 +607,9 @@ pub async fn dispatch_orchestrated_task(
                 agent: agent.clone(),
                 exit_code,
                 output_summary: output_summary.clone(),
+                retry_count: 0,
+                original_agent: None,
+                failure_reason: None,
             };
             plan.worker_results.push(worker_result);
 
