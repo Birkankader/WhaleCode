@@ -1,6 +1,7 @@
 pub mod dag;
 pub mod models;
 pub mod orchestrator;
+pub mod retry;
 
 use models::RoutingSuggestion;
 
