@@ -11,6 +11,7 @@ use crate::router::orchestrator::{
     AgentContextInfo, DecompositionResult, Orchestrator, OrchestratorConfig,
     OrchestrationPlan, OrchestrationPhase, PendingQuestion, WorkerResult,
 };
+use crate::router::retry::{RetryConfig, should_retry, retry_delay_ms, select_fallback_agent};
 use crate::state::{AppState, ProcessStatus};
 
 // ---------------------------------------------------------------------------
@@ -584,55 +585,161 @@ pub async fn dispatch_orchestrated_task(
             }
         }
 
-        // Wait for all tasks in this wave to complete
+        // Wait for all tasks in this wave to complete (with retry/fallback)
+        let retry_config = RetryConfig::default();
+        let available_agents: Vec<&str> = decomposition.tasks.iter()
+            .map(|t| t.agent.as_str())
+            .collect::<std::collections::HashSet<&str>>()
+            .into_iter()
+            .collect();
+
         for (task_id, agent, dag_id) in &wave_task_ids {
-            let worker_adapter = get_adapter(agent)?;
+            let mut current_task_id = task_id.clone();
+            let mut current_agent = agent.clone();
+            let original_agent = agent.clone();
+            let mut attempt = 0u32;
+            let mut last_exit_code;
+            let mut last_output_summary;
+            let mut failure_reason: Option<String> = None;
 
-            let exit_code = wait_for_worker_with_questions(
-                state_ref,
-                task_id,
-                agent,
-                worker_adapter.as_ref(),
-                &master_task_id,
-                adapter.as_ref(),
-                &plan.task_id,
-                &app_handle,
-                &on_event,
-            ).await;
+            loop {
+                let worker_adapter = get_adapter(&current_agent)?;
 
-            let output_summary = get_process_output_summary(task_id, state_ref);
+                let exit_code = wait_for_worker_with_questions(
+                    state_ref,
+                    &current_task_id,
+                    &current_agent,
+                    worker_adapter.as_ref(),
+                    &master_task_id,
+                    adapter.as_ref(),
+                    &plan.task_id,
+                    &app_handle,
+                    &on_event,
+                ).await;
 
+                last_exit_code = exit_code;
+                last_output_summary = get_process_output_summary(&current_task_id, state_ref);
+
+                if exit_code == 0 {
+                    // Success!
+                    break;
+                }
+
+                failure_reason = Some(truncate(&last_output_summary, 200).to_string());
+
+                // Try retry with same agent
+                if should_retry(attempt, &retry_config) {
+                    attempt += 1;
+                    let delay = retry_delay_ms(attempt - 1, &retry_config);
+                    on_event.send(OutputEvent::Stdout(
+                        format!("[orchestrator] Retrying {} (attempt {}/{}) after {}ms...",
+                            dag_id, attempt, retry_config.max_retries, delay)
+                    )).ok();
+
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+
+                    // Re-dispatch same task to same agent
+                    let idx = match dag_id_to_idx.get(dag_id.as_str()) {
+                        Some(&i) => i,
+                        None => break,
+                    };
+                    let (sub_id, _, sub_prompt) = &task_channels[idx];
+
+                    match super::router::dispatch_task(
+                        sub_prompt.clone(),
+                        project_dir.clone(),
+                        current_agent.clone(),
+                        Some(sub_id.clone()),
+                        on_event.clone(),
+                        state.clone(),
+                        context_store.clone(),
+                    ).await {
+                        Ok(new_task_id) => {
+                            current_task_id = new_task_id;
+                            continue;
+                        }
+                        Err(e) => {
+                            on_event.send(OutputEvent::Stdout(
+                                format!("[orchestrator] Retry dispatch failed for {}: {}", dag_id, e)
+                            )).ok();
+                            break;
+                        }
+                    }
+                }
+
+                // Retries exhausted — try fallback agent
+                if let Some(fallback) = select_fallback_agent(&current_agent, &available_agents) {
+                    on_event.send(OutputEvent::Stdout(
+                        format!("[orchestrator] Falling back: {} reassigned from {} to {}",
+                            dag_id, current_agent, fallback)
+                    )).ok();
+                    current_agent = fallback;
+                    attempt = 0; // Reset attempt counter for new agent
+
+                    let idx = match dag_id_to_idx.get(dag_id.as_str()) {
+                        Some(&i) => i,
+                        None => break,
+                    };
+                    let (sub_id, _, sub_prompt) = &task_channels[idx];
+
+                    match super::router::dispatch_task(
+                        sub_prompt.clone(),
+                        project_dir.clone(),
+                        current_agent.clone(),
+                        Some(sub_id.clone()),
+                        on_event.clone(),
+                        state.clone(),
+                        context_store.clone(),
+                    ).await {
+                        Ok(new_task_id) => {
+                            current_task_id = new_task_id;
+                            continue;
+                        }
+                        Err(e) => {
+                            on_event.send(OutputEvent::Stdout(
+                                format!("[orchestrator] Fallback dispatch failed for {}: {}", dag_id, e)
+                            )).ok();
+                            break;
+                        }
+                    }
+                }
+
+                // No fallback available
+                break;
+            }
+
+            let final_agent_changed = current_agent != original_agent;
             let worker_result = WorkerResult {
-                task_id: task_id.clone(),
-                agent: agent.clone(),
-                exit_code,
-                output_summary: output_summary.clone(),
-                retry_count: 0,
-                original_agent: None,
-                failure_reason: None,
+                task_id: current_task_id.clone(),
+                agent: current_agent.clone(),
+                exit_code: last_exit_code,
+                output_summary: last_output_summary.clone(),
+                retry_count: attempt,
+                original_agent: if final_agent_changed { Some(original_agent.clone()) } else { None },
+                failure_reason: if last_exit_code != 0 { failure_reason.clone() } else { None },
             };
             plan.worker_results.push(worker_result);
 
-            if exit_code != 0 {
+            if last_exit_code != 0 {
                 failed_dag_ids.insert(dag_id.clone());
             }
 
-            let msg_type = if exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
+            let msg_type = if last_exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
             emit_messenger(&app_handle, MessengerMessage::agent(
                 &plan.task_id,
-                agent,
+                &current_agent,
                 format!("{} (exit {}): {}",
-                    if exit_code == 0 { "Completed" } else { "Failed" },
-                    exit_code,
-                    truncate(&output_summary, 200),
+                    if last_exit_code == 0 { "Completed" } else { "Failed" },
+                    last_exit_code,
+                    truncate(&last_output_summary, 200),
                 ),
                 msg_type,
             ));
             on_event.send(OutputEvent::Stdout(
                 format!("{} (exit {}): {}",
-                    if exit_code == 0 { "Completed" } else { "Failed" },
-                    exit_code,
-                    truncate(&output_summary, 200),
+                    if last_exit_code == 0 { "Completed" } else { "Failed" },
+                    last_exit_code,
+                    truncate(&last_output_summary, 200),
                 )
             )).ok();
         }
