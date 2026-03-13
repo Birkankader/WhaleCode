@@ -28,6 +28,10 @@ impl TaskRouter {
             ("write test", 0.6),
             ("type", 0.3),
             ("fix", 0.5),
+            (".rs", 0.7),
+            (".py", 0.5),
+            ("backend", 0.5),
+            ("api", 0.4),
         ];
 
         let gemini_keywords: &[(&str, f32)] = &[
@@ -40,6 +44,11 @@ impl TaskRouter {
             ("review", 0.5),
             ("understand", 0.5),
             ("large", 0.4),
+            (".tsx", 0.6),
+            (".jsx", 0.6),
+            ("frontend", 0.5),
+            ("component", 0.5),
+            ("style", 0.4),
         ];
 
         let codex_keywords: &[(&str, f32)] = &[
@@ -52,6 +61,9 @@ impl TaskRouter {
             ("boilerplate", 0.6),
             ("prototype", 0.5),
             ("stub", 0.5),
+            (".css", 0.4),
+            ("config", 0.4),
+            ("simple", 0.3),
         ];
 
         // Calculate raw scores
@@ -241,6 +253,19 @@ mod tests {
         assert!(result.alternative_tool.is_some(), "should have alternative tool");
         assert!(result.confidence >= 0.0 && result.confidence <= 1.0, "confidence should be 0.0-1.0");
         assert!(result.tool_available, "tool should be available when not busy");
+    }
+
+    #[test]
+    fn suggest_claude_for_rust_file_mention() {
+        let result = TaskRouter::suggest("modify src/main.rs to add error handling", false, false, false);
+        assert_eq!(result.suggested_tool, "claude");
+        assert!(result.confidence > 0.3, "confidence {} should be > 0.3", result.confidence);
+    }
+
+    #[test]
+    fn suggest_gemini_for_tsx_mention() {
+        let result = TaskRouter::suggest("update components/Header.tsx layout", false, false, false);
+        assert_eq!(result.suggested_tool, "gemini");
     }
 
     #[test]
