@@ -222,24 +222,9 @@ fn parse_decomposition_json(output: &str) -> Option<DecompositionResult> {
 // Helper: kill a process using its pgid (does not require tauri::State)
 // ---------------------------------------------------------------------------
 
+/// Kill a process and remove it from state. Delegates to manager::kill_and_remove.
 async fn kill_process(state: &AppState, task_id: &str) -> Result<(), String> {
-    let pgid = {
-        let inner = state.lock().map_err(|e| e.to_string())?;
-        let entry = inner.processes.get(task_id)
-            .ok_or_else(|| format!("Process not found: {}", task_id))?;
-        entry.pgid
-    };
-
-    process::signals::graceful_kill(pgid).await;
-
-    {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
-        if let Some(entry) = inner.processes.get_mut(task_id) {
-            entry.status = ProcessStatus::Failed("Cancelled".to_string());
-        }
-    }
-
-    Ok(())
+    process::manager::kill_and_remove(task_id, state).await
 }
 
 // ---------------------------------------------------------------------------
@@ -329,51 +314,21 @@ pub async fn dispatch_orchestrated_task(
         MessageType::OrchestrationStarted,
     ));
 
-    // === Phase 1: Decompose (interactive master) ===
+    // === Phase 1: Decompose (master agent) ===
     on_event.send(OutputEvent::Stdout(
-        "[orchestrator] Phase 1: Spawning interactive master agent...".to_string()
+        "[orchestrator] Phase 1: Spawning master agent...".to_string()
     )).ok();
 
     let adapter = get_adapter(&config.master_agent)?;
     // API key is optional — CLIs like Claude Code use their own OAuth auth.
     // build_env() already handles empty keys by simply not setting the env var.
     let api_key = get_api_key(&config.master_agent).unwrap_or_default();
-    let tool_command = adapter.build_interactive_command(&project_dir, &api_key);
-
-    // Reserve tool slot for master agent before spawning
-    process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
-
-    // Spawn master as an interactive (long-lived) process
-    let master_task_id = process::manager::spawn_interactive(
-        tool_command,
-        &format!("Orchestration master: {}", truncate(&prompt, 60)),
-        &config.master_agent,
-        on_event.clone(),
-        state_ref,
-    ).await.map_err(|e| {
-        // Release reservation on spawn failure
-        process::manager::release_tool_slot(state_ref, &config.master_agent);
-        e
-    })?;
-
-    // Release reservation after successful spawn (process now tracked in state)
-    process::manager::release_tool_slot(state_ref, &config.master_agent);
-
-    // Store master_process_id in plan
-    plan.master_process_id = Some(master_task_id.clone());
-    {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
-        if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
-            p.master_process_id = Some(master_task_id.clone());
-        }
-    }
 
     // Check for context.md in project_dir for context restore
     let context_md_path = std::path::Path::new(&project_dir).join("context.md");
     let decompose_prompt = {
         let base_prompt = Orchestrator::build_decompose_prompt(&prompt, &config.agents);
         if context_md_path.exists() {
-            // Read context, delete the file, and combine with decompose prompt
             let context_content = tokio::fs::read_to_string(&context_md_path)
                 .await
                 .map_err(|e| format!("Failed to read context.md: {}", e))?;
@@ -391,19 +346,79 @@ pub async fn dispatch_orchestrated_task(
         }
     };
 
-    // Send decompose prompt to master's stdin
+    // Reserve tool slot for master agent before spawning
+    process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
+
     on_event.send(OutputEvent::Stdout(
         "[orchestrator] Phase 1: Decomposing task via master agent...".to_string()
     )).ok();
 
-    process::manager::send_to_process(state_ref, &master_task_id, &decompose_prompt)?;
+    // Determine spawn strategy:
+    // - Claude supports interactive mode (piped stdin + EOF triggers processing)
+    // - Gemini/Codex need single-shot mode with -p flag
+    let use_interactive = config.master_agent == "claude";
 
-    // Close stdin to signal EOF — CLI tools in non-TTY mode read until EOF
-    // before processing input. The master process will output results then exit.
-    process::manager::close_stdin(state_ref, &master_task_id)?;
+    let master_task_id = if use_interactive {
+        // Interactive mode: spawn, pipe prompt via stdin, close stdin to trigger EOF
+        let tool_command = adapter.build_interactive_command(&project_dir, &api_key);
+        let task_id = process::manager::spawn_interactive(
+            tool_command,
+            &format!("Orchestration master: {}", truncate(&prompt, 60)),
+            &config.master_agent,
+            on_event.clone(),
+            state_ref,
+        ).await.map_err(|e| {
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            e
+        })?;
+
+        if let Err(e) = process::manager::send_to_process(state_ref, &task_id, &decompose_prompt) {
+            let _ = kill_process(state_ref, &task_id).await;
+            return Err(e);
+        }
+        if let Err(e) = process::manager::close_stdin(state_ref, &task_id) {
+            let _ = kill_process(state_ref, &task_id).await;
+            return Err(e);
+        }
+        task_id
+    } else {
+        // Single-shot mode: pass prompt via -p flag (works for Gemini, Codex)
+        // We use spawn_interactive which accepts ToolCommand + &AppState,
+        // but the command itself includes -p so it runs and exits.
+        let tool_command = adapter.build_command(&decompose_prompt, &project_dir, &api_key);
+        let task_id = process::manager::spawn_interactive(
+            tool_command,
+            &format!("Orchestration master: {}", truncate(&prompt, 60)),
+            &config.master_agent,
+            on_event.clone(),
+            state_ref,
+        ).await.map_err(|e| {
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            e
+        })?;
+        task_id
+    };
+
+    // Release reservation after successful spawn (process now tracked in state)
+    process::manager::release_tool_slot(state_ref, &config.master_agent);
+
+    // Store master_process_id in plan
+    plan.master_process_id = Some(master_task_id.clone());
+    {
+        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
+            p.master_process_id = Some(master_task_id.clone());
+        }
+    }
 
     // Wait for master's turn to complete (detects result event or process exit)
-    let output_lines = wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()).await?;
+    let output_lines = match wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()).await {
+        Ok(lines) => lines,
+        Err(e) => {
+            let _ = kill_process(state_ref, &master_task_id).await;
+            return Err(e);
+        }
+    };
 
     // Extract and parse decomposition result
     let decomposition = match parse_decomposition_from_output(&output_lines, adapter.as_ref()) {
@@ -422,6 +437,8 @@ pub async fn dispatch_orchestrated_task(
             result
         }
         None => {
+            // Kill the master process — it's useless without a valid decomposition
+            let _ = kill_process(state_ref, &master_task_id).await;
             update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
             plan.phase = OrchestrationPhase::Failed;
             emit_messenger(&app_handle, MessengerMessage::system(
@@ -445,12 +462,11 @@ pub async fn dispatch_orchestrated_task(
     }
 
     // === Phase 2: Execute (workers with question routing) ===
-    on_event.send(OutputEvent::Stdout(format!(
-        "[orchestrator] Phase 2: Executing {} sub-tasks...",
-        decomposition.tasks.len()
-    ))).ok();
 
-    // Build sub-tasks from decomposition and dispatch
+    // Build sub-tasks from decomposition and send assignment messages FIRST.
+    // The frontend creates tasks from "Assigned to" messages, so these must
+    // arrive before the "Phase 2: Executing" message which transitions them
+    // from pending → running.
     plan.sub_tasks.clear();
     let mut task_channels: Vec<(String, String, String)> = Vec::new(); // (sub_task_id, agent, prompt)
 
@@ -463,6 +479,7 @@ pub async fn dispatch_orchestrated_task(
             assigned_agent: sub_def.agent.clone(),
             status: "pending".to_string(),
             parent_task_id: plan.task_id.clone(),
+            depends_on: sub_def.depends_on.clone(),
         });
 
         emit_messenger(&app_handle, MessengerMessage::system(
@@ -476,6 +493,12 @@ pub async fn dispatch_orchestrated_task(
 
         task_channels.push((sub_task_id, sub_def.agent.clone(), sub_def.prompt.clone()));
     }
+
+    // Now send Phase 2 message — frontend handler transitions pending tasks to running
+    on_event.send(OutputEvent::Stdout(format!(
+        "[orchestrator] Phase 2: Executing {} sub-tasks...",
+        decomposition.tasks.len()
+    ))).ok();
 
     // Dispatch all sub-tasks sequentially.
     // NOTE: Parallel dispatch via JoinSet is blocked because tauri::State is not Send.
@@ -502,6 +525,15 @@ pub async fn dispatch_orchestrated_task(
                     format!("Failed to dispatch to {}: {}", agent, e),
                     MessageType::TaskFailed,
                 ));
+                // Kill all previously spawned workers to prevent orphans
+                for (prev_id, _) in &worker_task_ids {
+                    let _ = kill_process(state_ref, prev_id).await;
+                }
+                // Kill master too — orchestration is broken
+                let _ = kill_process(state_ref, &master_task_id).await;
+                update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
+                plan.phase = OrchestrationPhase::Failed;
+                return Ok(plan);
             }
         }
     }
@@ -575,19 +607,35 @@ pub async fn dispatch_orchestrated_task(
     // Spawn a new single-shot process for review using -p flag
     let review_tool_command = adapter.build_command(&review_prompt, &project_dir, &api_key);
 
-    process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
+    if let Err(e) = process::manager::acquire_tool_slot(state_ref, &config.master_agent) {
+        // Clean up master + workers before propagating error
+        let _ = kill_process(state_ref, &master_task_id).await;
+        for (wid, _) in &worker_task_ids {
+            let _ = kill_process(state_ref, wid).await;
+        }
+        return Err(e);
+    }
 
-    let review_task_id = process::manager::spawn_interactive(
+    let review_task_id = match process::manager::spawn_interactive(
         review_tool_command,
         &format!("Review: {}", truncate(&prompt, 60)),
         &config.master_agent,
         on_event.clone(),
         state_ref,
-    ).await.map_err(|e| {
-        process::manager::release_tool_slot(state_ref, &config.master_agent);
-        e
-    })?;
-    process::manager::release_tool_slot(state_ref, &config.master_agent);
+    ).await {
+        Ok(id) => {
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            id
+        }
+        Err(e) => {
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            let _ = kill_process(state_ref, &master_task_id).await;
+            for (wid, _) in &worker_task_ids {
+                let _ = kill_process(state_ref, wid).await;
+            }
+            return Err(e);
+        }
+    };
 
     // Wait for review process to complete (single-shot with -p exits on its own)
     let review_lines = wait_for_turn_complete(state_ref, &review_task_id, adapter.as_ref()).await;
@@ -612,7 +660,18 @@ pub async fn dispatch_orchestrated_task(
         }
     }
 
-    // Mark as completed but DON'T kill the master — it stays alive for follow-up
+    // Clean up the review process (single-shot, should already be exited)
+    let _ = kill_process(state_ref, &review_task_id).await;
+
+    // Clean up worker processes (should already be exited)
+    for (wid, _) in &worker_task_ids {
+        let _ = kill_process(state_ref, wid).await;
+    }
+
+    // Clean up master process — Phase 1 master may still be alive for interactive
+    // agents (Claude). We kill it now since orchestration is complete.
+    let _ = kill_process(state_ref, &master_task_id).await;
+
     plan.phase = OrchestrationPhase::Completed;
     update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Completed)?;
     emit_messenger(&app_handle, MessengerMessage::system(
@@ -744,6 +803,7 @@ async fn wait_for_worker_with_questions(
                                 inner.question_queue.push(PendingQuestion {
                                     question,
                                     worker_task_id: worker_task_id.to_string(),
+                                    plan_id: plan_id.to_string(),
                                 });
                             }
 
@@ -887,11 +947,11 @@ pub async fn clear_orchestration_context(
         let _ = kill_process(state_ref, pid).await;
     }
 
-    // Remove plan from state and clear question queue
+    // Remove plan from state and clear its questions from the queue
     {
         let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
         inner.orchestration_plans.remove(&plan_id);
-        inner.question_queue.clear();
+        inner.question_queue.retain(|q| q.plan_id != plan_id);
     }
 
     emit_messenger(&app_handle, MessengerMessage::system(

@@ -22,6 +22,8 @@ pub struct SubTask {
     pub assigned_agent: String,
     pub status: String,
     pub parent_task_id: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -67,6 +69,8 @@ pub struct SubTaskDef {
     pub agent: String,
     pub prompt: String,
     pub description: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -81,6 +85,7 @@ pub struct WorkerResult {
 pub struct PendingQuestion {
     pub question: crate::adapters::Question,
     pub worker_task_id: String,
+    pub plan_id: String,
 }
 
 pub struct Orchestrator;
@@ -120,7 +125,11 @@ impl Orchestrator {
              - Assign each sub-task to the most appropriate agent\n\
              - Each agent can receive multiple tasks\n\
              - Prompts should be self-contained and detailed\n\
-             - You may assign tasks to yourself",
+             - You may assign tasks to yourself\n\
+             - CRITICAL: Each agent works in an isolated git worktree. To prevent merge conflicts, \
+             ensure sub-tasks do NOT modify the same files. If two tasks must touch the same file, \
+             merge them into a single task for one agent. Explicitly tell each agent which files it \
+             should create or modify and which files it must NOT touch.",
             agent_list.join("\n"),
             prompt
         )
@@ -332,8 +341,10 @@ mod tests {
                 question_type: crate::adapters::QuestionType::Clarification,
             },
             worker_task_id: "task-123".to_string(),
+            plan_id: "plan-1".to_string(),
         };
         assert_eq!(entry.worker_task_id, "task-123");
+        assert_eq!(entry.plan_id, "plan-1");
     }
 
     #[test]
@@ -434,6 +445,18 @@ mod tests {
     }
 
     #[test]
+    fn test_decomposition_result_with_depends_on() {
+        let json = r#"{"tasks":[
+            {"agent":"claude","prompt":"create schema","description":"DB schema","depends_on":[]},
+            {"agent":"gemini","prompt":"build api","description":"API endpoints","depends_on":["t1"]}
+        ]}"#;
+        let result: DecompositionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.tasks.len(), 2);
+        assert!(result.tasks[0].depends_on.is_empty());
+        assert_eq!(result.tasks[1].depends_on, vec!["t1"]);
+    }
+
+    #[test]
     fn test_pending_question_with_adapter_question() {
         let pq = PendingQuestion {
             question: crate::adapters::Question {
@@ -442,6 +465,7 @@ mod tests {
                 question_type: crate::adapters::QuestionType::Clarification,
             },
             worker_task_id: "worker-1".to_string(),
+            plan_id: "plan-x".to_string(),
         };
         assert_eq!(pq.worker_task_id, "worker-1");
         assert_eq!(pq.question.source_agent, "gemini");
