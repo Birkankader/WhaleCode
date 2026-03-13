@@ -6,6 +6,7 @@ use crate::context::store::ContextStore;
 use crate::ipc::events::OutputEvent;
 use crate::messenger::models::{MessengerMessage, MessageType};
 use crate::process;
+use crate::router::dag::{DagNode, topological_waves};
 use crate::router::orchestrator::{
     AgentContextInfo, DecompositionResult, Orchestrator, OrchestratorConfig,
     OrchestrationPlan, OrchestrationPhase, PendingQuestion, WorkerResult,
@@ -494,95 +495,157 @@ pub async fn dispatch_orchestrated_task(
         task_channels.push((sub_task_id, sub_def.agent.clone(), sub_def.prompt.clone()));
     }
 
+    // Build DAG from decomposition tasks
+    let dag_nodes: Vec<DagNode> = decomposition.tasks.iter().enumerate().map(|(i, def)| {
+        DagNode {
+            id: format!("t{}", i + 1),
+            depends_on: def.depends_on.clone(),
+        }
+    }).collect();
+
+    // Build a map from dag_id (t1, t2...) to task_channels index
+    let dag_id_to_idx: std::collections::HashMap<String, usize> = dag_nodes.iter().enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    let waves = match topological_waves(&dag_nodes) {
+        Ok(w) => w,
+        Err(e) => {
+            // DAG error — fall back to single wave (all tasks in parallel)
+            on_event.send(OutputEvent::Stdout(
+                format!("[orchestrator] DAG warning: {}. Running all tasks in one wave.", e)
+            )).ok();
+            vec![dag_nodes.iter().map(|n| n.id.clone()).collect()]
+        }
+    };
+
     // Now send Phase 2 message — frontend handler transitions pending tasks to running
     on_event.send(OutputEvent::Stdout(format!(
-        "[orchestrator] Phase 2: Executing {} sub-tasks...",
-        decomposition.tasks.len()
+        "[orchestrator] Phase 2: Executing {} sub-tasks in {} wave(s)...",
+        decomposition.tasks.len(),
+        waves.len(),
     ))).ok();
 
-    // Dispatch all sub-tasks sequentially.
-    // NOTE: Parallel dispatch via JoinSet is blocked because tauri::State is not Send.
-    // Each agent gets at most one sub-task, so sequential dispatch has minimal impact.
-    let mut worker_task_ids: Vec<(String, String)> = Vec::new(); // (task_id, agent)
-    for (sub_id, agent, sub_prompt) in &task_channels {
-        let dispatch_result = super::router::dispatch_task(
-            sub_prompt.clone(),
-            project_dir.clone(),
-            agent.clone(),
-            Some(sub_id.clone()),
-            on_event.clone(),
-            state.clone(),
-            context_store.clone(),
-        ).await;
+    let mut worker_task_ids: Vec<(String, String)> = Vec::new(); // (process_task_id, agent)
+    let mut failed_dag_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        match dispatch_result {
-            Ok(task_id) => {
-                worker_task_ids.push((task_id, agent.clone()));
+    for (wave_idx, wave_ids) in waves.iter().enumerate() {
+        on_event.send(OutputEvent::Stdout(
+            format!("[orchestrator] Wave {}/{}: {} task(s)", wave_idx + 1, waves.len(), wave_ids.len())
+        )).ok();
+
+        let mut wave_task_ids: Vec<(String, String, String)> = Vec::new(); // (process_task_id, agent, dag_id)
+
+        // Dispatch tasks in this wave
+        for dag_id in wave_ids {
+            // Check if any dependency failed — skip this task if so
+            let idx = match dag_id_to_idx.get(dag_id) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let (sub_id, agent, sub_prompt) = &task_channels[idx];
+            let dag_node = &dag_nodes[idx];
+
+            let has_failed_dep = dag_node.depends_on.iter().any(|dep| failed_dag_ids.contains(dep));
+            if has_failed_dep {
+                on_event.send(OutputEvent::Stdout(
+                    format!("[orchestrator] Skipping {} (dependency failed)", dag_id)
+                )).ok();
+                failed_dag_ids.insert(dag_id.clone());
+                continue;
             }
-            Err(e) => {
-                emit_messenger(&app_handle, MessengerMessage::system(
-                    &plan.task_id,
-                    format!("Failed to dispatch to {}: {}", agent, e),
-                    MessageType::TaskFailed,
-                ));
-                // Kill all previously spawned workers to prevent orphans
-                for (prev_id, _) in &worker_task_ids {
-                    let _ = kill_process(state_ref, prev_id).await;
+
+            let dispatch_result = super::router::dispatch_task(
+                sub_prompt.clone(),
+                project_dir.clone(),
+                agent.clone(),
+                Some(sub_id.clone()),
+                on_event.clone(),
+                state.clone(),
+                context_store.clone(),
+            ).await;
+
+            match dispatch_result {
+                Ok(task_id) => {
+                    worker_task_ids.push((task_id.clone(), agent.clone()));
+                    wave_task_ids.push((task_id, agent.clone(), dag_id.clone()));
                 }
-                // Kill master too — orchestration is broken
-                let _ = kill_process(state_ref, &master_task_id).await;
-                update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
-                plan.phase = OrchestrationPhase::Failed;
-                return Ok(plan);
+                Err(e) => {
+                    emit_messenger(&app_handle, MessengerMessage::system(
+                        &plan.task_id,
+                        format!("Failed to dispatch to {}: {}", agent, e),
+                        MessageType::TaskFailed,
+                    ));
+                    on_event.send(OutputEvent::Stdout(
+                        format!("[orchestrator] Failed to dispatch {}: {}", dag_id, e)
+                    )).ok();
+                    failed_dag_ids.insert(dag_id.clone());
+                }
             }
+        }
+
+        // Wait for all tasks in this wave to complete
+        for (task_id, agent, dag_id) in &wave_task_ids {
+            let worker_adapter = get_adapter(agent)?;
+
+            let exit_code = wait_for_worker_with_questions(
+                state_ref,
+                task_id,
+                agent,
+                worker_adapter.as_ref(),
+                &master_task_id,
+                adapter.as_ref(),
+                &plan.task_id,
+                &app_handle,
+                &on_event,
+            ).await;
+
+            let output_summary = get_process_output_summary(task_id, state_ref);
+
+            let worker_result = WorkerResult {
+                task_id: task_id.clone(),
+                agent: agent.clone(),
+                exit_code,
+                output_summary: output_summary.clone(),
+            };
+            plan.worker_results.push(worker_result);
+
+            if exit_code != 0 {
+                failed_dag_ids.insert(dag_id.clone());
+            }
+
+            let msg_type = if exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
+            emit_messenger(&app_handle, MessengerMessage::agent(
+                &plan.task_id,
+                agent,
+                format!("{} (exit {}): {}",
+                    if exit_code == 0 { "Completed" } else { "Failed" },
+                    exit_code,
+                    truncate(&output_summary, 200),
+                ),
+                msg_type,
+            ));
+            on_event.send(OutputEvent::Stdout(
+                format!("{} (exit {}): {}",
+                    if exit_code == 0 { "Completed" } else { "Failed" },
+                    exit_code,
+                    truncate(&output_summary, 200),
+                )
+            )).ok();
         }
     }
 
-    // Wait for all workers to complete, with question routing
-    for (task_id, agent) in &worker_task_ids {
-        let worker_adapter = get_adapter(agent)?;
-
-        // Monitor worker output for questions while waiting for completion
-        let exit_code = wait_for_worker_with_questions(
-            state_ref,
-            task_id,
-            agent,
-            worker_adapter.as_ref(),
-            &master_task_id,
-            adapter.as_ref(),
+    // If ALL tasks failed or were skipped, fail the orchestration
+    if !plan.worker_results.iter().any(|r| r.exit_code == 0) && !plan.worker_results.is_empty() {
+        let _ = kill_process(state_ref, &master_task_id).await;
+        update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
+        plan.phase = OrchestrationPhase::Failed;
+        emit_messenger(&app_handle, MessengerMessage::system(
             &plan.task_id,
-            &app_handle,
-            &on_event,
-        ).await;
-
-        let output_summary = get_process_output_summary(task_id, state_ref);
-
-        let worker_result = WorkerResult {
-            task_id: task_id.clone(),
-            agent: agent.clone(),
-            exit_code,
-            output_summary: output_summary.clone(),
-        };
-        plan.worker_results.push(worker_result);
-
-        let msg_type = if exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
-        emit_messenger(&app_handle, MessengerMessage::agent(
-            &plan.task_id,
-            agent,
-            format!("{} (exit {}): {}",
-                if exit_code == 0 { "Completed" } else { "Failed" },
-                exit_code,
-                truncate(&output_summary, 200),
-            ),
-            msg_type,
+            "All worker tasks failed".to_string(),
+            MessageType::TaskFailed,
         ));
-        on_event.send(OutputEvent::Stdout(
-            format!("{} (exit {}): {}",
-                if exit_code == 0 { "Completed" } else { "Failed" },
-                exit_code,
-                truncate(&output_summary, 200),
-            )
-        )).ok();
+        return Ok(plan);
     }
 
     // Update plan with final worker results
