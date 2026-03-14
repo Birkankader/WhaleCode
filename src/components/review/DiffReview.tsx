@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { useWorktree } from '../../hooks/useWorktree';
 import { FileDiffView } from './FileDiffView';
 import type { FileDiff } from '../../bindings';
@@ -86,8 +87,9 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
 
   const handleMerge = async () => {
     if (acceptedFiles.size === 0) {
-      const discardAll = window.confirm(
+      const discardAll = await ask(
         'No files are accepted. Discard all changes from this task?',
+        { title: 'Discard Changes', kind: 'warning' },
       );
       if (!discardAll) return;
       await cleanupWorktrees();
@@ -95,9 +97,10 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
       return;
     }
 
-    const confirmed = window.confirm(
-      `Merge ${acceptedCount} file${acceptedCount !== 1 ? 's' : ''}? ${rejectedCount > 0 ? `${rejectedCount} file${rejectedCount !== 1 ? 's' : ''} will be discarded.` : ''}`,
-    );
+    const mergeMsg = rejectedCount > 0
+      ? `Merge ${acceptedCount} file${acceptedCount !== 1 ? 's' : ''}? ${rejectedCount} file${rejectedCount !== 1 ? 's' : ''} will be discarded.`
+      : `Merge ${acceptedCount} file${acceptedCount !== 1 ? 's' : ''}?`;
+    const confirmed = await ask(mergeMsg, { title: 'Confirm Merge', kind: 'info' });
     if (!confirmed) return;
 
     setMerging(true);
@@ -110,7 +113,10 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
   };
 
   const handleDiscard = async () => {
-    const confirmed = window.confirm('Discard all changes from this task?');
+    const confirmed = await ask(
+      'Discard all changes from this task?',
+      { title: 'Discard All Changes', kind: 'warning' },
+    );
     if (!confirmed) return;
 
     setMerging(true);
