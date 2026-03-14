@@ -1,5 +1,4 @@
 import { useMemo, useEffect, useState } from 'react';
-import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
 
@@ -54,78 +53,56 @@ export function StatusBar() {
   const totalTasks = tasks.size;
 
   return (
-    <div
-      className="flex items-center gap-4 px-4 border-t flex-shrink-0"
-      style={{ height: 26, borderColor: C.border, background: '#07070f', fontSize: 11 }}
-    >
-      <div className="flex items-center gap-1.5" style={{ color: C.textMuted }}>
+    <div className="flex items-center gap-4 px-4 border-t border-wc-border bg-[#07070f] text-[11px] h-[26px] shrink-0">
+      <div className="flex items-center gap-1.5 text-wc-text-muted">
         {activityStatus === 'active' ? (
           <>
-            <span
-              className="heartbeat-pulse"
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: C.green,
-                display: 'inline-block',
-                flexShrink: 0,
-              }}
-            />
-            <span style={{ color: C.green }}>Processing...</span>
+            <span className="heartbeat-pulse size-1.5 rounded-full bg-wc-green inline-block shrink-0" />
+            <span className="text-wc-green">Processing...</span>
           </>
         ) : activityStatus === 'waiting' ? (
           <>
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: C.amber,
-                display: 'inline-block',
-                flexShrink: 0,
-              }}
-            />
-            <span style={{ color: C.amber }}>Waiting for response...</span>
+            <span className="size-1.5 rounded-full bg-wc-amber inline-block shrink-0" />
+            <span className="text-wc-amber">Waiting for response...</span>
           </>
         ) : (
           <>
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.green }} />
+            <span className="size-1.5 rounded-full bg-wc-green" />
             Agents ready
           </>
         )}
       </div>
       {activityStatus !== 'idle' && secondsAgo !== null && (
         <>
-          <span style={{ color: C.borderStrong }}>|</span>
-          <div style={{ color: C.textMuted }}>
+          <span className="text-wc-border-strong">|</span>
+          <div className="text-wc-text-muted">
             Last activity:{' '}
-            <span style={{ color: activityStatus === 'active' ? C.green : C.amber }}>
+            <span className={activityStatus === 'active' ? 'text-wc-green' : 'text-wc-amber'}>
               {secondsAgo}s ago
             </span>
           </div>
         </>
       )}
-      <span style={{ color: C.borderStrong }}>|</span>
-      <div style={{ color: C.textMuted }}>
-        Session: <span style={{ color: C.textSecondary }}>{sessionName}</span>
+      <span className="text-wc-border-strong">|</span>
+      <div className="text-wc-text-muted">
+        Session: <span className="text-wc-text-secondary">{sessionName}</span>
       </div>
-      <span style={{ color: C.borderStrong }}>|</span>
-      <div style={{ color: C.textMuted }}>
+      <span className="text-wc-border-strong">|</span>
+      <div className="text-wc-text-muted">
         Progress:{' '}
-        <span style={{ color: C.amber }}>
+        <span className="text-wc-amber">
           {totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0}%
         </span>
       </div>
       <div className="flex-1" />
       {developerMode && (
-        <div className="flex items-center gap-1" style={{ color: C.accentText }}>
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.accentText }} />
+        <div className="flex items-center gap-1 text-wc-accent-text">
+          <span className="size-1.5 rounded-full bg-wc-accent-text" />
           Developer Mode
         </div>
       )}
-      <span style={{ color: C.borderStrong }}>|</span>
-      <span style={{ color: C.textMuted }}>WhaleCode v0.1.0</span>
+      <span className="text-wc-border-strong">|</span>
+      <span className="text-wc-text-muted">WhaleCode v0.1.0</span>
     </div>
   );
 }

@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
-import { C } from '@/lib/theme';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 import { useUIStore } from '@/stores/uiStore';
@@ -50,7 +49,6 @@ export function QuickTaskPopover() {
     setQuickSubmitting(true);
     try {
       const taskId = await dispatchTask(quickPrompt.trim(), projectDir, quickAgent);
-      // Mark quick tasks as workers to distinguish from orchestration master
       if (taskId) {
         const taskState = useTaskStore.getState();
         const task = taskState.tasks.get(taskId) ?? Array.from(taskState.tasks.values()).find(t => t.prompt === quickPrompt.trim());
@@ -88,42 +86,29 @@ export function QuickTaskPopover() {
       <button
         ref={triggerRef}
         onClick={() => setShowQuickTask(!showQuickTask)}
-        className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-semibold transition-all"
-        style={{
-          background: showQuickTask ? C.accent : C.surface,
-          color: showQuickTask ? '#fff' : C.textSecondary,
-          border: `1px solid ${showQuickTask ? C.accent : C.borderStrong}`,
-        }}
+        className={`flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-semibold transition-all border ${
+          showQuickTask
+            ? 'bg-wc-accent text-white border-wc-accent'
+            : 'bg-wc-surface text-wc-text-secondary border-wc-border-strong'
+        }`}
       >
-        <span style={{ fontSize: 14, lineHeight: 1 }}>+</span>
+        <span className="text-sm leading-none">+</span>
         <span>New Task</span>
       </button>
 
       {showQuickTask && (
         <div
           ref={popoverRef}
-          className="absolute top-full left-0 mt-2 z-50 flex flex-col gap-2.5 p-3.5 rounded-xl"
-          style={{
-            width: 380,
-            background: C.panel,
-            border: `1px solid ${C.borderStrong}`,
-            boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-          }}
+          className="absolute top-full left-0 mt-2 z-50 flex flex-col gap-2.5 p-3.5 rounded-xl w-[380px] bg-wc-panel border border-wc-border-strong shadow-[0_12px_40px_rgba(0,0,0,0.6)]"
         >
-          <div className="text-xs font-bold" style={{ color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          <div className="text-xs font-bold text-wc-text-muted uppercase tracking-wide">
             Quick Task
           </div>
           <div className="flex items-center gap-2">
             <select
               value={quickAgent}
               onChange={(e) => setQuickAgent(e.target.value as ToolName)}
-              className="text-xs rounded-lg px-2 py-1.5"
-              style={{
-                background: C.surface,
-                color: C.textPrimary,
-                border: `1px solid ${C.border}`,
-                outline: 'none',
-              }}
+              className="text-xs rounded-lg px-2 py-1.5 bg-wc-surface text-wc-text-primary border border-wc-border outline-none"
             >
               <option value="claude">Claude</option>
               <option value="gemini">Gemini</option>
@@ -136,32 +121,25 @@ export function QuickTaskPopover() {
               onChange={(e) => setQuickPrompt(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleQuickTask(); if (e.key === 'Escape') setShowQuickTask(false); }}
               placeholder="Describe the task..."
-              className="flex-1 text-xs rounded-lg px-2.5 py-1.5"
-              style={{
-                background: C.surface,
-                color: C.textPrimary,
-                border: `1px solid ${C.border}`,
-                outline: 'none',
-              }}
+              className="flex-1 text-xs rounded-lg px-2.5 py-1.5 bg-wc-surface text-wc-text-primary border border-wc-border outline-none"
             />
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs" style={{ color: C.textMuted }}>
+            <span className="text-xs text-wc-text-muted">
               {projectDir.split('/').pop()}
             </span>
             <div className="flex items-center gap-2">
-              <span className="text-xs" style={{ color: C.textMuted }}>
+              <span className="text-xs text-wc-text-muted">
                 Enter to send
               </span>
               <button
                 onClick={handleQuickTask}
                 disabled={!quickPrompt.trim() || quickSubmitting}
-                className="text-xs font-semibold px-4 py-1.5 rounded-lg transition-all"
-                style={{
-                  background: quickPrompt.trim() ? C.accent : C.borderStrong,
-                  color: quickPrompt.trim() ? '#fff' : C.textMuted,
-                  opacity: quickSubmitting ? 0.5 : 1,
-                }}
+                className={`text-xs font-semibold px-4 py-1.5 rounded-lg transition-all ${
+                  quickPrompt.trim()
+                    ? 'bg-wc-accent text-white'
+                    : 'bg-wc-border-strong text-wc-text-muted'
+                } ${quickSubmitting ? 'opacity-50' : ''}`}
               >
                 {quickSubmitting ? 'Sending...' : 'Run'}
               </button>

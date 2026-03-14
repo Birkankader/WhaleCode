@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { C } from '@/lib/theme';
 import { useUIStore, type AppView } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { QuickTaskPopover } from './QuickTaskPopover';
@@ -31,28 +30,19 @@ export function ContentHeader() {
   ], [showTerminalTab]);
 
   return (
-    <div
-      className="flex items-center gap-0 border-b flex-shrink-0 pl-1 pr-4"
-      style={{ borderColor: C.border, background: C.panel, height: 44 }}
-    >
+    <div className="flex items-center gap-0 border-b border-wc-border bg-wc-panel h-[44px] shrink-0 pl-1 pr-4">
       {/* Session name + status */}
-      <div
-        className="flex items-center gap-2.5 px-4 border-r mr-2"
-        style={{ borderColor: C.border, minWidth: 180 }}
-      >
+      <div className="flex items-center gap-2.5 px-4 border-r border-wc-border mr-2 min-w-[180px]">
         <span className="relative inline-flex">
           <span
-            className="w-2 h-2 rounded-full block"
-            style={{ background: sessionStatus === 'running' ? C.amber : C.textMuted }}
+            className="size-2 rounded-full block"
+            style={{ background: sessionStatus === 'running' ? 'var(--color-wc-amber)' : 'var(--color-wc-text-muted)' }}
           />
           {sessionStatus === 'running' && (
-            <span
-              className="absolute inset-0 rounded-full animate-ping"
-              style={{ background: C.amber, opacity: 0.4 }}
-            />
+            <span className="absolute inset-0 rounded-full animate-ping bg-wc-amber opacity-40" />
           )}
         </span>
-        <span className="text-sm font-semibold" style={{ color: C.textPrimary }}>
+        <span className="text-sm font-semibold text-wc-text-primary">
           {sessionName}
         </span>
       </div>
@@ -63,11 +53,11 @@ export function ContentHeader() {
           <button
             key={tab.key}
             onClick={() => setActiveView(tab.key)}
-            className="flex items-center gap-1.5 h-full px-4 text-xs font-medium border-b-2 transition-colors"
-            style={{
-              borderColor: activeView === tab.key ? C.accent : 'transparent',
-              color: activeView === tab.key ? C.accentText : C.textMuted,
-            }}
+            className={`flex items-center gap-1.5 h-full px-4 text-xs font-medium border-b-2 transition-colors ${
+              activeView === tab.key
+                ? 'border-wc-accent text-wc-accent-text'
+                : 'border-transparent text-wc-text-muted'
+            }`}
           >
             <span>{tab.icon}</span>
             <span>{tab.label}</span>
@@ -84,30 +74,24 @@ export function ContentHeader() {
       {hasReviewReady && activeView !== 'review' && activeView !== 'done' && (
         <button
           onClick={() => setActiveView('review')}
-          className="mr-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all"
-          style={{
-            background: C.accentSoft,
-            color: C.accentText,
-            border: `1px solid ${C.accent}40`,
-          }}
+          className="mr-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-wc-accent-soft text-wc-accent-text border border-wc-accent/25"
         >
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.accent }} />
+          <span className="size-1.5 rounded-full bg-wc-accent" />
           Review
         </button>
       )}
 
       {/* Dev mode toggle */}
       <div className="flex items-center gap-2">
-        <span className="text-xs" style={{ color: C.textMuted }}>
-          Dev
-        </span>
+        <span className="text-xs text-wc-text-muted">Dev</span>
         <button
           onClick={() => setDeveloperMode(!developerMode)}
-          className="w-8 h-4 rounded-full flex items-center px-0.5 transition-all flex-shrink-0"
-          style={{ background: developerMode ? C.accent : C.borderStrong }}
+          className={`w-8 h-4 rounded-full flex items-center px-0.5 transition-all shrink-0 ${
+            developerMode ? 'bg-wc-accent' : 'bg-wc-border-strong'
+          }`}
         >
           <div
-            className="w-3 h-3 rounded-full bg-white transition-all"
+            className="size-3 rounded-full bg-white transition-all"
             style={{ marginLeft: developerMode ? 'auto' : '0' }}
           />
         </button>

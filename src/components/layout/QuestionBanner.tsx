@@ -1,7 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Send, SkipForward } from 'lucide-react';
 import { toast } from 'sonner';
-import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
 import { commands } from '@/bindings';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
@@ -48,76 +47,33 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
   }, [pendingQuestion, answerSubmitting]);
 
   return (
-    <div
-      className="flex-shrink-0 border-b"
-      style={{
-        background: '#0c0c1a',
-        borderColor: C.amber + '40',
-      }}
-    >
-      <div
-        style={{
-          padding: '14px 20px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-        }}
-      >
+    <div className="shrink-0 border-b border-wc-amber/25 bg-[#0c0c1a]">
+      <div className="flex flex-col gap-2.5 px-5 py-3.5">
         {/* Question header */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <div className="flex items-start gap-2.5">
           <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              background: agentInfo.gradient,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 12,
-              fontWeight: 700,
-              color: '#fff',
-              flexShrink: 0,
-              marginTop: 1,
-            }}
+            className="size-7 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0 mt-px"
+            style={{ background: agentInfo.gradient }}
           >
             {agentInfo.letter}
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-              <span
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.06em',
-                  padding: '2px 8px',
-                  borderRadius: 999,
-                  background: C.amberBg,
-                  color: C.amber,
-                }}
-              >
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-wc-amber-bg text-wc-amber">
                 Question
               </span>
-              <span style={{ fontSize: 11, color: C.textMuted }}>
+              <span className="text-[11px] text-wc-text-muted">
                 from {agentInfo.label}
               </span>
             </div>
-            <div
-              style={{
-                fontSize: 13,
-                lineHeight: '20px',
-                color: C.textPrimary,
-                wordBreak: 'break-word',
-              }}
-            >
+            <div className="text-[13px] leading-5 text-wc-text-primary break-words">
               {pendingQuestion.content}
             </div>
           </div>
         </div>
 
         {/* Answer input */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 38 }}>
+        <div className="flex items-center gap-2 ml-[38px]">
           <input
             type="text"
             value={questionAnswer}
@@ -128,17 +84,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
               }
             }}
             placeholder="Type your answer..."
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              borderRadius: 10,
-              background: C.surface,
-              border: `1px solid ${C.borderStrong}`,
-              color: C.textPrimary,
-              fontSize: 12,
-              fontFamily: 'Inter, sans-serif',
-              outline: 'none',
-            }}
+            className="flex-1 px-3 py-2 rounded-[10px] bg-wc-surface border border-wc-border-strong text-wc-text-primary text-xs font-[Inter,sans-serif] outline-none disabled:opacity-50"
             disabled={answerSubmitting}
             autoFocus
           />
@@ -146,22 +92,11 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
             type="button"
             onClick={() => void handleAnswerQuestion(questionAnswer.trim())}
             disabled={!questionAnswer.trim() || answerSubmitting}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              padding: '7px 14px',
-              borderRadius: 10,
-              background: questionAnswer.trim() ? C.accent : C.borderStrong,
-              color: questionAnswer.trim() ? '#fff' : C.textMuted,
-              fontSize: 12,
-              fontWeight: 600,
-              fontFamily: 'Inter, sans-serif',
-              border: 'none',
-              cursor: questionAnswer.trim() ? 'pointer' : 'default',
-              opacity: answerSubmitting ? 0.5 : 1,
-              transition: 'all 150ms ease',
-            }}
+            className={`flex items-center gap-1.5 px-3.5 py-[7px] rounded-[10px] text-xs font-semibold font-[Inter,sans-serif] border-none transition-all ${
+              questionAnswer.trim()
+                ? 'bg-wc-accent text-white cursor-pointer'
+                : 'bg-wc-border-strong text-wc-text-muted cursor-default'
+            } ${answerSubmitting ? 'opacity-50' : ''}`}
           >
             <Send size={12} />
             {answerSubmitting ? 'Sending...' : 'Send'}
@@ -170,22 +105,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
             type="button"
             onClick={() => void handleAnswerQuestion('')}
             disabled={answerSubmitting}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              padding: '7px 12px',
-              borderRadius: 10,
-              background: C.surface,
-              color: C.textSecondary,
-              fontSize: 12,
-              fontWeight: 600,
-              fontFamily: 'Inter, sans-serif',
-              border: `1px solid ${C.border}`,
-              cursor: 'pointer',
-              opacity: answerSubmitting ? 0.5 : 1,
-              transition: 'all 150ms ease',
-            }}
+            className={`flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] bg-wc-surface text-wc-text-secondary text-xs font-semibold font-[Inter,sans-serif] border border-wc-border cursor-pointer transition-all ${answerSubmitting ? 'opacity-50' : ''}`}
           >
             <SkipForward size={12} />
             Skip
