@@ -45,8 +45,18 @@ export function useOrchestrationLaunch() {
       setShowSetup(false);
       setActiveView('kanban');
 
-      // Store orchestrator config so sidebar can read master/worker roles immediately
+      // Clean previous session's tasks before starting a new one
       const store = useTaskStore.getState();
+      const oldTasks = store.tasks;
+      if (oldTasks.size > 0) {
+        const freshTasks = new Map<string, import('@/stores/taskStore').TaskEntry>();
+        useTaskStore.setState({ tasks: freshTasks });
+      }
+      store.setActivePlan(null);
+      store.setPendingQuestion(null);
+      store.setDecomposedTasks([]);
+
+      // Store orchestrator config so sidebar can read master/worker roles immediately
       store.setOrchestrationPlan(orchestratorConfig);
       store.setOrchestrationPhase('decomposing');
       store.clearOrchestrationLogs();

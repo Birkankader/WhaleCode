@@ -302,19 +302,19 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
           <ConfigField
             label="Master Timeout"
             description="Max time for master agent decomposition (minutes)"
-            defaultValue="10"
+            configKey="master_timeout_minutes"
             suffix="min"
           />
           <ConfigField
             label="Worker Timeout"
             description="Max time for each worker task (minutes)"
-            defaultValue="5"
+            configKey="worker_timeout_minutes"
             suffix="min"
           />
           <ConfigField
             label="Max Retries"
             description="Number of retries before falling back to another agent"
-            defaultValue="2"
+            configKey="max_worker_retries"
             suffix="retries"
           />
         </div>
@@ -386,13 +386,40 @@ function ToggleSetting({ label, description, storeKey }: {
   );
 }
 
-function ConfigField({ label, description, defaultValue, suffix }: {
+function ConfigField({ label, description, configKey, suffix }: {
   label: string;
   description: string;
-  defaultValue: string;
+  configKey: keyof import('@/bindings').AppConfig;
   suffix: string;
 }) {
-  const [value, setValue] = useState(defaultValue);
+  const [value, setValue] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  // Load current value from backend on mount
+  useEffect(() => {
+    commands.getConfig().then((result) => {
+      if (result.status === 'ok') {
+        setValue(String(result.data[configKey]));
+        setLoaded(true);
+      }
+    }).catch(() => {});
+  }, [configKey]);
+
+  // Save on blur or Enter
+  const save = useCallback(async () => {
+    const num = parseInt(value, 10);
+    if (isNaN(num) || num < 1) return;
+    setSaving(true);
+    try {
+      const current = await commands.getConfig();
+      if (current.status === 'ok') {
+        const updated = { ...current.data, [configKey]: num };
+        await commands.setConfig(updated);
+      }
+    } catch { /* silently fail */ }
+    finally { setSaving(false); }
+  }, [value, configKey]);
 
   return (
     <div className="flex items-center justify-between gap-4">
@@ -405,8 +432,11 @@ function ConfigField({ label, description, defaultValue, suffix }: {
           type="number"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => { if (e.key === 'Enter') save(); }}
           min="1"
-          className="w-14 h-7 text-xs text-center text-zinc-200 bg-zinc-800 border border-white/10 rounded-md outline-none focus:border-violet-500/50"
+          disabled={!loaded || saving}
+          className="w-14 h-7 text-xs text-center text-zinc-200 bg-zinc-800 border border-white/10 rounded-md outline-none focus:border-violet-500/50 disabled:opacity-50"
         />
         <span className="text-[10px] text-zinc-600">{suffix}</span>
       </div>

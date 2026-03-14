@@ -31,6 +31,8 @@ interface UIState {
   setDeveloperMode: (enabled: boolean) => void;
   showQuickTask: boolean;
   setShowQuickTask: (show: boolean) => void;
+  autoApprove: boolean;
+  setAutoApprove: (enabled: boolean) => void;
 }
 
 export const useUIStore = create<UIState>()(persist((set) => ({
@@ -61,6 +63,8 @@ export const useUIStore = create<UIState>()(persist((set) => ({
   setDeveloperMode: (enabled) => set({ developerMode: enabled }),
   showQuickTask: false,
   setShowQuickTask: (show) => set({ showQuickTask: show }),
+  autoApprove: true,
+  setAutoApprove: (enabled) => set({ autoApprove: enabled }),
 }), {
   name: 'whalecode-ui',
   partialize: (state) => ({
@@ -70,5 +74,6 @@ export const useUIStore = create<UIState>()(persist((set) => ({
     autoMerge: state.autoMerge,
     codeReview: state.codeReview,
     developerMode: state.developerMode,
+    autoApprove: state.autoApprove,
   }),
 }));
