@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
+import { SessionHistory } from '@/components/shared/SessionHistory';
 
 /* ── Tooltip ─────────────────────────────────────────────── */
 
@@ -151,6 +152,7 @@ export function Sidebar() {
   const setShowSetup = useUIStore((s) => s.setShowSetup);
   const activePlan = useTaskStore((s) => s.activePlan);
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  const [showHistory, setShowHistory] = useState(false);
 
   const phaseToColor = (phase: string): string => {
     switch (phase) {
@@ -290,6 +292,12 @@ export function Sidebar() {
           flexShrink: 0,
         }}
       >
+        <Tooltip label="History">
+          <IconButton active={showHistory} onClick={() => setShowHistory(!showHistory)} aria-label="Session history">
+            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9776;</span>
+          </IconButton>
+        </Tooltip>
+
         <Tooltip label="Usage">
           <IconButton active={activeView === 'usage'} onClick={() => setActiveView('usage')} aria-label="Usage">
             <span style={{ fontSize: 16, lineHeight: 1 }}>&#9678;</span>
@@ -302,6 +310,9 @@ export function Sidebar() {
           </IconButton>
         </Tooltip>
       </div>
+
+      {/* Session History panel */}
+      {showHistory && <SessionHistory onClose={() => setShowHistory(false)} />}
     </nav>
   );
 }
