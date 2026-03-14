@@ -1,6 +1,7 @@
 import { toast } from 'sonner';
 import { useTaskStore, type ToolName, type TaskStatus } from '../../stores/taskStore';
 import { useUIStore } from '../../stores/uiStore';
+import { emitOrchestrationNotification } from '../../stores/notificationStore';
 import { commands } from '../../bindings';
 
 /* ── Structured orchestrator event handler ───────────────── */
@@ -135,6 +136,13 @@ export function handleOrchEvent(
         ev.type === 'task_completed' ? 'success' : 'error',
         `${ev.type === 'task_completed' ? 'Completed' : 'Failed'} (exit ${ev.exit_code}): ${summary.slice(0, 200)}`,
       );
+      // Emit notification for task completion/failure
+      emitOrchestrationNotification(
+        ev.type === 'task_completed' ? 'success' : 'error',
+        ev.type === 'task_completed' ? 'Task Completed' : 'Task Failed',
+        summary.slice(0, 100) || undefined,
+        targetId ? { label: 'View', taskId: targetId } : undefined,
+      );
       break;
     }
 
@@ -207,6 +215,13 @@ export function handleOrchEvent(
           planId: ev.plan_id as string,
         });
       }
+      // Notify user — especially useful when app is in background
+      emitOrchestrationNotification(
+        'warning',
+        `${ev.agent} has a question`,
+        String(ev.content).slice(0, 100),
+        { label: 'Answer' },
+      );
       break;
     }
 

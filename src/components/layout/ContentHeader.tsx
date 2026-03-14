@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useUIStore, type AppView } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { QuickTaskPopover } from './QuickTaskPopover';
+import { NotificationCenter } from '@/components/shared/NotificationCenter';
 
 /**
  * Content header bar with session info, view tabs, quick task button,
@@ -71,6 +72,9 @@ export function ContentHeader() {
       <QuickTaskPopover />
 
       <div className="flex-1" />
+
+      {/* Notification center */}
+      <NotificationCenter />
 
       {/* Review notification */}
       {hasReviewReady && activeView !== 'review' && activeView !== 'done' && (
