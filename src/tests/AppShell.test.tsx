@@ -21,6 +21,7 @@ vi.mock('@xterm/addon-fit', () => ({
 vi.mock('../bindings', () => ({
   commands: {
     startStream: vi.fn().mockResolvedValue(undefined),
+    detectAgents: vi.fn().mockResolvedValue({ status: 'ok', data: [] }),
   },
 }));
 

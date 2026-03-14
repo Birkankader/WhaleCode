@@ -13,6 +13,7 @@ import { useOrchestrationLaunch } from '@/hooks/useOrchestrationLaunch';
 import { StagePipeline } from '@/components/orchestration/StagePipeline';
 import { DecomposingBanner } from '@/components/orchestration/DecomposingBanner';
 import { CommandPalette } from '@/components/shared/CommandPalette';
+import { OnboardingWizard } from '@/components/shared/OnboardingWizard';
 import type { AppView } from '@/stores/uiStore';
 
 interface AppShellProps {
@@ -181,6 +182,9 @@ export function AppShell({ children }: AppShellProps) {
 
       {/* Command Palette (Cmd+P) */}
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+
+      {/* First-run onboarding */}
+      <OnboardingWizard />
     </div>
   );
 }
