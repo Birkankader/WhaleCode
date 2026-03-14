@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { ChevronUp, ChevronDown, AlertTriangle, RefreshCw, ArrowRightLeft } from 'lucide-react';
+import { ChevronUp, ChevronDown, AlertTriangle, RefreshCw, ArrowRightLeft, Trash2 } from 'lucide-react';
 import { C, STATUS, LOG_COLOR } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -8,6 +8,7 @@ import { useConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { useTaskStore, type TaskEntry, type ToolName } from '@/stores/taskStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
+import { removeTaskWithUndo } from '@/lib/undoableActions';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { DecompositionErrorCard } from '@/components/orchestration/DecompositionErrorCard';
 
@@ -348,6 +349,7 @@ function TaskCard({
   onRetry,
   onSwitchAgent,
   onDragStart,
+  onDelete,
 }: {
   task: MappedTask;
   selected: boolean;
@@ -355,6 +357,7 @@ function TaskCard({
   onRetry?: (task: MappedTask) => void;
   onSwitchAgent?: (task: MappedTask, newAgent: ToolName) => void;
   onDragStart?: (e: React.DragEvent, task: MappedTask) => void;
+  onDelete?: (task: MappedTask) => void;
 }) {
   const agent = AGENTS[task.agent];
   const isFailed = task.status === 'failed';
@@ -522,6 +525,37 @@ function TaskCard({
                 currentAgent={task.agent}
                 onSwitch={(newAgent) => onSwitchAgent(task, newAgent)}
               />
+            )}
+
+            {onDelete && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDelete(task); }}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  background: 'rgba(239,68,68,0.08)',
+                  border: '1px solid rgba(239,68,68,0.2)',
+                  color: '#f87171',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  fontFamily: 'Inter, sans-serif',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 4,
+                  transition: 'all 150ms ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(239,68,68,0.18)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(239,68,68,0.08)';
+                }}
+              >
+                <Trash2 size={11} />
+              </button>
             )}
           </div>
         </>
@@ -724,6 +758,11 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
       toast.error('Retry failed');
     }
   }, [projectDir, dispatchTask, confirm]);
+
+  // Delete a failed task (with undo)
+  const handleDelete = useCallback((task: MappedTask) => {
+    removeTaskWithUndo(task.id, task.title);
+  }, []);
 
   // Drag & Drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, task: MappedTask) => {
@@ -1040,6 +1079,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
                         onClick={() => setSelectedTask(task.id)}
                         onRetry={task.status === 'failed' ? handleRetry : undefined}
                         onSwitchAgent={task.status === 'failed' ? handleSwitchAgent : undefined}
+                        onDelete={task.status === 'failed' ? handleDelete : undefined}
                         onDragStart={handleDragStart}
                       />
                     ))

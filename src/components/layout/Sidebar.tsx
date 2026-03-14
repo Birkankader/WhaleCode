@@ -152,7 +152,14 @@ export function Sidebar() {
   const setShowSetup = useUIStore((s) => s.setShowSetup);
   const activePlan = useTaskStore((s) => s.activePlan);
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  const tasks = useTaskStore((s) => s.tasks);
+  const sessionName = useUIStore((s) => s.sessionName);
+  const projectDir = useUIStore((s) => s.projectDir);
   const [showHistory, setShowHistory] = useState(false);
+
+  // Session is visible if there's an active plan OR if there are persisted tasks with a project
+  const hasSession = activePlan != null || (tasks.size > 0 && projectDir);
+  const displayLabel = sessionName || (activePlan ? `Session ${activePlan.task_id.slice(0, 6)}` : 'Session');
 
   const phaseToColor = (phase: string): string => {
     switch (phase) {
@@ -233,9 +240,9 @@ export function Sidebar() {
           flexShrink: 0,
         }}
       >
-        {activePlan && (
+        {hasSession && (
           <SessionButton
-            label={`Session ${activePlan.task_id.slice(0, 6)}`}
+            label={displayLabel}
             statusColor={phaseToColor(orchestrationPhase)}
             active={activeView === 'kanban' || activeView === 'terminal'}
             onClick={() => setActiveView('kanban')}
