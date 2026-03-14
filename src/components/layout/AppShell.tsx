@@ -78,15 +78,26 @@ export function AppShell({ children }: AppShellProps) {
 
   useHotkeys(hotkeys);
 
-  // Session restore notification on mount
+  // Session restore notification on mount (once only, StrictMode-safe)
   useEffect(() => {
-    const uiProjectDir = useUIStore.getState().projectDir;
-    const taskCount = useTaskStore.getState().tasks.size;
-    if (uiProjectDir && taskCount > 0) {
-      toast.info('Session restored', {
-        description: `${taskCount} task${taskCount === 1 ? '' : 's'} from previous session`,
-      });
-    }
+    // Guard against StrictMode double-fire
+    let alreadyFired = false;
+    const timer = setTimeout(() => {
+      if (alreadyFired) return;
+      alreadyFired = true;
+      const uiProjectDir = useUIStore.getState().projectDir;
+      const taskCount = useTaskStore.getState().tasks.size;
+      const phase = useTaskStore.getState().orchestrationPhase;
+      // Only show restore toast if there are tasks AND orchestration was actually active
+      // Don't show for stale sessions that were already completed/idle
+      if (uiProjectDir && taskCount > 0 && phase !== 'idle' && phase !== 'completed') {
+        toast.info('Session restored', {
+          description: `${taskCount} task${taskCount === 1 ? '' : 's'} from previous session`,
+          id: 'session-restored', // Prevents duplicate toasts
+        });
+      }
+    }, 100); // Small delay to let persist hydration finish
+    return () => clearTimeout(timer);
   }, []);
 
   // Derived state
