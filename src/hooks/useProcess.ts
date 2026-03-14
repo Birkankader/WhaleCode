@@ -61,8 +61,8 @@ export function emitProcessOutput(taskId: string, event: OutputEvent) {
   // Always persist to log so future consumers can replay
   const log = outputLogs.get(taskId) ?? [];
   log.push(event);
-  if (log.length > 5000) {
-    log.splice(0, log.length - 5000);
+  if (log.length > 2000) {
+    log.splice(0, log.length - 2000);
   }
   outputLogs.set(taskId, log);
 

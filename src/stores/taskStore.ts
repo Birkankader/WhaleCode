@@ -266,26 +266,40 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
   onRehydrateStorage: () => {
     return (state) => {
       if (!state) return;
-      // Reset stale terminal phases on app restart.
-      // 'failed' and 'completed' are end-states — showing them on fresh launch
-      // is confusing (e.g. DecompositionErrorCard appearing immediately).
-      // 'decomposing', 'executing', 'reviewing' are active phases that can't
-      // survive a restart (the backend process is gone).
+      // Reset ALL non-idle phases on app restart.
+      // Backend processes are dead after restart, so any active phase is stale.
       const phase = state.orchestrationPhase;
-      if (phase !== 'idle' && phase !== 'awaiting_approval') {
+      if (phase !== 'idle') {
         state.orchestrationPhase = 'idle';
         state.orchestrationStartedAt = null;
       }
-      // Also reset any running/retrying tasks to failed since the processes are dead
-      const newTasks = new Map(state.tasks);
-      let changed = false;
-      for (const [id, task] of newTasks) {
-        if (task.status === 'running' || task.status === 'retrying' || task.status === 'falling_back') {
+
+      // Reset any non-terminal task statuses — processes can't survive restart.
+      // Also cap old completed tasks to prevent unbounded localStorage growth.
+      const newTasks = new Map<string, TaskEntry>();
+      const completedTasks: [string, TaskEntry][] = [];
+
+      for (const [id, task] of state.tasks) {
+        const status = task.status;
+        if (status === 'running' || status === 'retrying' || status === 'falling_back' ||
+            status === 'pending' || status === 'routing' || status === 'waiting' ||
+            status === 'blocked' || status === 'review') {
+          // Mark all active/stuck tasks as failed — their processes are gone
           newTasks.set(id, { ...task, status: 'failed' });
-          changed = true;
+        } else if (status === 'completed') {
+          completedTasks.push([id, task]);
+        } else {
+          newTasks.set(id, task); // 'failed' tasks kept as-is
         }
       }
-      if (changed) state.tasks = newTasks;
+
+      // Keep only last 50 completed tasks (prevent localStorage bloat)
+      completedTasks
+        .sort((a, b) => (b[1].startedAt ?? 0) - (a[1].startedAt ?? 0))
+        .slice(0, 50)
+        .forEach(([id, task]) => newTasks.set(id, task));
+
+      state.tasks = newTasks;
     };
   },
 }));
