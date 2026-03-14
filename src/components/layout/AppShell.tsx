@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { C } from '@/lib/theme';
 import { Sidebar } from './Sidebar';
@@ -12,6 +12,7 @@ import { useHotkeys } from '@/hooks/useHotkeys';
 import { useOrchestrationLaunch } from '@/hooks/useOrchestrationLaunch';
 import { StagePipeline } from '@/components/orchestration/StagePipeline';
 import { DecomposingBanner } from '@/components/orchestration/DecomposingBanner';
+import { CommandPalette } from '@/components/shared/CommandPalette';
 import type { AppView } from '@/stores/uiStore';
 
 interface AppShellProps {
@@ -31,6 +32,7 @@ export function AppShell({ children }: AppShellProps) {
   const selectedTaskId = useUIStore((s) => s.selectedTaskId);
   const setSelectedTaskId = useUIStore((s) => s.setSelectedTaskId);
   const { handleLaunch } = useOrchestrationLaunch();
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // Global keyboard shortcuts
   const viewShortcuts: [string, AppView][] = [
@@ -43,6 +45,15 @@ export function AppShell({ children }: AppShellProps) {
 
   const hotkeys = useMemo(
     () => [
+      // Cmd+P — toggle command palette
+      {
+        key: 'p',
+        meta: true,
+        handler: (e: KeyboardEvent) => {
+          e.preventDefault();
+          setCommandPaletteOpen((v) => !v);
+        },
+      },
       // Cmd+K — toggle quick task modal
       {
         key: 'k',
@@ -73,7 +84,7 @@ export function AppShell({ children }: AppShellProps) {
         },
       },
     ],
-    [showQuickTask, selectedTaskId, setShowQuickTask, setActiveView, setSelectedTaskId],
+    [showQuickTask, selectedTaskId, setShowQuickTask, setActiveView, setSelectedTaskId, commandPaletteOpen],
   );
 
   useHotkeys(hotkeys);
@@ -167,6 +178,9 @@ export function AppShell({ children }: AppShellProps) {
       </div>
 
       <StatusBar />
+
+      {/* Command Palette (Cmd+P) */}
+      <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
     </div>
   );
 }
