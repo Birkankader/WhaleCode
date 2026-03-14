@@ -15,6 +15,7 @@ export interface TaskEntry {
   dependsOn: string | null;  // taskId of dependency (optional, manual)
   role?: 'master' | 'worker'; // Role in orchestration
   resultSummary?: string;     // Agent's final response/output summary
+  lastOutputLine?: string;    // Last meaningful line of agent output (for live preview)
 }
 
 export interface AgentConfig {
@@ -61,6 +62,7 @@ interface TaskState {
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   updateTaskAgent: (taskId: string, toolName: ToolName) => void;
   updateTaskResult: (taskId: string, resultSummary: string) => void;
+  updateTaskOutputLine: (taskId: string, line: string) => void;
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;
@@ -76,15 +78,19 @@ interface TaskState {
   orchestrationLogs: Array<{ id: string; timestamp: string; agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }>;
   addOrchestrationLog: (log: { agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }) => void;
   clearOrchestrationLogs: () => void;
+  orchestrationStartedAt: number | null;
+  lastActivityAt: number | null;
 }
 
 // Custom storage that handles Map serialization for the tasks field
-type PersistedTaskSlice = Pick<TaskState, 'tasks' | 'orchestrationPhase' | 'orchestrationLogs'>;
+type PersistedTaskSlice = Pick<TaskState, 'tasks' | 'orchestrationPhase' | 'orchestrationLogs' | 'orchestrationStartedAt' | 'lastActivityAt'>;
 
 interface SerializedTaskSlice {
   tasks: [string, TaskEntry][];
   orchestrationPhase: OrchestrationPhase;
   orchestrationLogs: TaskState['orchestrationLogs'];
+  orchestrationStartedAt: number | null;
+  lastActivityAt: number | null;
 }
 
 const taskStorage: PersistStorage<PersistedTaskSlice> = {
@@ -173,6 +179,16 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
     });
   },
 
+  updateTaskOutputLine: (taskId, line) => {
+    set((state) => {
+      const task = state.tasks.get(taskId);
+      if (!task) return state;
+      const newTasks = new Map(state.tasks);
+      newTasks.set(taskId, { ...task, lastOutputLine: line });
+      return { tasks: newTasks };
+    });
+  },
+
   removeTask: (taskId) => {
     set((state) => {
       const newTasks = new Map(state.tasks);
@@ -205,7 +221,13 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
 
   orchestrationPhase: 'idle',
   setOrchestrationPhase: (phase) => {
-    set({ orchestrationPhase: phase });
+    const updates: Partial<TaskState> = { orchestrationPhase: phase };
+    if (phase === 'decomposing') {
+      updates.orchestrationStartedAt = Date.now();
+    } else if (phase === 'idle') {
+      updates.orchestrationStartedAt = null;
+    }
+    set(updates);
   },
 
   decomposedTasks: [],
@@ -224,9 +246,13 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
           ...log,
         },
       ],
+      lastActivityAt: Date.now(),
     }));
   },
   clearOrchestrationLogs: () => set({ orchestrationLogs: [] }),
+
+  orchestrationStartedAt: null,
+  lastActivityAt: null,
 }), {
   name: 'whalecode-tasks',
   storage: taskStorage,
@@ -234,5 +260,32 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
     tasks: state.tasks,
     orchestrationPhase: state.orchestrationPhase,
     orchestrationLogs: state.orchestrationLogs.slice(-100),
+    orchestrationStartedAt: state.orchestrationStartedAt,
+    lastActivityAt: state.lastActivityAt,
   }),
+  onRehydrateStorage: () => {
+    return (state) => {
+      if (!state) return;
+      // Reset stale terminal phases on app restart.
+      // 'failed' and 'completed' are end-states — showing them on fresh launch
+      // is confusing (e.g. DecompositionErrorCard appearing immediately).
+      // 'decomposing', 'executing', 'reviewing' are active phases that can't
+      // survive a restart (the backend process is gone).
+      const phase = state.orchestrationPhase;
+      if (phase !== 'idle' && phase !== 'awaiting_approval') {
+        state.orchestrationPhase = 'idle';
+        state.orchestrationStartedAt = null;
+      }
+      // Also reset any running/retrying tasks to failed since the processes are dead
+      const newTasks = new Map(state.tasks);
+      let changed = false;
+      for (const [id, task] of newTasks) {
+        if (task.status === 'running' || task.status === 'retrying' || task.status === 'falling_back') {
+          newTasks.set(id, { ...task, status: 'failed' });
+          changed = true;
+        }
+      }
+      if (changed) state.tasks = newTasks;
+    };
+  },
 }));
