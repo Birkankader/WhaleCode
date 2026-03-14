@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
-import { useTaskStore, type ToolName } from '@/stores/taskStore';
+import { useTaskStore } from '@/stores/taskStore';
 import { useProcessStore } from '@/hooks/useProcess';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -70,14 +70,6 @@ export function AgentActivityPanel({ taskId }: AgentActivityPanelProps) {
 
   // Subscribe to process output to build activity stream
   useEffect(() => {
-    const handler = (data: { taskId: string; event: { event: string; data: string } }) => {
-      if (data.taskId !== taskId || data.event.event !== 'stdout') return;
-      const item = parseActivityFromOutput(data.event.data);
-      if (item) {
-        setActivities((prev) => [...prev.slice(-19), item]); // Keep last 20
-      }
-    };
-
     const unsub = useProcessStore.subscribe((state, prev) => {
       const proc = state.processes.get(taskId);
       const prevProc = prev.processes.get(taskId);

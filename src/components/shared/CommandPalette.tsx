@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Search } from 'lucide-react';
 import { useUIStore, type AppView } from '@/stores/uiStore';
-import { useTaskStore, type ToolName } from '@/stores/taskStore';
+import { useTaskStore } from '@/stores/taskStore';
 import { useTemplateStore } from '@/stores/templateStore';
 
 /* ── Command types ─────────────────────────────────────── */
