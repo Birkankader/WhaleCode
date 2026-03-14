@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Search } from 'lucide-react';
 import { useUIStore, type AppView } from '@/stores/uiStore';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
+import { useTemplateStore } from '@/stores/templateStore';
 
 /* ── Command types ─────────────────────────────────────── */
 
@@ -37,6 +38,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const setAutoMerge = useUIStore((s) => s.setAutoMerge);
   const autoMerge = useUIStore((s) => s.autoMerge);
   const tasks = useTaskStore((s) => s.tasks);
+  const templates = useTemplateStore((s) => s.templates);
 
   // Build command list
   const commands: Command[] = useMemo(() => {
@@ -103,6 +105,21 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       action: () => { setAutoMerge(!autoMerge); onClose(); },
     });
 
+    // Templates
+    for (const tpl of templates) {
+      cmds.push({
+        id: `tpl-${tpl.id}`,
+        label: `📋 ${tpl.name}`,
+        section: 'Templates',
+        icon: '▶',
+        action: () => {
+          // Template'i QuickTask'a yükle
+          setShowQuickTask(true);
+          onClose();
+        },
+      });
+    }
+
     // Tasks — jump to specific task
     for (const [, task] of tasks) {
       cmds.push({
@@ -119,7 +136,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     }
 
     return cmds;
-  }, [setActiveView, setShowSetup, setShowQuickTask, setDeveloperMode, developerMode, setAutoApprove, autoApprove, setAutoMerge, autoMerge, tasks, onClose]);
+  }, [setActiveView, setShowSetup, setShowQuickTask, setDeveloperMode, developerMode, setAutoApprove, autoApprove, setAutoMerge, autoMerge, tasks, templates, onClose]);
 
   // Filter commands by query
   const filtered = useMemo(() => {
