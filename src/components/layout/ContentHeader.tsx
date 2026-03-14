@@ -48,10 +48,12 @@ export function ContentHeader() {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center h-full">
+      <div className="flex items-center h-full" role="tablist">
         {tabs.map((tab) => (
           <button
             key={tab.key}
+            role="tab"
+            aria-selected={activeView === tab.key}
             onClick={() => setActiveView(tab.key)}
             className={`flex items-center gap-1.5 h-full px-4 text-xs font-medium border-b-2 transition-colors ${
               activeView === tab.key
@@ -85,6 +87,7 @@ export function ContentHeader() {
       <div className="flex items-center gap-2">
         <span className="text-xs text-wc-text-muted">Dev</span>
         <button
+          aria-label="Toggle developer mode"
           onClick={() => setDeveloperMode(!developerMode)}
           className={`w-8 h-4 rounded-full flex items-center px-0.5 transition-all shrink-0 ${
             developerMode ? 'bg-wc-accent' : 'bg-wc-border-strong'

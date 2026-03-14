@@ -48,7 +48,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
   }, [pendingQuestion, answerSubmitting]);
 
   return (
-    <div className="shrink-0 border-b border-wc-amber/25 bg-[#0c0c1a]">
+    <div role="alert" aria-live="polite" className="shrink-0 border-b border-wc-amber/25 bg-[#0c0c1a]">
       <div className="flex flex-col gap-2.5 px-5 py-3.5">
         {/* Question header */}
         <div className="flex items-start gap-2.5">
@@ -76,6 +76,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
         {/* Answer input */}
         <div className="flex items-center gap-2 ml-[38px]">
           <input
+            aria-label="Your answer"
             type="text"
             value={questionAnswer}
             onChange={(e) => setQuestionAnswer(e.target.value)}
@@ -90,6 +91,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
             autoFocus
           />
           <button
+            aria-label="Send answer"
             type="button"
             onClick={() => void handleAnswerQuestion(questionAnswer.trim())}
             disabled={!questionAnswer.trim() || answerSubmitting}
@@ -103,6 +105,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
             {answerSubmitting ? 'Sending...' : 'Send'}
           </button>
           <button
+            aria-label="Skip question"
             type="button"
             onClick={() => void handleAnswerQuestion('')}
             disabled={answerSubmitting}

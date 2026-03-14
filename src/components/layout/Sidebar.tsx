@@ -37,14 +37,17 @@ function IconButton({
   active,
   onClick,
   children,
+  'aria-label': ariaLabel,
 }: {
   active?: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  'aria-label'?: string;
 }) {
   return (
     <button
       onClick={onClick}
+      aria-label={ariaLabel}
       style={{
         width: 36,
         height: 36,
@@ -167,8 +170,10 @@ export function Sidebar() {
   };
 
   return (
-    <div
+    <nav
       data-testid="sidebar"
+      role="navigation"
+      aria-label="Main navigation"
       style={{
         width: 56,
         minWidth: 56,
@@ -238,6 +243,7 @@ export function Sidebar() {
         {/* New orchestration button */}
         <Tooltip label="New orchestration">
           <button
+            aria-label="New orchestration"
             onClick={() => setShowSetup(true)}
             style={{
               width: 36,
@@ -285,17 +291,17 @@ export function Sidebar() {
         }}
       >
         <Tooltip label="Usage">
-          <IconButton active={activeView === 'usage'} onClick={() => setActiveView('usage')}>
+          <IconButton active={activeView === 'usage'} onClick={() => setActiveView('usage')} aria-label="Usage">
             <span style={{ fontSize: 16, lineHeight: 1 }}>&#9678;</span>
           </IconButton>
         </Tooltip>
 
         <Tooltip label="Settings">
-          <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')}>
+          <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')} aria-label="Settings">
             <span style={{ fontSize: 16, lineHeight: 1 }}>&#9881;</span>
           </IconButton>
         </Tooltip>
       </div>
-    </div>
+    </nav>
   );
 }

@@ -53,7 +53,7 @@ export function StatusBar() {
   const totalTasks = tasks.size;
 
   return (
-    <div className="flex items-center gap-4 px-4 border-t border-wc-border bg-[#07070f] text-[11px] h-[26px] shrink-0">
+    <div role="status" aria-live="polite" className="flex items-center gap-4 px-4 border-t border-wc-border bg-[#07070f] text-[11px] h-[26px] shrink-0">
       <div className="flex items-center gap-1.5 text-wc-text-muted">
         {activityStatus === 'active' ? (
           <>
