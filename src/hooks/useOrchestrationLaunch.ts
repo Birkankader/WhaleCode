@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore, type ToolName, type OrchestratorConfig } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
+import { humanizeError } from '@/lib/humanizeError';
 
 export interface LaunchConfig {
   sessionName: string;
@@ -72,7 +73,7 @@ export function useOrchestrationLaunch() {
       dispatchOrchestratedTask(config.taskDescription, config.projectDir, orchestratorConfig)
         .catch((e) => {
           console.error('Launch failed:', e);
-          toast.error('Orchestration failed', { description: String(e) });
+          toast.error('Orchestration failed', { description: humanizeError(e) });
           store.addOrchestrationLog({ agent: masterToolName, level: 'error', message: `Launch failed: ${e}` });
           store.setOrchestrationPhase('failed');
         });

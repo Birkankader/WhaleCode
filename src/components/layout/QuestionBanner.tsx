@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { Send, SkipForward } from 'lucide-react';
 import { toast } from 'sonner';
 import { AGENTS } from '@/lib/agents';
+import { humanizeError } from '@/lib/humanizeError';
 import { commands } from '@/bindings';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import type { PendingQuestion } from '@/stores/taskStore';
@@ -29,7 +30,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
     try {
       const result = await commands.answerUserQuestion(pendingQuestion.planId, answer);
       if (result.status === 'error') {
-        toast.error('Failed to send answer', { description: String(result.error) });
+        toast.error('Failed to send answer', { description: humanizeError(result.error) });
       } else {
         useTaskStore.getState().setPendingQuestion(null);
         setQuestionAnswer('');
@@ -40,7 +41,7 @@ export function QuestionBanner({ pendingQuestion }: QuestionBannerProps) {
         });
       }
     } catch (e) {
-      toast.error('Failed to send answer', { description: String(e) });
+      toast.error('Failed to send answer', { description: humanizeError(e) });
     } finally {
       setAnswerSubmitting(false);
     }

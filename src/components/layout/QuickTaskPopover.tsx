@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
+import { humanizeError } from '@/lib/humanizeError';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 import { useUIStore } from '@/stores/uiStore';
@@ -68,7 +69,7 @@ export function QuickTaskPopover() {
       });
     } catch (e) {
       console.error('Quick task failed:', e);
-      toast.error('Task failed', { description: String(e) });
+      toast.error('Task failed', { description: humanizeError(e) });
       useTaskStore.getState().addOrchestrationLog({
         agent: quickAgent,
         level: 'error',

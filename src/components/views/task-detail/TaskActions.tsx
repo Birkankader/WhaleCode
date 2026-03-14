@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
+import { humanizeError } from '@/lib/humanizeError';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 import { useConfirmDialog } from '@/components/shared/ConfirmDialog';
@@ -176,10 +177,10 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
         });
         toast.success('Task cancelled');
       } else {
-        toast.error('Failed to cancel task', { description: result.error });
+        toast.error('Failed to cancel task', { description: humanizeError(result.error) });
       }
     } catch (e) {
-      toast.error('Failed to cancel task', { description: String(e) });
+      toast.error('Failed to cancel task', { description: humanizeError(e) });
     } finally {
       setCancelling(false);
     }
