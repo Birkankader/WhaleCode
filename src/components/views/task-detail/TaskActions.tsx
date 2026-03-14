@@ -40,6 +40,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const handleReassign = useCallback((newAgent: ToolName) => {
     setReassignOpen(false);
@@ -154,6 +155,36 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
     }
   }, [projectDir, task, taskId, retrying, dispatchTask, onClose, confirm]);
 
+  const handleCancel = useCallback(async () => {
+    if (!task || cancelling) return;
+    const ok = await confirm({
+      title: 'Cancel Task',
+      description: `Cancel the running task "${task.description}"? The agent process will be terminated.`,
+      confirmLabel: 'Cancel Task',
+      destructive: true,
+    });
+    if (!ok) return;
+    setCancelling(true);
+    try {
+      const result = await commands.cancelProcess(task.taskId);
+      if (result.status === 'ok') {
+        updateTaskStatus(taskId, 'failed' as any);
+        useTaskStore.getState().addOrchestrationLog({
+          agent: task.toolName,
+          level: 'warn',
+          message: `Task cancelled by user: ${task.description}`,
+        });
+        toast.success('Task cancelled');
+      } else {
+        toast.error('Failed to cancel task', { description: result.error });
+      }
+    } catch (e) {
+      toast.error('Failed to cancel task', { description: String(e) });
+    } finally {
+      setCancelling(false);
+    }
+  }, [task, taskId, cancelling, updateTaskStatus, confirm]);
+
   const progress = display.isRunning && display.startedAt
     ? Math.min(95, Math.floor(((Date.now() - display.startedAt) / 120_000) * 100))
     : null;
@@ -161,6 +192,69 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
   return (
     <>
       {ConfirmDialogElement}
+
+      {/* Cancel card — only show for running tasks */}
+      {display.isRunning && (
+        <div
+          style={{
+            padding: 16,
+            borderRadius: 14,
+            background: C.amberBg,
+            border: `1px solid ${C.amberBorder}`,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: C.amber,
+              marginBottom: 8,
+            }}
+          >
+            Task Running
+          </div>
+          <p
+            style={{
+              fontSize: 12,
+              color: C.textSecondary,
+              margin: 0,
+              marginBottom: 14,
+              lineHeight: '18px',
+            }}
+          >
+            This task is currently being processed. You can cancel it to stop the agent.
+          </p>
+          <button
+            type="button"
+            disabled={cancelling}
+            onClick={handleCancel}
+            style={{
+              padding: '8px 20px',
+              borderRadius: 10,
+              background: cancelling ? C.borderStrong : C.red,
+              border: 'none',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: cancelling ? 'wait' : 'pointer',
+              fontFamily: 'Inter, sans-serif',
+              transition: 'all 150ms ease',
+              opacity: cancelling ? 0.7 : 1,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+            onMouseEnter={(e) => {
+              if (!cancelling) e.currentTarget.style.filter = 'brightness(1.15)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.filter = 'brightness(1)';
+            }}
+          >
+            {cancelling ? 'Cancelling...' : '✕ Cancel Task'}
+          </button>
+        </div>
+      )}
 
       {/* Retry card — only show for failed tasks */}
       {display.status === 'failed' && projectDir && (
