@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
 import { humanizeError } from '@/lib/humanizeError';
+import { removeTaskWithUndo } from '@/lib/undoableActions';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 import { useConfirmDialog } from '@/components/shared/ConfirmDialog';
@@ -129,8 +130,8 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
       const newTaskId = await dispatchTask(task.prompt, projectDir, task.toolName);
 
       if (newTaskId) {
-        // Remove old failed task now that new one exists
-        useTaskStore.getState().removeTask(taskId);
+        // Remove old failed task with undo support
+        removeTaskWithUndo(taskId, task.description);
 
         // Mark retried task as worker
         const ts = useTaskStore.getState();
