@@ -347,12 +347,14 @@ function TaskCard({
   onClick,
   onRetry,
   onSwitchAgent,
+  onDragStart,
 }: {
   task: MappedTask;
   selected: boolean;
   onClick: () => void;
   onRetry?: (task: MappedTask) => void;
   onSwitchAgent?: (task: MappedTask, newAgent: ToolName) => void;
+  onDragStart?: (e: React.DragEvent, task: MappedTask) => void;
 }) {
   const agent = AGENTS[task.agent];
   const isFailed = task.status === 'failed';
@@ -366,6 +368,8 @@ function TaskCard({
     <button
       type="button"
       onClick={onClick}
+      draggable={!!onDragStart}
+      onDragStart={(e) => onDragStart?.(e, task)}
       className={`kanban-card-slide${isFailed ? ' failed-card-shake' : ''}`}
       style={{
         width: '100%',
@@ -605,6 +609,10 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
   const [filterAgent, setFilterAgent] = useState<ToolName | 'all'>('all');
   const [filterStatus, setFilterStatus] = useState<ColumnKey | 'all'>('all');
 
+  // Drag & drop state
+  const [dragTaskId, setDragTaskId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<ColumnKey | null>(null);
+
   // Activity log panel state
   const [logPanelOpen, setLogPanelOpen] = useState(false);
   const [logPanelHeight, setLogPanelHeight] = useState(200);
@@ -716,6 +724,56 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
       toast.error('Retry failed');
     }
   }, [projectDir, dispatchTask, confirm]);
+
+  // Drag & Drop handlers
+  const handleDragStart = useCallback((e: React.DragEvent, task: MappedTask) => {
+    setDragTaskId(task.id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', task.id);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, col: ColumnKey) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropTarget(col);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDropTarget(null);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetCol: ColumnKey) => {
+    e.preventDefault();
+    setDropTarget(null);
+    const taskId = dragTaskId || e.dataTransfer.getData('text/plain');
+    setDragTaskId(null);
+    if (!taskId) return;
+
+    // Map column to task status
+    const statusMap: Record<ColumnKey, string> = {
+      queued: 'pending',
+      running: 'running',
+      done: 'completed',
+    };
+    const newStatus = statusMap[targetCol];
+    if (!newStatus) return;
+
+    // Only allow moving completed/failed tasks back to queued (for re-queue)
+    // or pending tasks to done (mark as done manually)
+    const store = useTaskStore.getState();
+    const task = store.tasks.get(taskId);
+    if (!task) return;
+
+    const currentCol = mapColumn(task.status);
+    if (currentCol === targetCol) return; // Same column, no-op
+
+    store.updateTaskStatus(taskId, newStatus as any);
+    store.addOrchestrationLog({
+      agent: task.toolName,
+      level: 'info',
+      message: `Task "${task.description}" moved to ${targetCol}`,
+    });
+  }, [dragTaskId]);
 
   const mapped: MappedTask[] = useMemo(() => {
     const result: MappedTask[] = [];
@@ -919,15 +977,19 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
           return (
             <div
               key={col.key}
+              onDragOver={(e) => handleDragOver(e, col.key)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, col.key)}
               style={{
                 flex: 1,
                 minWidth: 220,
                 display: 'flex',
                 flexDirection: 'column',
                 borderRadius: 20,
-                border: `1px solid ${C.border}`,
-                background: C.panel,
+                border: `1px solid ${dropTarget === col.key ? C.accent : C.border}`,
+                background: dropTarget === col.key ? C.accentSoft : C.panel,
                 overflow: 'hidden',
+                transition: 'border-color 150ms, background 150ms',
               }}
             >
               {/* Column header */}
@@ -978,6 +1040,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
                         onClick={() => setSelectedTask(task.id)}
                         onRetry={task.status === 'failed' ? handleRetry : undefined}
                         onSwitchAgent={task.status === 'failed' ? handleSwitchAgent : undefined}
+                        onDragStart={handleDragStart}
                       />
                     ))
                   )}
