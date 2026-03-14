@@ -14,6 +14,7 @@ import { TaskApprovalView } from '../components/views/TaskApprovalView';
 import { ErrorBoundary } from '../components/shared/ErrorBoundary';
 import { initMessengerListener, cleanupMessengerListener } from '../stores/messengerStore';
 import { useUIStore } from '../stores/uiStore';
+import { useTaskStore } from '../stores/taskStore';
 import { commands } from '../bindings';
 
 export function App() {
@@ -42,6 +43,16 @@ export function App() {
       setActiveView('kanban');
     }
   }, [developerMode, activeView, setActiveView]);
+
+  // Auto-navigate to review when orchestration enters reviewing/completed phase
+  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  useEffect(() => {
+    if (orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed') {
+      setActiveView('review');
+    } else if (activeView === 'review' || activeView === 'done') {
+      setActiveView('kanban');
+    }
+  }, [orchestrationPhase, activeView, setActiveView]);
 
   return (
     <>

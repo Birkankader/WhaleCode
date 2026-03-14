@@ -880,6 +880,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
           icon={'\uD83D\uDCCB'}
           title="No tasks yet"
           description="Launch an orchestration to get started"
+          action={{ label: 'New Orchestration', onClick: () => useUIStore.getState().setShowSetup(true) }}
         />
       </div>
     );

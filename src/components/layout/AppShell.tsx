@@ -4,7 +4,6 @@ import { C } from '@/lib/theme';
 import { Sidebar } from './Sidebar';
 import { ContentHeader } from './ContentHeader';
 import { QuestionBanner } from './QuestionBanner';
-import { StatusBar } from './StatusBar';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { SetupPanel } from './SetupPanel';
@@ -178,7 +177,6 @@ export function AppShell({ children }: AppShellProps) {
         {showSetup && <SetupPanel onLaunch={handleLaunch} />}
       </div>
 
-      <StatusBar />
 
       {/* Command Palette (Cmd+P) */}
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />

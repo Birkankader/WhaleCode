@@ -305,12 +305,6 @@ export function Sidebar() {
           </IconButton>
         </Tooltip>
 
-        <Tooltip label="Usage">
-          <IconButton active={activeView === 'usage'} onClick={() => setActiveView('usage')} aria-label="Usage">
-            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9678;</span>
-          </IconButton>
-        </Tooltip>
-
         <Tooltip label="Settings">
           <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')} aria-label="Settings">
             <span style={{ fontSize: 16, lineHeight: 1 }}>&#9881;</span>
