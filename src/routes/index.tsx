@@ -15,6 +15,7 @@ import { ErrorBoundary } from '../components/shared/ErrorBoundary';
 import { initMessengerListener, cleanupMessengerListener } from '../stores/messengerStore';
 import { useUIStore } from '../stores/uiStore';
 import { useTaskStore } from '../stores/taskStore';
+import { useProcessStore } from '../hooks/useProcess';
 import { commands } from '../bindings';
 
 export function App() {
@@ -33,7 +34,19 @@ export function App() {
   useEffect(() => {
     const interval = setInterval(() => {
       commands.cleanupCompletedProcesses().catch(() => {});
-    }, 60 * 1000); // Every 60 seconds
+
+      // Reconcile: check if any "running" frontend tasks have dead backend processes
+      const taskState = useTaskStore.getState();
+      for (const [id, task] of taskState.tasks) {
+        if (task.status === 'running' || task.status === 'retrying') {
+          // If the process store has no entry or shows completed/failed, sync it
+          const proc = useProcessStore.getState().processes.get(id);
+          if (proc && (proc.status === 'completed' || proc.status === 'failed')) {
+            taskState.updateTaskStatus(id, proc.status as any);
+          }
+        }
+      }
+    }, 30 * 1000); // Every 30 seconds
     return () => clearInterval(interval);
   }, []);
 
