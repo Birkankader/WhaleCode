@@ -213,33 +213,237 @@ fn parse_decomposition_from_output(
 }
 
 /// Parse the master agent's decomposition JSON output.
-/// Tries to extract a JSON object from the output (handles markdown fences, trailing text).
+/// Tries multiple strategies to extract a JSON object from the output,
+/// handling markdown fences, natural language wrapping, and alternative key names.
+///
+/// Strategies (in order):
+/// 1. Direct parse of the entire output
+/// 2. Extract from markdown code fences (```json ... ```)
+/// 3. Extract from first `{` to last `}`
+/// 4. Scan for `"tasks"` key and extract the enclosing object
+/// 5. Find any JSON array `[{...}]` and wrap as `{"tasks": [...]}`
+///
+/// Also handles alternative key names: `sub_tasks`, `subtasks` -> `tasks`.
 fn parse_decomposition_json(output: &str) -> Option<DecompositionResult> {
-    // Try direct parse first
-    if let Ok(result) = serde_json::from_str::<DecompositionResult>(output.trim()) {
+    let trimmed = output.trim();
+
+    // Strategy 1: Direct parse
+    if let Some(result) = try_parse_decomposition(trimmed) {
+        eprintln!("[orchestrator] parse_decomposition_json: Strategy 1 (direct) succeeded");
         return Some(result);
     }
+    eprintln!("[orchestrator] parse_decomposition_json: Strategy 1 (direct) failed");
 
-    // Try extracting JSON from markdown code fences
-    let json_str = if let Some(start) = output.find("```json") {
+    // Strategy 2: Extract from markdown code fences
+    if let Some(start) = output.find("```json") {
         let after_fence = &output[start + 7..];
-        if let Some(end) = after_fence.find("```") {
+        let json_str = if let Some(end) = after_fence.find("```") {
             &after_fence[..end]
         } else {
             after_fence
+        };
+        if let Some(result) = try_parse_decomposition(json_str.trim()) {
+            eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (markdown fence) succeeded");
+            return Some(result);
         }
-    } else if let Some(start) = output.find('{') {
-        // Try from first { to last }
-        if let Some(end) = output.rfind('}') {
-            &output[start..=end]
-        } else {
-            return None;
+        eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (markdown fence) failed");
+    } else if let Some(start) = output.find("```") {
+        // Try plain ``` fence (no json tag)
+        let after_fence = &output[start + 3..];
+        if let Some(end) = after_fence.find("```") {
+            let json_str = &after_fence[..end];
+            if let Some(result) = try_parse_decomposition(json_str.trim()) {
+                eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (plain fence) succeeded");
+                return Some(result);
+            }
         }
-    } else {
-        return None;
-    };
+        eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (plain fence) failed");
+    }
 
-    serde_json::from_str::<DecompositionResult>(json_str.trim()).ok()
+    // Strategy 3: First `{` to last `}`
+    if let (Some(start), Some(end)) = (output.find('{'), output.rfind('}')) {
+        if start < end {
+            let json_str = &output[start..=end];
+            if let Some(result) = try_parse_decomposition(json_str.trim()) {
+                eprintln!("[orchestrator] parse_decomposition_json: Strategy 3 (braces) succeeded");
+                return Some(result);
+            }
+            eprintln!("[orchestrator] parse_decomposition_json: Strategy 3 (braces) failed");
+        }
+    }
+
+    // Strategy 4: Scan for `"tasks"` key and extract the enclosing object
+    // This handles cases where the JSON is deeply embedded in natural language
+    if let Some(result) = extract_tasks_key_object(output) {
+        eprintln!("[orchestrator] parse_decomposition_json: Strategy 4 (tasks key scan) succeeded");
+        return Some(result);
+    }
+    eprintln!("[orchestrator] parse_decomposition_json: Strategy 4 (tasks key scan) failed");
+
+    // Strategy 5: Find any JSON array `[{...}]` and wrap as `{"tasks": [...]}`
+    if let Some(result) = extract_json_array_as_tasks(output) {
+        eprintln!("[orchestrator] parse_decomposition_json: Strategy 5 (array wrap) succeeded");
+        return Some(result);
+    }
+    eprintln!("[orchestrator] parse_decomposition_json: Strategy 5 (array wrap) failed — all strategies exhausted");
+
+    None
+}
+
+/// Try to parse a JSON string as DecompositionResult, handling alternative key names.
+/// Maps `sub_tasks` and `subtasks` to `tasks` before parsing.
+fn try_parse_decomposition(json_str: &str) -> Option<DecompositionResult> {
+    // Try direct parse first
+    if let Ok(result) = serde_json::from_str::<DecompositionResult>(json_str) {
+        if !result.tasks.is_empty() {
+            return Some(result);
+        }
+    }
+
+    // Try parsing as generic JSON and mapping alternative key names
+    if let Ok(mut obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(map) = obj.as_object_mut() {
+            // Map sub_tasks -> tasks
+            if map.contains_key("sub_tasks") && !map.contains_key("tasks") {
+                if let Some(val) = map.remove("sub_tasks") {
+                    map.insert("tasks".to_string(), val);
+                }
+            }
+            // Map subtasks -> tasks
+            if map.contains_key("subtasks") && !map.contains_key("tasks") {
+                if let Some(val) = map.remove("subtasks") {
+                    map.insert("tasks".to_string(), val);
+                }
+            }
+
+            if let Ok(result) = serde_json::from_value::<DecompositionResult>(obj) {
+                if !result.tasks.is_empty() {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Strategy 4: Find `"tasks"` (or alternative keys) in the output and extract
+/// the enclosing JSON object by bracket-matching from the preceding `{`.
+fn extract_tasks_key_object(output: &str) -> Option<DecompositionResult> {
+    for key in &["\"tasks\"", "\"sub_tasks\"", "\"subtasks\""] {
+        if let Some(key_pos) = output.find(key) {
+            // Walk backwards from the key to find the opening `{`
+            let before = &output[..key_pos];
+            if let Some(obj_start) = before.rfind('{') {
+                // Walk forward from key to find the matching `}` using bracket counting
+                let from_start = &output[obj_start..];
+                if let Some(obj_end) = find_matching_brace(from_start) {
+                    let json_str = &from_start[..=obj_end];
+                    if let Some(result) = try_parse_decomposition(json_str.trim()) {
+                        return Some(result);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Strategy 5: Find a JSON array `[{...}]` in the output and wrap it as `{"tasks": [...]}`.
+fn extract_json_array_as_tasks(output: &str) -> Option<DecompositionResult> {
+    // Find the first `[{` pattern
+    let arr_start = output.find("[{")?;
+    let from_start = &output[arr_start..];
+
+    // Find the matching `]` using bracket counting
+    let arr_end = find_matching_bracket(from_start)?;
+    let arr_str = &from_start[..=arr_end];
+
+    // Verify it parses as a JSON array
+    if let Ok(arr) = serde_json::from_str::<serde_json::Value>(arr_str) {
+        if arr.is_array() {
+            let wrapped = serde_json::json!({"tasks": arr});
+            if let Ok(result) = serde_json::from_value::<DecompositionResult>(wrapped) {
+                if !result.tasks.is_empty() {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Find the index of the closing `}` that matches the opening `{` at position 0.
+fn find_matching_brace(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, ch) in s.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find the index of the closing `]` that matches the opening `[` at position 0.
+fn find_matching_bracket(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, ch) in s.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +688,7 @@ pub async fn dispatch_orchestrated_task(
         }
     };
 
-    // Extract and parse decomposition result
+    // Extract and parse decomposition result (with retry on failure)
     let decomposition = match parse_decomposition_from_output(&output_lines, adapter.as_ref()) {
         Some(result) => {
             emit_messenger(&app_handle, MessengerMessage::agent(
@@ -501,39 +705,174 @@ pub async fn dispatch_orchestrated_task(
             result
         }
         None => {
-            // Kill the master process — it's useless without a valid decomposition
-            let _ = kill_process(state_ref, &master_task_id).await;
-            update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
-            plan.phase = OrchestrationPhase::Failed;
-            emit_messenger(&app_handle, MessengerMessage::system(
-                &plan.task_id,
-                "Decomposition failed: could not parse JSON from master agent output".to_string(),
-                MessageType::TaskFailed,
-            ));
-            // Schedule plan cleanup after configured delay
-            let cleanup_state = state_ref.clone();
-            let cleanup_plan_id = plan.task_id.clone();
-            let cleanup_delay_inner = cleanup_delay;
-            tokio::spawn(async move {
-                tokio::time::sleep(cleanup_delay_inner).await;
-                if let Ok(mut guard) = cleanup_state.lock() {
-                    guard.orchestration_plans.remove(&cleanup_plan_id);
+            // --- Retry ONCE with a clarifying follow-up prompt ---
+            eprintln!("[orchestrator] Decomposition parse failed on first attempt, retrying...");
+            emit_orch(&on_event, "info", serde_json::json!({
+                "message": "First decomposition attempt was not valid JSON. Retrying with clarification..."
+            }));
+
+            let retry_prompt = "Your previous response was not valid JSON. Return ONLY a JSON object with this exact format: {\"tasks\": [{\"agent\": \"claude\", \"prompt\": \"...\", \"description\": \"...\"}]}. No other text.";
+
+            let retry_result = if use_interactive {
+                // For interactive Claude: re-open stdin and send follow-up
+                // The master process may still be alive (interactive mode).
+                // Try to send the retry prompt via stdin. If stdin is closed,
+                // we spawn a fresh single-shot process instead.
+                let send_ok = process::manager::send_to_process(state_ref, &master_task_id, retry_prompt).is_ok();
+                if send_ok {
+                    // Wait for the retry response
+                    match timeout(
+                        master_timeout,
+                        wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()),
+                    ).await {
+                        Ok(Ok(retry_lines)) => {
+                            parse_decomposition_from_output(&retry_lines, adapter.as_ref())
+                        }
+                        _ => None,
+                    }
+                } else {
+                    // stdin was closed (EOF sent) — spawn a fresh single-shot process
+                    let _ = kill_process(state_ref, &master_task_id).await;
+
+                    let combined_prompt = format!(
+                        "{}\n\n{}", decompose_prompt, retry_prompt
+                    );
+                    let retry_cmd = adapter.build_command(&combined_prompt, &project_dir, &api_key);
+                    if let Ok(retry_task_id) = process::manager::spawn_interactive(
+                        retry_cmd,
+                        &format!("Decomposition retry: {}", truncate(&prompt, 60)),
+                        &config.master_agent,
+                        on_event.clone(),
+                        state_ref,
+                    ).await {
+                        // Update master_task_id in plan for the new process
+                        plan.master_process_id = Some(retry_task_id.clone());
+                        {
+                            let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+                            if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
+                                p.master_process_id = Some(retry_task_id.clone());
+                            }
+                        }
+
+                        match timeout(
+                            master_timeout,
+                            wait_for_turn_complete(state_ref, &retry_task_id, adapter.as_ref()),
+                        ).await {
+                            Ok(Ok(retry_lines)) => {
+                                parse_decomposition_from_output(&retry_lines, adapter.as_ref())
+                            }
+                            _ => {
+                                let _ = kill_process(state_ref, &retry_task_id).await;
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
                 }
-            });
-            return Ok(plan);
+            } else {
+                // For single-shot Gemini/Codex: re-spawn with an explicit combined prompt
+                let _ = kill_process(state_ref, &master_task_id).await;
+
+                let combined_prompt = format!(
+                    "{}\n\nIMPORTANT: You MUST respond with ONLY a JSON object. No explanations, no markdown. Just the JSON: {{\"tasks\": [{{\"agent\": \"<name>\", \"prompt\": \"...\", \"description\": \"...\"}}]}}",
+                    decompose_prompt
+                );
+                let retry_cmd = adapter.build_command(&combined_prompt, &project_dir, &api_key);
+                if let Ok(retry_task_id) = process::manager::spawn_interactive(
+                    retry_cmd,
+                    &format!("Decomposition retry: {}", truncate(&prompt, 60)),
+                    &config.master_agent,
+                    on_event.clone(),
+                    state_ref,
+                ).await {
+                    // Update master_task_id in plan
+                    plan.master_process_id = Some(retry_task_id.clone());
+                    {
+                        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+                        if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
+                            p.master_process_id = Some(retry_task_id.clone());
+                        }
+                    }
+
+                    match timeout(
+                        master_timeout,
+                        wait_for_turn_complete(state_ref, &retry_task_id, adapter.as_ref()),
+                    ).await {
+                        Ok(Ok(retry_lines)) => {
+                            parse_decomposition_from_output(&retry_lines, adapter.as_ref())
+                        }
+                        _ => {
+                            let _ = kill_process(state_ref, &retry_task_id).await;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            };
+
+            match retry_result {
+                Some(result) => {
+                    eprintln!("[orchestrator] Decomposition retry succeeded");
+                    emit_messenger(&app_handle, MessengerMessage::agent(
+                        &plan.task_id,
+                        &config.master_agent,
+                        format!("Decomposed into {} sub-tasks (on retry):\n{}",
+                            result.tasks.len(),
+                            result.tasks.iter()
+                                .map(|t| format!("  - {} -> {}", t.agent, t.description))
+                                .collect::<Vec<_>>().join("\n")
+                        ),
+                        MessageType::DecompositionResult,
+                    ));
+                    result
+                }
+                None => {
+                    eprintln!("[orchestrator] Decomposition retry also failed — giving up");
+                    // Kill the master process — retry also failed
+                    let current_master = plan.master_process_id.as_deref().unwrap_or(&master_task_id);
+                    let _ = kill_process(state_ref, current_master).await;
+                    update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
+                    plan.phase = OrchestrationPhase::Failed;
+                    emit_messenger(&app_handle, MessengerMessage::system(
+                        &plan.task_id,
+                        "Decomposition failed: could not parse JSON from master agent output (tried twice)".to_string(),
+                        MessageType::TaskFailed,
+                    ));
+                    // Schedule plan cleanup after configured delay
+                    let cleanup_state = state_ref.clone();
+                    let cleanup_plan_id = plan.task_id.clone();
+                    let cleanup_delay_inner = cleanup_delay;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(cleanup_delay_inner).await;
+                        if let Ok(mut guard) = cleanup_state.lock() {
+                            guard.orchestration_plans.remove(&cleanup_plan_id);
+                        }
+                    });
+                    return Ok(plan);
+                }
+            }
         }
     };
+
+    // After retry, master_task_id may have changed — re-read from plan
+    let master_task_id = plan.master_process_id.clone().unwrap_or(master_task_id);
 
     // Store decomposition and enter approval phase
     plan.decomposition = Some(decomposition.clone());
     plan.phase = OrchestrationPhase::AwaitingApproval;
-    {
+    let mut approval_rx = {
         let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
             p.decomposition = plan.decomposition.clone();
             p.phase = OrchestrationPhase::AwaitingApproval;
         }
-    }
+        // Create watch channel for approval signaling (replaces polling)
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        inner.approval_signals.insert(plan.task_id.clone(), tx);
+        rx
+    };
 
     // Send task_assigned events so frontend can show the approval screen
     for sub_def in &decomposition.tasks {
@@ -550,9 +889,15 @@ pub async fn dispatch_orchestrated_task(
         "task_count": decomposition.tasks.len()
     }));
 
-    // Wait for user approval (frontend sets phase to Executing via approve_orchestration)
+    // Wait for user approval (watch-channel based, no polling)
     loop {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for signal from approve_orchestration command
+        if approval_rx.changed().await.is_err() {
+            // Sender dropped — plan was removed
+            let _ = kill_process(state_ref, &master_task_id).await;
+            return Err("Orchestration cancelled during approval".to_string());
+        }
+
         let phase = {
             let inner = state_ref.lock().map_err(|e| e.to_string())?;
             inner.orchestration_plans.get(&plan.task_id)
@@ -564,8 +909,14 @@ pub async fn dispatch_orchestrated_task(
                 let _ = kill_process(state_ref, &master_task_id).await;
                 return Err("Orchestration cancelled during approval".to_string());
             }
-            _ => {} // Keep waiting
+            _ => {} // Keep waiting (shouldn't happen, but be safe)
         }
+    }
+
+    // Clean up approval signal
+    {
+        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        inner.approval_signals.remove(&plan.task_id);
     }
 
     // Re-read decomposition in case user modified it during approval
@@ -1259,6 +1610,12 @@ pub async fn approve_orchestration(
     }
 
     plan.phase = OrchestrationPhase::Executing;
+
+    // Signal the orchestrator to wake up (replaces polling)
+    if let Some(tx) = inner.approval_signals.get(&plan_id) {
+        let _ = tx.send(true);
+    }
+
     Ok(())
 }
 
@@ -1670,5 +2027,93 @@ mod tests {
         assert_eq!(truncate("", 10), "");
         assert_eq!(truncate("ab", 2), "ab");
         assert_eq!(truncate("abc", 2), "ab...");
+    }
+
+    // === New parsing strategy tests ===
+
+    #[test]
+    fn test_parse_decomposition_json_sub_tasks_key() {
+        let json = r#"{"sub_tasks": [{"agent": "claude", "prompt": "fix bug", "description": "Fix the auth bug"}]}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].agent, "claude");
+    }
+
+    #[test]
+    fn test_parse_decomposition_json_subtasks_key() {
+        let json = r#"{"subtasks": [{"agent": "gemini", "prompt": "test", "description": "Add tests"}]}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].agent, "gemini");
+    }
+
+    #[test]
+    fn test_parse_decomposition_json_plain_fence() {
+        let output = "Here is the plan:\n```\n{\"tasks\": [{\"agent\": \"codex\", \"prompt\": \"refactor\", \"description\": \"do it\"}]}\n```\nDone.";
+        let result = parse_decomposition_json(output).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].agent, "codex");
+    }
+
+    #[test]
+    fn test_parse_decomposition_json_bare_array() {
+        // Strategy 5: bare JSON array without wrapping object
+        let output = r#"Here are the tasks: [{"agent": "claude", "prompt": "fix auth", "description": "Fix auth"}, {"agent": "gemini", "prompt": "add tests", "description": "Tests"}]"#;
+        let result = parse_decomposition_json(output).unwrap();
+        assert_eq!(result.tasks.len(), 2);
+        assert_eq!(result.tasks[0].agent, "claude");
+        assert_eq!(result.tasks[1].agent, "gemini");
+    }
+
+    #[test]
+    fn test_parse_decomposition_json_tasks_key_scan() {
+        // Strategy 4: natural language around JSON with "tasks" key
+        let output = r#"Sure! I've analyzed the task and here's my decomposition:
+
+The task can be broken into the following sub-tasks:
+{"tasks": [{"agent": "claude", "prompt": "implement feature", "description": "Implement the feature"}, {"agent": "gemini", "prompt": "write tests", "description": "Write tests"}]}
+
+Let me know if you need any changes!"#;
+        let result = parse_decomposition_json(output).unwrap();
+        assert_eq!(result.tasks.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_decomposition_json_nested_braces() {
+        // Ensure brace matching handles nested JSON in prompts
+        let json = r#"{"tasks": [{"agent": "claude", "prompt": "Create a config like {\"key\": \"value\"}", "description": "Config task"}]}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_find_matching_brace() {
+        assert_eq!(find_matching_brace("{}"), Some(1));
+        assert_eq!(find_matching_brace("{\"a\": {\"b\": 1}}"), Some(14));
+        assert_eq!(find_matching_brace("{\"a\": \"}\"}"), Some(9));
+        assert_eq!(find_matching_brace("{unclosed"), None);
+    }
+
+    #[test]
+    fn test_find_matching_bracket() {
+        assert_eq!(find_matching_bracket("[]"), Some(1));
+        assert_eq!(find_matching_bracket("[1, [2, 3]]"), Some(10));
+        assert_eq!(find_matching_bracket("[\"]\"]"), Some(4));
+        assert_eq!(find_matching_bracket("[unclosed"), None);
+    }
+
+    #[test]
+    fn test_try_parse_decomposition_empty_tasks() {
+        // Empty tasks array should return None
+        let json = r#"{"tasks": []}"#;
+        assert!(try_parse_decomposition(json).is_none());
+    }
+
+    #[test]
+    fn test_try_parse_decomposition_alternative_keys_with_data() {
+        let json = r#"{"sub_tasks": [{"agent": "claude", "prompt": "work", "description": "do work"}]}"#;
+        let result = try_parse_decomposition(json).unwrap();
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].agent, "claude");
     }
 }

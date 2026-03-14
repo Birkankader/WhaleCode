@@ -91,6 +91,10 @@ pub struct AppStateInner {
     /// Prevents TOCTOU races where two rapid dispatch calls for the same
     /// tool both pass the "no running process" check before either spawns.
     pub reserved_tools: HashSet<String>,
+    /// Watch channels for approval notifications. Keyed by plan_id.
+    /// Sender side: approval command sends `true` to wake the orchestrator.
+    /// Receiver side: orchestrator awaits instead of polling.
+    pub approval_signals: HashMap<String, tokio::sync::watch::Sender<bool>>,
 }
 
 pub type AppState = Arc<Mutex<AppStateInner>>;
