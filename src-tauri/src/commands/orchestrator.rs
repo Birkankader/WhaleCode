@@ -713,6 +713,20 @@ pub async fn dispatch_orchestrated_task(
         }
     };
 
+    // Check for authentication errors before attempting to parse
+    for line in &output_lines {
+        if line.contains("authentication_failed") || line.contains("Not logged in") || line.contains("Please run /login") {
+            let _ = kill_process(state_ref, &master_task_id).await;
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            return Err(format!("{} is not logged in. Please run '{} /login' in your terminal first.", config.master_agent, config.master_agent));
+        }
+        if line.contains("Invalid API key") || line.contains("invalid_api_key") || line.contains("401") {
+            let _ = kill_process(state_ref, &master_task_id).await;
+            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            return Err(format!("{} API key is invalid. Check Settings to update it.", config.master_agent));
+        }
+    }
+
     // Extract and parse decomposition result (with retry on failure)
     let decomposition = match parse_decomposition_from_output(&output_lines, adapter.as_ref()) {
         Some(result) => {
