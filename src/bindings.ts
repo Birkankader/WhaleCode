@@ -53,6 +53,10 @@ async resumeProcess(taskId: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Returns a list of currently running process task IDs.
+ * Frontend uses this to reconcile its task state with backend reality.
+ */
 async getRunningProcesses() : Promise<Result<string[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_running_processes") };
@@ -540,6 +544,14 @@ async detectAgents() : Promise<Result<DetectedAgent[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async fetchAgentUsage() : Promise<Result<AgentUsage[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fetch_agent_usage") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async gitStatus(projectDir: string) : Promise<Result<GitStatusReport, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("git_status", { projectDir }) };
@@ -669,6 +681,7 @@ async getOrchestrationHistory(limit: number) : Promise<Result<OrchestrationRecor
 
 export type AgentConfig = { tool_name: string; sub_agent_count: number; is_master: boolean }
 export type AgentContextInfo = { tool_name: string; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cost_usd: number | null; status: string }
+export type AgentUsage = { agent: string; plan: string | null; lines: UsageLine[]; error: string | null }
 /**
  * App configuration with sensible defaults.
  * Stored as `whalecode.json` in the app data directory.
@@ -729,6 +742,7 @@ export type RoutingSuggestion = { suggested_tool: string; confidence: number; re
 export type SubTask = { id: string; prompt: string; assigned_agent: string; status: string; parent_task_id: string; depends_on?: string[] }
 export type SubTaskDef = { agent: string; prompt: string; description: string; depends_on?: string[] }
 export type TAURI_CHANNEL<TSend> = TAURI_CHANNEL_IMPORT<TSend>
+export type UsageLine = { line_type: string; label: string; value: string | null; used: number | null; limit: number | null; format_kind: string | null; resets_at: string | null }
 export type WorkerResult = { task_id: string; agent: string; exit_code: number; output_summary: string; retry_count?: number; original_agent?: string | null; failure_reason?: string | null }
 export type WorktreeDiffReport = { branch_name: string; default_branch: string; files: FileDiff[]; total_additions: number; total_deletions: number }
 export type WorktreeEntry = { task_id: string; worktree_name: string; branch_name: string; path: string; 

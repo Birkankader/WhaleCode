@@ -1,79 +1,173 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { C } from '@/lib/theme';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AGENTS } from '@/lib/agents';
-import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { commands } from '@/bindings';
-
-/* ── Constants ─────────────────────────────────────────── */
-
-const AGENT_META: Record<ToolName, { name: string; model: string; color: string }> = {
-  claude: { name: 'Claude Code', model: 'claude-sonnet-4', color: '#8b5cf6' },
-  gemini: { name: 'Gemini CLI', model: 'gemini-2.5-pro', color: '#38bdf8' },
-  codex: { name: 'Codex CLI', model: 'o3-mini', color: '#4ade80' },
-};
+import type { AgentUsage, UsageLine } from '@/bindings';
+import type { ToolName } from '@/stores/taskStore';
 
 /* ── Helpers ───────────────────────────────────────────── */
 
-function formatTokens(n: number | null): string {
-  if (n == null) return '--';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+function formatPercent(n: number): string {
+  return `${Math.round(n)}%`;
 }
 
-function formatCost(n: number | null): string {
-  if (n == null) return '--';
+function formatDollars(n: number): string {
   if (n >= 1) return `$${n.toFixed(2)}`;
   return `$${n.toFixed(4)}`;
 }
 
-/* ── Bar Chart (pure CSS, no dependency) ───────────────── */
+function formatValue(line: UsageLine): string {
+  if (line.value) return line.value;
+  if (line.used == null) return '--';
+  const kind = line.format_kind ?? 'percent';
+  if (kind === 'dollars') return formatDollars(line.used);
+  if (kind === 'count') return String(Math.round(line.used));
+  return formatPercent(line.used);
+}
 
-function TokenDistributionBar({ data }: { data: { label: string; value: number; color: string }[] }) {
-  const total = data.reduce((sum, d) => sum + d.value, 0);
-  if (total === 0) {
-    return (
-      <div style={{ height: 28, borderRadius: 8, background: C.surface, border: `1px solid ${C.border}` }} />
-    );
+function progressColor(used: number, limit: number): string {
+  const pct = limit > 0 ? (used / limit) * 100 : 0;
+  if (pct >= 80) return C.red;
+  if (pct >= 50) return C.amber;
+  return C.green;
+}
+
+function timeUntilReset(resetsAt: string | null): string | null {
+  if (!resetsAt) return null;
+  const resetMs = new Date(resetsAt).getTime();
+  if (isNaN(resetMs)) {
+    // Try as epoch seconds
+    const asNum = Number(resetsAt);
+    if (!isNaN(asNum)) {
+      const ms = asNum > 1e12 ? asNum : asNum * 1000;
+      const diff = ms - Date.now();
+      if (diff <= 0) return 'now';
+      const hours = Math.floor(diff / 3600000);
+      const mins = Math.floor((diff % 3600000) / 60000);
+      return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+    }
+    return null;
   }
+  const diff = resetMs - Date.now();
+  if (diff <= 0) return 'now';
+  const hours = Math.floor(diff / 3600000);
+  const mins = Math.floor((diff % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+}
+
+/* ── Progress Bar ──────────────────────────────────────── */
+
+function UsageProgressBar({ line }: { line: UsageLine }) {
+  const used = line.used ?? 0;
+  const limit = line.limit ?? 100;
+  const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+  const color = progressColor(used, limit);
+  const reset = timeUntilReset(line.resets_at);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', height: 28, borderRadius: 8, overflow: 'hidden', background: C.surface }}>
-        {data.filter(d => d.value > 0).map((d) => (
-          <div
-            key={d.label}
-            title={`${d.label}: ${formatTokens(d.value)} (${((d.value / total) * 100).toFixed(0)}%)`}
-            style={{
-              width: `${(d.value / total) * 100}%`,
-              background: d.color,
-              minWidth: d.value > 0 ? 4 : 0,
-              transition: 'width 500ms ease',
-            }}
-          />
-        ))}
+    <div style={{ padding: '10px 0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>{line.label}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color }}>{formatValue(line)}</span>
+          {line.format_kind === 'percent' && (
+            <span style={{ fontSize: 11, color: C.textMuted }}>/ {formatPercent(limit)}</span>
+          )}
+        </div>
       </div>
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        {data.filter(d => d.value > 0).map((d) => (
-          <div key={d.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: d.color, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: C.textSecondary }}>{d.label}</span>
-            <span style={{ fontSize: 11, color: C.textPrimary, fontWeight: 600 }}>{formatTokens(d.value)}</span>
-            <span style={{ fontSize: 10, color: C.textMuted }}>({((d.value / total) * 100).toFixed(0)}%)</span>
-          </div>
-        ))}
+      <div style={{ width: '100%', height: 8, borderRadius: 4, background: C.border, overflow: 'hidden' }}>
+        <div style={{
+          width: `${pct}%`, height: '100%', borderRadius: 4,
+          background: color, transition: 'width 500ms ease',
+        }} />
       </div>
+      {reset && (
+        <div style={{ fontSize: 10, color: C.textMuted, marginTop: 4, textAlign: 'right' }}>
+          Resets in {reset}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ── Mini bar for task cost ─────────────────────────────── */
+/* ── Agent Card ────────────────────────────────────────── */
 
-function CostBar({ value, max }: { value: number; max: number }) {
-  const pct = max > 0 ? (value / max) * 100 : 0;
+function AgentUsageCard({ usage }: { usage: AgentUsage }) {
+  const agentKey = usage.agent as ToolName;
+  const agent = AGENTS[agentKey];
+  if (!agent) return null;
+
+  const progressLines = usage.lines.filter(l => l.line_type === 'progress');
+  const textLines = usage.lines.filter(l => l.line_type === 'text');
+
   return (
-    <div style={{ width: 80, height: 6, borderRadius: 3, background: C.border, overflow: 'hidden' }}>
-      <div style={{ width: `${pct}%`, height: '100%', borderRadius: 3, background: C.accent, transition: 'width 300ms ease' }} />
+    <div style={{
+      padding: 20, borderRadius: 18,
+      background: C.surface, border: `1px solid ${C.border}`,
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 10,
+            background: agent.gradient,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 14, fontWeight: 700, color: '#fff', flexShrink: 0,
+          }}>
+            {agent.letter}
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary }}>{agent.label}</div>
+            {usage.plan && (
+              <div style={{ fontSize: 11, color: C.accentText, marginTop: 1 }}>{usage.plan}</div>
+            )}
+          </div>
+        </div>
+        {usage.error ? (
+          <span style={{
+            fontSize: 10, fontWeight: 600, padding: '3px 10px', borderRadius: 999,
+            background: C.redBg, color: C.red,
+          }}>
+            {usage.error}
+          </span>
+        ) : (
+          <span style={{
+            fontSize: 10, fontWeight: 600, padding: '3px 10px', borderRadius: 999,
+            background: C.greenBg, color: C.green,
+          }}>
+            Connected
+          </span>
+        )}
+      </div>
+
+      {/* Progress bars */}
+      {progressLines.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {progressLines.map((line, i) => (
+            <UsageProgressBar key={i} line={line} />
+          ))}
+        </div>
+      ) : !usage.error ? (
+        <div style={{ padding: '16px 0', textAlign: 'center', color: C.textMuted, fontSize: 12 }}>
+          No usage data available
+        </div>
+      ) : null}
+
+      {/* Text lines (Today, Yesterday, etc.) */}
+      {textLines.length > 0 && (
+        <div style={{
+          marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}`,
+          display: 'flex', flexDirection: 'column', gap: 6,
+        }}>
+          {textLines.map((line, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12, color: C.textMuted }}>{line.label}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.textPrimary }}>{line.value ?? '--'}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -81,192 +175,88 @@ function CostBar({ value, max }: { value: number; max: number }) {
 /* ── Main Component ────────────────────────────────────── */
 
 export function UsageView() {
-  const agentContexts = useTaskStore((s) => s.agentContexts);
-  const activePlan = useTaskStore((s) => s.activePlan);
-  const updateAgentContext = useTaskStore((s) => s.updateAgentContext);
-  const tasks = useTaskStore((s) => s.tasks);
+  const [usageData, setUsageData] = useState<AgentUsage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
 
-  // Fetch usage data when plan is active
+  const fetchUsage = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await commands.fetchAgentUsage();
+      if (result.status === 'ok') {
+        setUsageData(result.data);
+      }
+    } catch {
+      console.error('Failed to fetch usage');
+    } finally {
+      setLoading(false);
+      setLastFetch(new Date());
+    }
+  }, []);
+
+  // Fetch on mount
   useEffect(() => {
-    if (!activePlan?.task_id) return;
-    commands.getAgentContextInfo(activePlan.task_id)
-      .then((result) => {
-        if (result.status === 'ok') {
-          for (const info of result.data) {
-            updateAgentContext(info.tool_name as ToolName, {
-              toolName: info.tool_name as ToolName,
-              inputTokens: info.input_tokens ?? null,
-              outputTokens: info.output_tokens ?? null,
-              totalTokens: info.total_tokens ?? null,
-              costUsd: info.cost_usd ?? null,
-              status: info.status,
-            });
-          }
-        }
-      })
-      .catch(() => {});
-  }, [activePlan?.task_id, updateAgentContext]);
+    fetchUsage();
+  }, [fetchUsage]);
 
-  // Build usage list
-  const usageList = useMemo(() =>
-    Array.from(agentContexts.entries()).map(([toolName, ctx]) => ({
-      toolName: toolName as ToolName,
-      meta: AGENT_META[toolName as ToolName],
-      inputTokens: ctx.inputTokens,
-      outputTokens: ctx.outputTokens,
-      totalTokens: ctx.totalTokens,
-      costUsd: ctx.costUsd,
-      status: ctx.status,
-    })),
-    [agentContexts],
-  );
-
-  // Aggregate stats
-  const totals = useMemo(() => {
-    let input = 0, output = 0, total = 0, cost = 0;
-    let hasData = false;
-    for (const a of usageList) {
-      if (a.inputTokens != null) { input += a.inputTokens; hasData = true; }
-      if (a.outputTokens != null) { output += a.outputTokens; hasData = true; }
-      if (a.totalTokens != null) { total += a.totalTokens; hasData = true; }
-      if (a.costUsd != null) { cost += a.costUsd; hasData = true; }
-    }
-    return { input, output, total, cost, hasData };
-  }, [usageList]);
-
-  // Token distribution by agent
-  const tokenDistribution = useMemo(() =>
-    usageList.map((a) => ({
-      label: a.meta.name,
-      value: a.totalTokens ?? 0,
-      color: a.meta.color,
-    })),
-    [usageList],
-  );
-
-  // Task-level cost breakdown
-  const taskCosts = useMemo(() => {
-    const list: { id: string; title: string; agent: ToolName; status: string; cost: number | null }[] = [];
-    for (const [, task] of tasks) {
-      const ctx = agentContexts.get(task.toolName);
-      // Approximate: spread agent cost evenly across its tasks
-      const agentTasks = Array.from(tasks.values()).filter(t => t.toolName === task.toolName);
-      const perTaskCost = ctx?.costUsd != null && agentTasks.length > 0
-        ? ctx.costUsd / agentTasks.length
-        : null;
-      list.push({
-        id: task.taskId,
-        title: task.description || task.prompt.slice(0, 50),
-        agent: task.toolName,
-        status: task.status,
-        cost: perTaskCost,
-      });
-    }
-    return list.sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0));
-  }, [tasks, agentContexts]);
-
-  const maxTaskCost = useMemo(() => Math.max(...taskCosts.map(t => t.cost ?? 0), 0.001), [taskCosts]);
+  // Auto-refresh every 60s
+  useEffect(() => {
+    const interval = setInterval(fetchUsage, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchUsage]);
 
   return (
     <ScrollArea style={{ height: '100%' }}>
-      <div style={{ maxWidth: 720, padding: '32px 28px', fontFamily: 'Inter, sans-serif' }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, margin: 0 }}>
-          Usage &amp; Cost
-        </h2>
-        <p style={{ fontSize: 13, color: C.textSecondary, marginTop: 6, marginBottom: 28, lineHeight: '20px' }}>
-          Token consumption and cost breakdown for this session.
-        </p>
+      <div style={{ maxWidth: 640, padding: '32px 28px', fontFamily: 'var(--font-mono, Inter, sans-serif)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+          <div>
+            <h2 style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, margin: 0 }}>
+              Usage
+            </h2>
+            <p style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, margin: 0 }}>
+              Live rate limits and consumption from your AI agents.
+            </p>
+          </div>
+          <button
+            onClick={fetchUsage}
+            disabled={loading}
+            style={{
+              padding: '6px 14px', borderRadius: 8,
+              background: C.surface, border: `1px solid ${C.border}`,
+              color: C.textSecondary, fontSize: 11, fontWeight: 600,
+              cursor: loading ? 'wait' : 'pointer',
+              opacity: loading ? 0.5 : 1,
+              transition: 'all 150ms',
+            }}
+          >
+            {loading ? 'Fetching...' : 'Refresh'}
+          </button>
+        </div>
 
-        {!totals.hasData && usageList.length === 0 ? (
-          <div style={{ padding: 32, borderRadius: 18, background: C.surface, border: `1px solid ${C.border}`, textAlign: 'center', color: C.textMuted, fontSize: 13 }}>
-            No active orchestration — usage data will appear here during a task.
+        {lastFetch && (
+          <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 16 }}>
+            Last updated: {lastFetch.toLocaleTimeString()}
+          </div>
+        )}
+
+        {loading && usageData.length === 0 ? (
+          <div style={{
+            padding: 48, borderRadius: 18, background: C.surface, border: `1px solid ${C.border}`,
+            textAlign: 'center', color: C.textMuted, fontSize: 13,
+          }}>
+            Fetching usage data from agents...
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-
-            {/* Summary cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
-              {[
-                { label: 'Total Tokens', value: formatTokens(totals.hasData ? totals.total : null), color: C.accentText },
-                { label: 'Input', value: formatTokens(totals.hasData ? totals.input : null), color: C.textPrimary },
-                { label: 'Output', value: formatTokens(totals.hasData ? totals.output : null), color: C.textPrimary },
-                { label: 'Total Cost', value: formatCost(totals.hasData ? totals.cost : null), color: C.green },
-              ].map((stat) => (
-                <div key={stat.label} style={{ padding: '16px 12px', borderRadius: 14, background: C.surface, border: `1px solid ${C.border}`, textAlign: 'center' }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: stat.color }}>{stat.value}</div>
-                  <div style={{ fontSize: 10, color: C.textMuted, marginTop: 4 }}>{stat.label}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Token distribution bar */}
-            <div style={{ padding: 20, borderRadius: 18, background: C.surface, border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, marginBottom: 14 }}>
-                Token Distribution by Agent
-              </div>
-              <TokenDistributionBar data={tokenDistribution} />
-            </div>
-
-            {/* Per-agent cards */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {usageList.map((agent) => (
-                <div key={agent.toolName} style={{ padding: 16, borderRadius: 14, background: C.surface, border: `1px solid ${C.border}` }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ width: 28, height: 28, borderRadius: 8, background: AGENTS[agent.toolName].gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
-                        {AGENTS[agent.toolName].letter}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>{agent.meta.name}</div>
-                        <div style={{ fontSize: 10, color: C.textMuted, marginTop: 1 }}>{agent.meta.model}</div>
-                      </div>
-                    </div>
-                    <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 999, background: C.accentSoft, color: C.accentText }}>
-                      {agent.status}
-                    </span>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 16, fontWeight: 700, color: agent.inputTokens != null ? C.textPrimary : C.textMuted }}>{formatTokens(agent.inputTokens)}</div>
-                      <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Input</div>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 16, fontWeight: 700, color: agent.outputTokens != null ? C.textPrimary : C.textMuted }}>{formatTokens(agent.outputTokens)}</div>
-                      <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Output</div>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 16, fontWeight: 700, color: agent.totalTokens != null ? C.accentText : C.textMuted }}>{formatTokens(agent.totalTokens)}</div>
-                      <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Total</div>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 16, fontWeight: 700, color: agent.costUsd != null ? C.green : C.textMuted }}>{formatCost(agent.costUsd)}</div>
-                      <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Cost</div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Task-level cost breakdown */}
-            {taskCosts.length > 0 && (
-              <div style={{ padding: 20, borderRadius: 18, background: C.surface, border: `1px solid ${C.border}` }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, marginBottom: 14 }}>
-                  Cost by Task (estimated)
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {taskCosts.map((task) => (
-                    <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
-                      <div style={{ width: 6, height: 6, borderRadius: 3, background: AGENT_META[task.agent].color, flexShrink: 0 }} />
-                      <span style={{ flex: 1, fontSize: 12, color: C.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {task.title}
-                      </span>
-                      <CostBar value={task.cost ?? 0} max={maxTaskCost} />
-                      <span style={{ fontSize: 11, fontWeight: 600, color: task.cost != null ? C.textPrimary : C.textMuted, minWidth: 56, textAlign: 'right' }}>
-                        {formatCost(task.cost)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {usageData.map((usage) => (
+              <AgentUsageCard key={usage.agent} usage={usage} />
+            ))}
+            {usageData.length === 0 && !loading && (
+              <div style={{
+                padding: 48, borderRadius: 18, background: C.surface, border: `1px solid ${C.border}`,
+                textAlign: 'center', color: C.textMuted, fontSize: 13,
+              }}>
+                No agents configured. Set up API keys in Settings.
               </div>
             )}
           </div>
