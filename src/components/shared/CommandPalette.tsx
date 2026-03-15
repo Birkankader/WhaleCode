@@ -46,11 +46,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
     // Navigation
     const views: [AppView, string, string][] = [
-      ['kanban', 'Board', '⌘1'],
-      ['terminal', 'Terminal', '⌘2'],
-      ['usage', 'Usage', '⌘3'],
-      ['git', 'Git', ''],
-      ['code', 'Code', ''],
+      ['kanban', 'Working', '⌘1'],
+      ['usage', 'Usage', '⌘2'],
+      ['git', 'Git', '⌘3'],
+      ['code', 'Code', '⌘4'],
       ['review', 'Review', ''],
       ['settings', 'Settings', ''],
     ];

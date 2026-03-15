@@ -327,7 +327,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
           {[
             ['⌘P', 'Command Palette'],
             ['⌘K', 'Quick Task'],
-            ['⌘1-5', 'Switch View'],
+            ['⌘1-4', 'Switch View'],
             ['Esc', 'Close Panel'],
           ].map(([key, label]) => (
             <div key={key} className="flex items-center justify-between py-1">

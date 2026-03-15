@@ -197,7 +197,7 @@ export function OnboardingWizard() {
                 {[
                   ['⌘P', 'Open Command Palette for quick actions'],
                   ['⌘K', 'Dispatch a quick task to any agent'],
-                  ['⌘1-5', 'Switch between views instantly'],
+                  ['⌘1-4', 'Switch between views instantly'],
                 ].map(([key, desc]) => (
                   <div key={key} className="flex items-center gap-3 text-xs">
                     <kbd className="font-mono text-[10px] text-wc-accent-text bg-wc-accent-soft px-1.5 py-0.5 rounded border border-wc-accent/20 shrink-0">

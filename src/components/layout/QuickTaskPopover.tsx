@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
+import { open } from '@tauri-apps/plugin-dialog';
 import { humanizeError } from '@/lib/humanizeError';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
@@ -80,7 +81,12 @@ export function QuickTaskPopover() {
     }
   }, [quickPrompt, projectDir, quickAgent, quickSubmitting, dispatchTask, setShowQuickTask]);
 
-  if (!projectDir) return null;
+  const setProjectDir = useUIStore((s) => s.setProjectDir);
+
+  const handlePickProject = useCallback(async () => {
+    const selected = await open({ directory: true, multiple: false, title: 'Select Project Directory' });
+    if (selected) setProjectDir(selected as string);
+  }, [setProjectDir]);
 
   return (
     <div className="relative ml-2">
@@ -107,6 +113,15 @@ export function QuickTaskPopover() {
           <div className="text-xs font-bold text-wc-text-muted uppercase tracking-wide">
             Quick Task
           </div>
+          {!projectDir ? (
+            <button
+              onClick={handlePickProject}
+              className="w-full py-3 text-xs text-wc-accent-text bg-wc-accent-soft border border-dashed border-wc-accent/30 rounded-lg hover:bg-wc-accent/20 transition-colors"
+            >
+              Select a project folder to get started
+            </button>
+          ) : (
+          <>
           <div className="flex items-center gap-2">
             <select
               aria-label="Select agent"
@@ -150,6 +165,8 @@ export function QuickTaskPopover() {
               </button>
             </div>
           </div>
+          </>
+          )}
         </div>
       )}
     </div>
