@@ -236,15 +236,21 @@ export function Sidebar() {
         }}
       >
         <Tooltip label="History">
-          <IconButton active={showHistory} onClick={() => setShowHistory(!showHistory)} aria-label="Session history">
-            <History size={16} />
-          </IconButton>
+          <div className="flex flex-col items-center">
+            <IconButton active={showHistory} onClick={() => setShowHistory(!showHistory)} aria-label="Session history">
+              <History size={16} />
+            </IconButton>
+            <span className="text-[8px] text-wc-text-muted mt-0.5">History</span>
+          </div>
         </Tooltip>
 
         <Tooltip label="Settings">
-          <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')} aria-label="Settings">
-            <Settings size={16} />
-          </IconButton>
+          <div className="flex flex-col items-center">
+            <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')} aria-label="Settings">
+              <Settings size={16} />
+            </IconButton>
+            <span className="text-[8px] text-wc-text-muted mt-0.5">Settings</span>
+          </div>
         </Tooltip>
       </div>
 

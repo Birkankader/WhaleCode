@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
@@ -174,6 +174,35 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
   // Handlers
   const close = useCallback(() => setShowSetup(false), [setShowSetup]);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  const handlePanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      close();
+      return;
+    }
+    if (e.key === 'Tab') {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+  }, [close]);
 
   const handleLaunch = useCallback(() => {
     onLaunch?.({
@@ -737,7 +766,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
   return (
     <div style={overlayStyle} onClick={close}>
-      <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
+      <div ref={panelRef} style={panelStyle} onClick={(e) => e.stopPropagation()} tabIndex={-1} onKeyDown={handlePanelKeyDown} autoFocus>
         {/* Header */}
         <div style={headerStyle}>
           <h2 style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, margin: 0 }}>

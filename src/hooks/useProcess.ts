@@ -1,3 +1,5 @@
+// @deprecated — processStore is being phased out. New code should use taskStore.updateTaskProcess() instead.
+// This store remains for OutputConsole/xterm compatibility.
 import { create } from 'zustand';
 import { Channel } from '@tauri-apps/api/core';
 import { commands } from '../bindings';

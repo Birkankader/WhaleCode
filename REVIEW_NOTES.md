@@ -8,7 +8,7 @@
 - [ ] Dual source of truth: processStore + taskStore still both track status
 
 ### Major
-- [ ] commands/orchestrator.rs is 2126 lines — split into 4-5 modules
+- [~] DEFERRED: Split orchestrator.rs — large refactor for v1.1 lines — split into 4-5 modules
 - [x] 6 empty `catch {}` blocks swallow errors (useProcess.ts, useTaskDispatch.ts)
 - [x] 5 frontend test files (humanizeError added) files — zero store/hook/event tests
 - [x] `as any` cast in useOrchestratedDispatch.ts:163
@@ -19,7 +19,7 @@
 ### Minor
 - [x] 15 eprintln! → log::debug! statements in orchestrator.rs — use tracing::debug!
 - [x] useProcess.ts: JSDoc on _updateStatus`/`_removeProcess` underscore convention unclear
-- [ ] taskStore: lastOutputLine, lastOutputPreview, lastEventAt overlap
+- [x] Removed lastOutputPreview (overlap consolidated), lastEventAt overlap
 - [x] Inline orchestration log type — extract OrchestrationLogEntry interface
 - [x] emit_orch logs send failures .unwrap_or_default() + .ok() — silent failure
 - [x] notificationStore: unreadCount recomputed via filter on every markRead
@@ -31,21 +31,21 @@
 
 ### Critical
 - [x] 3 parallel color systems: C object, --color-wc-* CSS vars, shadcn oklch
-- [ ] CSS strategy ~50% inline / ~50% Tailwind — inconsistent
+- [~] DEFERRED: Inline→Tailwind migration — gradual, ongoing / ~50% Tailwind — inconsistent
 - [x] textMuted (#4b4d66) fails WCAG AA at 2.5:1 contrast
 
 ### Major
 - [x] AgentBadge duplicated in 7 files (~200 lines)
 - [x] StatusPill duplicated in 4 files
-- [ ] 12 different border-radius values
+- [x] 4 border-radius tokens defined values
 - [x] Icons unified to Lucide (Sidebar + ContentHeader): Lucide / HTML entities / Emoji
-- [ ] No Modal/Overlay shared component (4 files each build their own)
-- [ ] 12 arbitrary font sizes (8px-26px) — no type scale
+- [~] DEFERRED: Modal component — gradual extraction component (4 files each build their own)
+- [x] 6 font size tokens defined (8px-26px) — no type scale
 - [x] Sidebar onMouseEnter/onMouseLeave style manipulation anti-pattern
 
 ### Minor
-- [ ] shadcn Button component barely used
-- [ ] KanbanBoard uses different color semantics (slate-100, white/8)
+- [~] DEFERRED: shadcn adoption — gradual barely used
+- [~] DEFERRED: KanbanBoard not active (replaced by WorkingView) color semantics (slate-100, white/8)
 - [x] TerminalBottomPanel has no open/close transition
 - [x] Sidebar tooltip appears instantly (needs 100ms delay)
 - [x] .dark CSS block is identical to :root (dead code)
@@ -58,7 +58,7 @@
 ## 🧠 UX REVIEW (7.9/10)
 
 ### Critical
-- [ ] Navigation mental model (6/10) — 5 overlapping nav paradigms
+- [~] NOTED: Nav paradigms — simplified (removed StatusBar, reduced tabs) (6/10) — 5 overlapping nav paradigms
 - [x] ⌘-number shortcut mismatch — CommandPalette vs AppShell
 - [x] clearSession() now asks confirmation data without confirmation
 
@@ -66,19 +66,19 @@
 - [x] OnboardingWizard has Check Again button (no "Check Again" button)
 - [x] Session name auto-generated (low-value ceremony)
 - [x] Dev Mode toggle moved to Settings only in header (expert-only feature)
-- [ ] StagePipeline + DecomposingBanner should merge into one
+- [x] Merged: decomposing state inline in pipeline should merge into one
 - [ ] Settings in sidebar but also ⌘P — inconsistent (page vs panel?)
 - [ ] review/done views not in tab bar — undiscoverable
-- [ ] 4 simultaneous status indicators during orchestration
+- [x] Merged StagePipeline+DecomposingBanner (was 4, now 2-3) indicators during orchestration
 
 ### Minor
-- [ ] SetupPanel canContinue disabled button has no tooltip
+- [x] Disabled buttons have tooltip explanations button has no tooltip
 - [x] Quick Task now shows project picker — no indication
 - [x] ErrorBoundary has Reload button button
-- [ ] Orchestration error only shown as toast (transient)
+- [x] Errors also written to terminal panel (transient)
 - [x] Heartbeat reduced to 5s before stale task detected
 - [ ] No focus trap in SetupPanel, OnboardingWizard, TaskApprovalView
-- [ ] Tabs shown before any orchestration (empty, meaningless)
+- [x] Tabs hidden when idle (only Working visible) (empty, meaningless)
 - [ ] Sidebar icons unlabeled (tooltip-only)
 - [x] NotificationCenter Clear all has undo toast confirmation
 - [x] Auto-approve logs to orchestration log/log entry
@@ -88,28 +88,28 @@
 ## 📦 PRODUCT REVIEW (5.5/10)
 
 ### Critical
-- [ ] Target audience too narrow (need 3 CLI tools + API keys)
+- [~] DEFERRED: Target audience — needs single-agent mode expansion (need 3 CLI tools + API keys)
 - [x] No single-agent mode — simple tasks forced through orchestration
-- [ ] 10-step onboarding-to-value funnel — no pre-built binaries
+- [~] DEFERRED: Onboarding funnel — needs .dmg distribution funnel — no pre-built binaries
 - [x] macOS only — Keychain (macOSPrivateApi removed) dependency
 
 ### Major
-- [ ] CLI output format dependency — undocumented, can change
-- [ ] No auto-create PRs from worktrees
-- [ ] No agent output comparison (same task, different agents)
-- [ ] No budget caps ("stop if spend > $5")
-- [ ] No plugin system for new agents (hard-coded to 3)
-- [ ] No Windows/Linux support
+- [~] DEFERRED: CLI format risk — needs adapter versioning — undocumented, can change
+- [~] DEFERRED: PR creation — needs GitHub API integration from worktrees
+- [~] DEFERRED: Agent comparison — v2 feature (same task, different agents)
+- [~] DEFERRED: Budget caps — v2 feature ("stop if spend > $5")
+- [~] DEFERRED: Plugin system — v2 feature for new agents (hard-coded to 3)
+- [~] DEFERRED: Cross-platform — needs keyring abstraction support
 - [x] MIT license — LICENSE added file
 
 ### Minor
-- [ ] No scheduled/recurring tasks
-- [ ] No issue tracker integration
-- [ ] No daily summary/digest
-- [ ] No partial worktree merge
-- [ ] No export/share of session results
-- [ ] No telemetry/analytics
-- [ ] Cost tracking not positioned as selling point
+- [~] DEFERRED: Scheduled tasks — v2 feature tasks
+- [~] DEFERRED: Issue tracker — v2 feature integration
+- [~] DEFERRED: Daily digest — v2 feature/digest
+- [~] DEFERRED: Partial merge — v2 feature merge
+- [~] DEFERRED: Export/share — v2 feature of session results
+- [~] DEFERRED: Telemetry — post-launch/analytics
+- [~] DEFERRED: Cost positioning — marketing task as selling point
 
 ---
 
@@ -119,22 +119,22 @@
 - [x] macOSPrivateApi: true — automatic App Store rejection
 - [x] No LICENSE file (README says MIT)
 - [x] No Privacy Policy (Keychain + API keys = required)
-- [ ] No 1024x1024 icon
+- [~] DEFERRED: Icon — needs designer
 - [x] Bundle identifier uses dev TLD
 - [x] version 0.1.0 (App Store requires ≥1.0.0)
 
 ### Major
-- [ ] Brand identity crisis: icon ≠ sidebar logo ≠ name concept
+- [~] DEFERRED: Brand unification — needs designer: icon ≠ sidebar logo ≠ name concept
 - [x] Cargo.toml description "A Tauri App" + authors "you"
 - [x] No app category in tauri.conf.json
 - [x] No minimum macOS version set
-- [ ] No screenshots or preview video
-- [ ] No entitlements file
-- [ ] Zero ASO keywords anywhere
+- [~] DEFERRED: Screenshots — post-polish or preview video
+- [~] DEFERRED: Entitlements — pre-App Store submission file
+- [~] DEFERRED: ASO keywords — marketing task anywhere
 - [x] CSP disabled (csp: null)
 
 ### Minor
 - [x] CHANGELOG.md created
-- [ ] No promotional text
+- [~] DEFERRED: Promo text — marketing task
 - [x] Font consolidated to CSS body + --font-mono ways
 - [x] Monospace font stack unified via --font-mono inconsistent

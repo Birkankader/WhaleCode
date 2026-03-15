@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { LayoutGrid, Target, GitBranch, Code } from 'lucide-react';
+import { LayoutGrid, Target, GitBranch, Code, ClipboardCheck, CheckCircle, Settings } from 'lucide-react';
 import { useUIStore, type AppView } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { QuickTaskPopover } from './QuickTaskPopover';
@@ -21,6 +21,7 @@ export function ContentHeader() {
   const sessionStatus = orchestrationPhase === 'idle' ? 'idle' : 'running';
   const hasReviewReady = orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed';
   const hasActivity = tasks.size > 0 || orchestrationPhase !== 'idle';
+  const hasCompletedTasks = Array.from(tasks.values()).some((t) => t.status === 'completed');
 
   const tabs: { key: AppView; label: string; icon: React.ReactNode }[] = useMemo(() => {
     const base: { key: AppView; label: string; icon: React.ReactNode }[] = [
@@ -33,8 +34,18 @@ export function ContentHeader() {
         { key: 'code', label: 'Code', icon: <Code size={14} /> },
       );
     }
+    // Dynamic Review tab when orchestration is reviewing or completed
+    if (orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed') {
+      base.push({ key: 'review', label: 'Review', icon: <ClipboardCheck size={14} /> });
+    }
+    // Dynamic Done tab when orchestration completed or tasks finished
+    if (orchestrationPhase === 'completed' || hasCompletedTasks) {
+      base.push({ key: 'done', label: 'Done', icon: <CheckCircle size={14} /> });
+    }
+    // Settings always last
+    base.push({ key: 'settings', label: 'Settings', icon: <Settings size={14} /> });
     return base;
-  }, [hasActivity]);
+  }, [hasActivity, orchestrationPhase, hasCompletedTasks]);
 
   return (
     <div className="flex items-center gap-0 border-b border-wc-border bg-wc-panel h-[44px] shrink-0 pl-1 pr-4">
