@@ -238,7 +238,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
               <span>Agent / Status</span>
             </div>
             {taskRows.map((row) => {
-              const agentIcon = AGENTS[row.agent];
+              const agentIcon = AGENTS[row.agent] ?? AGENTS.claude;
               return (
                 <div
                   key={row.id}

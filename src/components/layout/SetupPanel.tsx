@@ -749,8 +749,13 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: C.textMuted, padding: '8px 12px' }}>
-              No workers selected
+            <div style={{ padding: '8px 12px' }}>
+              <div style={{ fontSize: 12, color: C.textMuted }}>
+                No workers selected
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+                This will run as a direct single-agent task. No decomposition, no sub-tasks.
+              </div>
             </div>
           )}
         </div>

@@ -109,6 +109,23 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ],
+        env: build_env(api_key),
+        cwd: cwd.to_string(),
+    }
+}
+
+/// Build a single-shot command for decomposition/planning only (1 turn, no tool use).
+pub fn build_single_shot_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
+    ClaudeCommand {
+        cmd: "claude".to_string(),
+        args: vec![
+            "-p".to_string(),
+            prompt.to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
             "--max-turns".to_string(),
             "1".to_string(),
             "--dangerously-skip-permissions".to_string(),

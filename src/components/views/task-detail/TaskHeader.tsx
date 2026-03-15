@@ -86,7 +86,7 @@ export function TaskHeaderBar({ onClose }: { onClose: () => void }) {
 
 /** Status pill, title, agent card, and result summary. Rendered inside ScrollArea. */
 export function TaskIdentity({ display }: { display: TaskDisplayData }) {
-  const agentIcon = AGENTS[display.agent];
+  const agentIcon = AGENTS[display.agent] ?? AGENTS.claude;
 
   return (
     <>

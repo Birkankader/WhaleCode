@@ -203,7 +203,7 @@ fn parse_decomposition_from_output(
     if let Some(result_text) = adapter.extract_result(output_lines) {
         debug!("[orchestrator] adapter.extract_result returned {} chars", result_text.len());
         if let Some(decomp) = parse_decomposition_json(&result_text) {
-            return Some(decomp);
+            return Some(normalize_decomposition_agents(decomp));
         }
     }
 
@@ -249,13 +249,13 @@ fn parse_decomposition_from_output(
         debug!("[orchestrator] extracted {} text segments, {} total chars", extracted_texts.len(), combined_text.len());
         if let Some(decomp) = parse_decomposition_json(&combined_text) {
             debug!("[orchestrator] parse from extracted text succeeded");
-            return Some(decomp);
+            return Some(normalize_decomposition_agents(decomp));
         }
         // Also try each segment individually
         for text in &extracted_texts {
             if let Some(decomp) = parse_decomposition_json(text) {
                 debug!("[orchestrator] parse from individual segment succeeded");
-                return Some(decomp);
+                return Some(normalize_decomposition_agents(decomp));
             }
         }
     }
@@ -263,7 +263,45 @@ fn parse_decomposition_from_output(
     // Strategy C: Fall back to scanning raw output lines
     let combined = output_lines.join("\n");
     debug!("[orchestrator] falling back to raw combined output: {} chars", combined.len());
-    parse_decomposition_json(&combined)
+    let result = parse_decomposition_json(&combined);
+
+    // Normalize agent names in the decomposition result
+    result.map(normalize_decomposition_agents)
+}
+
+/// Normalize agent names in a decomposition result.
+/// Maps common LLM hallucinations and variations to valid agent names:
+/// - "claude code", "claude-code", "Claude" → "claude"
+/// - "gemini cli", "gemini-cli", "Gemini" → "gemini"
+/// - "codex cli", "codex-cli", "Codex", "openai" → "codex"
+/// - "<agent_name>", "agent_name", unknown → falls back to "claude"
+fn normalize_agent_name(name: &str) -> String {
+    let lower = name.to_lowercase().trim().to_string();
+
+    // Strip angle brackets (LLM placeholder artifacts like "<agent_name>")
+    let cleaned = lower.trim_matches(|c| c == '<' || c == '>').trim().to_string();
+
+    if cleaned == "claude" || cleaned == "claude code" || cleaned == "claude-code" || cleaned == "claude_code" {
+        return "claude".to_string();
+    }
+    if cleaned == "gemini" || cleaned == "gemini cli" || cleaned == "gemini-cli" || cleaned == "gemini_cli" {
+        return "gemini".to_string();
+    }
+    if cleaned == "codex" || cleaned == "codex cli" || cleaned == "codex-cli" || cleaned == "codex_cli" || cleaned == "openai" {
+        return "codex".to_string();
+    }
+
+    // If it's a placeholder or unknown, default to claude
+    debug!("[orchestrator] Unknown agent name '{}', defaulting to 'claude'", name);
+    "claude".to_string()
+}
+
+/// Normalize all agent names in a DecompositionResult to valid tool names.
+fn normalize_decomposition_agents(mut result: DecompositionResult) -> DecompositionResult {
+    for task in &mut result.tasks {
+        task.agent = normalize_agent_name(&task.agent);
+    }
+    result
 }
 
 /// Parse the master agent's decomposition JSON output.

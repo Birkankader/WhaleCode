@@ -244,7 +244,7 @@ export function useTaskDispatch() {
           emitProcessOutput(tempId, ev);
         }
 
-        return taskId;
+        return processKey;
       } catch (e) {
         console.error('Failed to dispatch task:', e);
         useTaskStore.getState().updateTaskStatus(tempId, 'failed');

@@ -15,6 +15,54 @@ export interface LaunchConfig {
   taskDescription: string;
 }
 
+export interface LaunchDispatchPlan {
+  mode: 'single' | 'orchestrated';
+  masterToolName: ToolName;
+  totalWorkerCount: number;
+  orchestratorConfig: OrchestratorConfig;
+}
+
+export function buildLaunchDispatchPlan(config: Pick<LaunchConfig, 'master' | 'workers'>): LaunchDispatchPlan | null {
+  if (!config.master) return null;
+
+  const masterToolName = config.master.cli as ToolName;
+  const workerCounts = new Map<ToolName, number>();
+
+  for (const worker of config.workers) {
+    const toolName = worker.agent.cli as ToolName;
+    workerCounts.set(toolName, (workerCounts.get(toolName) ?? 0) + worker.count);
+  }
+
+  const masterWorkerCount = workerCounts.get(masterToolName) ?? 0;
+  workerCounts.delete(masterToolName);
+
+  const otherAgents: OrchestratorConfig['agents'] = Array.from(workerCounts.entries()).map(
+    ([toolName, count]) => ({
+      toolName,
+      subAgentCount: count,
+      isMaster: false,
+    }),
+  );
+
+  const totalWorkerCount = masterWorkerCount + otherAgents.reduce(
+    (sum, agent) => sum + agent.subAgentCount,
+    0,
+  );
+
+  return {
+    mode: totalWorkerCount > 0 ? 'orchestrated' : 'single',
+    masterToolName,
+    totalWorkerCount,
+    orchestratorConfig: {
+      agents: [
+        { toolName: masterToolName, subAgentCount: masterWorkerCount, isMaster: true },
+        ...otherAgents,
+      ],
+      masterAgent: masterToolName,
+    },
+  };
+}
+
 /**
  * Hook that encapsulates orchestration launch logic.
  * Extracted from AppShell to maintain single responsibility.
@@ -24,22 +72,17 @@ export function useOrchestrationLaunch() {
   const setSessionName = useUIStore((s) => s.setSessionName);
   const setShowSetup = useUIStore((s) => s.setShowSetup);
   const setActiveView = useUIStore((s) => s.setActiveView);
-  const { dispatchOrchestratedTask } = useTaskDispatch();
+  const setSelectedTaskId = useUIStore((s) => s.setSelectedTaskId);
+  const { dispatchTask, dispatchOrchestratedTask } = useTaskDispatch();
 
   const handleLaunch = useCallback(
     async (config: LaunchConfig) => {
       if (!config.master || !config.taskDescription.trim() || !config.projectDir.trim()) return;
 
-      const masterToolName = config.master.cli as ToolName;
-      const agents: OrchestratorConfig['agents'] = [
-        { toolName: masterToolName, subAgentCount: 1, isMaster: true },
-        ...config.workers.map((w) => ({
-          toolName: w.agent.cli as ToolName,
-          subAgentCount: w.count,
-          isMaster: false,
-        })),
-      ];
-      const orchestratorConfig: OrchestratorConfig = { agents, masterAgent: masterToolName };
+      const launchPlan = buildLaunchDispatchPlan(config);
+      if (!launchPlan) return;
+
+      const { masterToolName, mode, orchestratorConfig } = launchPlan;
 
       // Store project dir, session name, and update UI
       setProjectDir(config.projectDir);
@@ -58,6 +101,32 @@ export function useOrchestrationLaunch() {
       }
       store.clearSession();
 
+      if (mode === 'single') {
+        store.setOrchestrationPlan(null);
+        store.setOrchestrationPhase('idle');
+
+        const taskId = await dispatchTask(
+          config.taskDescription,
+          config.projectDir,
+          masterToolName,
+        );
+
+        if (!taskId) {
+          toast.error('Task failed to start');
+          return;
+        }
+
+        const taskState = useTaskStore.getState();
+        const task = taskState.tasks.get(taskId);
+        if (task) {
+          const newTasks = new Map(taskState.tasks);
+          newTasks.set(taskId, { ...task, role: 'master' });
+          useTaskStore.setState({ tasks: newTasks });
+        }
+        setSelectedTaskId(taskId);
+        return;
+      }
+
       // Store orchestrator config
       store.setOrchestrationPlan(orchestratorConfig);
       store.setOrchestrationPhase('decomposing');
@@ -74,6 +143,7 @@ export function useOrchestrationLaunch() {
         dependsOn: null,
         role: 'master',
       });
+      setSelectedTaskId(orchTaskId);
 
       // Immediate feedback in logs
       store.addOrchestrationLog({ agent: masterToolName, level: 'cmd', message: `Session "${config.sessionName}" starting...` });
@@ -90,7 +160,7 @@ export function useOrchestrationLaunch() {
           store.setOrchestrationPhase('failed');
         });
     },
-    [dispatchOrchestratedTask, setProjectDir, setSessionName, setShowSetup, setActiveView],
+    [dispatchOrchestratedTask, dispatchTask, setProjectDir, setSessionName, setShowSetup, setActiveView, setSelectedTaskId],
   );
 
   return { handleLaunch };
