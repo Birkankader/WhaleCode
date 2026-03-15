@@ -90,6 +90,6 @@ pub async fn start_stream(on_event: Channel<OutputEvent>) -> Result<(), String> 
 #[tauri::command]
 #[specta::specta]
 pub async fn get_task_count(state: tauri::State<'_, AppState>) -> Result<u32, String> {
-    let inner = state.lock().map_err(|e| e.to_string())?;
+    let inner = state.lock();
     Ok(inner.tasks.len() as u32)
 }

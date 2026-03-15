@@ -78,7 +78,7 @@ async fn wait_for_turn_complete(
 ) -> Result<Vec<String>, String> {
     // Clone receivers while holding lock, then drop lock
     let (mut line_rx, mut completion_rx) = {
-        let s = state.lock().map_err(|e| e.to_string())?;
+        let s = state.lock();
         let entry = s.processes.get(task_id)
             .ok_or_else(|| format!("Process {} not found", task_id))?;
         (entry.line_count_rx.clone(), entry.completion_rx.clone())
@@ -95,7 +95,7 @@ async fn wait_for_turn_complete(
             res = completion_rx.changed() => {
                 if res.is_err() || *completion_rx.borrow() {
                     // Process exited — return whatever we have
-                    let s = state.lock().map_err(|e| e.to_string())?;
+                    let s = state.lock();
                     if let Some(entry) = s.processes.get(task_id) {
                         return Ok(entry.output_lines.clone());
                     }
@@ -106,7 +106,7 @@ async fn wait_for_turn_complete(
 
         // Check new lines for turn completion
         let (current_lines, status) = {
-            let s = state.lock().map_err(|e| e.to_string())?;
+            let s = state.lock();
             let entry = s.processes.get(task_id)
                 .ok_or_else(|| format!("Process {} not found", task_id))?;
             // Only clone if there are new lines to check
@@ -132,7 +132,7 @@ async fn wait_for_turn_complete(
     }
 
     // Channel closed — check final state
-    let s = state.lock().map_err(|e| e.to_string())?;
+    let s = state.lock();
     if let Some(entry) = s.processes.get(task_id) {
         Ok(entry.output_lines.clone())
     } else {
@@ -152,10 +152,7 @@ async fn wait_for_process_completion(
 ) -> i32 {
     // Clone the watch receiver while holding the lock, then drop the lock before awaiting
     let mut rx = {
-        let inner = match state.lock() {
-            Ok(inner) => inner,
-            Err(_) => return -1,
-        };
+        let inner = state.lock();
         match inner.processes.get(task_id) {
             Some(entry) => {
                 match &entry.status {
@@ -176,10 +173,7 @@ async fn wait_for_process_completion(
     }
 
     // Re-check final status
-    let inner = match state.lock() {
-        Ok(inner) => inner,
-        Err(_) => return -1,
-    };
+    let inner = state.lock();
     match inner.processes.get(task_id) {
         Some(entry) => match &entry.status {
             ProcessStatus::Completed(code) => *code,
@@ -496,7 +490,7 @@ fn update_plan_phase(
     plan_id: &str,
     phase: OrchestrationPhase,
 ) -> Result<(), String> {
-    let mut inner = state.lock().map_err(|e| e.to_string())?;
+    let mut inner = state.lock();
     if let Some(plan) = inner.orchestration_plans.get_mut(plan_id) {
         plan.phase = phase;
     }
@@ -505,13 +499,10 @@ fn update_plan_phase(
 
 /// Get the last N lines of a process's output as a summary string.
 fn get_process_output_summary(task_id: &str, state: &AppState) -> String {
-    let inner = match state.lock() {
-        Ok(inner) => inner,
-        Err(_) => return String::new(),
-    };
+    let inner = state.lock();
     if let Some(entry) = inner.processes.get(task_id) {
         let lines = &entry.output_lines;
-        let last_20: Vec<&str> = lines.iter().rev().take(20).map(|s| s.as_str()).collect();
+        let last_20: Vec<&str> = lines.iter().rev().take(20).map(|s: &String| s.as_str()).collect();
         last_20.into_iter().rev().collect::<Vec<_>>().join("\n")
     } else {
         String::new()
@@ -559,7 +550,7 @@ pub async fn dispatch_orchestrated_task(
 
     // Store plan
     {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let mut inner = state_ref.lock();
         inner.orchestration_plans.insert(plan.task_id.clone(), plan.clone());
     }
 
@@ -663,7 +654,7 @@ pub async fn dispatch_orchestrated_task(
     // Store master_process_id in plan
     plan.master_process_id = Some(master_task_id.clone());
     {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let mut inner = state_ref.lock();
         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
             p.master_process_id = Some(master_task_id.clone());
         }
@@ -748,7 +739,7 @@ pub async fn dispatch_orchestrated_task(
                         // Update master_task_id in plan for the new process
                         plan.master_process_id = Some(retry_task_id.clone());
                         {
-                            let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+                            let mut inner = state_ref.lock();
                             if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
                                 p.master_process_id = Some(retry_task_id.clone());
                             }
@@ -789,7 +780,7 @@ pub async fn dispatch_orchestrated_task(
                     // Update master_task_id in plan
                     plan.master_process_id = Some(retry_task_id.clone());
                     {
-                        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+                        let mut inner = state_ref.lock();
                         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
                             p.master_process_id = Some(retry_task_id.clone());
                         }
@@ -868,7 +859,7 @@ pub async fn dispatch_orchestrated_task(
     plan.decomposition = Some(decomposition.clone());
     plan.phase = OrchestrationPhase::AwaitingApproval;
     let mut approval_rx = {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let mut inner = state_ref.lock();
         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
             p.decomposition = plan.decomposition.clone();
             p.phase = OrchestrationPhase::AwaitingApproval;
@@ -905,7 +896,7 @@ pub async fn dispatch_orchestrated_task(
         }
 
         let phase = {
-            let inner = state_ref.lock().map_err(|e| e.to_string())?;
+            let inner = state_ref.lock();
             inner.orchestration_plans.get(&plan.task_id)
                 .map(|p| p.phase.clone())
         };
@@ -921,13 +912,13 @@ pub async fn dispatch_orchestrated_task(
 
     // Clean up approval signal
     {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let mut inner = state_ref.lock();
         inner.approval_signals.remove(&plan.task_id);
     }
 
     // Re-read decomposition in case user modified it during approval
     let decomposition = {
-        let inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let inner = state_ref.lock();
         inner.orchestration_plans.get(&plan.task_id)
             .and_then(|p| p.decomposition.clone())
             .ok_or_else(|| "Decomposition lost during approval".to_string())?
@@ -1112,7 +1103,7 @@ pub async fn dispatch_orchestrated_task(
 
                 // Check if failure was due to rate limiting
                 let was_rate_limited = {
-                    let state_guard = state_ref.lock().map_err(|e| e.to_string())?;
+                    let state_guard = state_ref.lock();
                     if let Some(entry) = state_guard.processes.get(&current_task_id) {
                         let rl_adapter = get_adapter(&current_agent)?;
                         entry.output_lines.iter().any(|line| rl_adapter.detect_rate_limit(line).is_some())
@@ -1274,7 +1265,7 @@ pub async fn dispatch_orchestrated_task(
         let cleanup_delay_inner = cleanup_delay;
         tokio::spawn(async move {
             tokio::time::sleep(cleanup_delay_inner).await;
-            if let Ok(mut guard) = cleanup_state.lock() {
+            { let mut guard = cleanup_state.lock();
                 guard.orchestration_plans.remove(&cleanup_plan_id);
             }
         });
@@ -1283,7 +1274,7 @@ pub async fn dispatch_orchestrated_task(
 
     // Update plan with final worker results
     {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let mut inner = state_ref.lock();
         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
             p.worker_results = plan.worker_results.clone();
             p.sub_tasks = plan.sub_tasks.clone();
@@ -1393,7 +1384,7 @@ pub async fn dispatch_orchestrated_task(
     let cleanup_plan_id = plan.task_id.clone();
     tokio::spawn(async move {
         tokio::time::sleep(cleanup_delay).await;
-        if let Ok(mut guard) = cleanup_state.lock() {
+        { let mut guard = cleanup_state.lock();
             guard.orchestration_plans.remove(&cleanup_plan_id);
         }
     });
@@ -1423,10 +1414,7 @@ async fn wait_for_worker_with_questions(
 
     // Clone receivers while holding lock, then drop lock
     let (mut line_rx, mut completion_rx) = {
-        let s = match state.lock() {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
+        let s = state.lock();
         match s.processes.get(worker_task_id) {
             Some(entry) => (entry.line_count_rx.clone(), entry.completion_rx.clone()),
             None => return -1,
@@ -1442,10 +1430,7 @@ async fn wait_for_worker_with_questions(
             res = completion_rx.changed() => {
                 if res.is_err() || *completion_rx.borrow() {
                     // Process exited — check final status
-                    let s = match state.lock() {
-                        Ok(s) => s,
-                        Err(_) => return -1,
-                    };
+                    let s = state.lock();
                     return match s.processes.get(worker_task_id) {
                         Some(entry) => match &entry.status {
                             ProcessStatus::Completed(code) => *code,
@@ -1458,10 +1443,7 @@ async fn wait_for_worker_with_questions(
         }
 
         let (current_lines, status) = {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(_) => return -1,
-            };
+            let s = state.lock();
             match s.processes.get(worker_task_id) {
                 Some(entry) => {
                     if entry.output_lines.len() > lines_seen {
@@ -1513,10 +1495,7 @@ async fn wait_for_worker_with_questions(
 
                             // Store pending question in queue
                             {
-                                let mut inner = match state.lock() {
-                                    Ok(inner) => inner,
-                                    Err(_) => continue,
-                                };
+                                let mut inner = state.lock();
                                 inner.question_queue.push(PendingQuestion {
                                     question,
                                     worker_task_id: worker_task_id.to_string(),
@@ -1528,10 +1507,7 @@ async fn wait_for_worker_with_questions(
                             loop {
                                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                                 let phase = {
-                                    let inner = match state.lock() {
-                                        Ok(inner) => inner,
-                                        Err(_) => break,
-                                    };
+                                    let inner = state.lock();
                                     inner.orchestration_plans.get(plan_id)
                                         .map(|p| p.phase.clone())
                                 };
@@ -1573,10 +1549,7 @@ async fn wait_for_worker_with_questions(
     }
 
     // Channel closed — check final status
-    let s = match state.lock() {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    let s = state.lock();
     match s.processes.get(worker_task_id) {
         Some(entry) => match &entry.status {
             ProcessStatus::Completed(code) => *code,
@@ -1600,7 +1573,7 @@ pub async fn approve_orchestration(
     modified_tasks: Option<Vec<crate::router::orchestrator::SubTaskDef>>,
 ) -> Result<(), String> {
     let state_ref: &AppState = &state;
-    let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+    let mut inner = state_ref.lock();
     let plan = inner.orchestration_plans.get_mut(&plan_id)
         .ok_or_else(|| format!("No orchestration plan found for: {}", plan_id))?;
 
@@ -1643,7 +1616,7 @@ pub async fn clear_orchestration_context(
 
     // Get master process id and agent from plan
     let (master_task_id, master_agent) = {
-        let inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let inner = state_ref.lock();
         let plan = inner.orchestration_plans.get(&plan_id)
             .ok_or_else(|| format!("No orchestration plan found for: {}", plan_id))?;
         let master_id = plan.master_process_id.clone()
@@ -1694,7 +1667,7 @@ pub async fn clear_orchestration_context(
 
     // Kill ALL agent processes
     let process_ids: Vec<String> = {
-        let inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let inner = state_ref.lock();
         inner.processes.keys().cloned().collect()
     };
 
@@ -1704,7 +1677,7 @@ pub async fn clear_orchestration_context(
 
     // Remove plan from state and clear its questions from the queue
     {
-        let mut inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let mut inner = state_ref.lock();
         inner.orchestration_plans.remove(&plan_id);
         inner.question_queue.retain(|q| q.plan_id != plan_id);
     }
@@ -1736,7 +1709,7 @@ pub async fn answer_user_question(
 
     // Get master process id from plan
     let master_task_id = {
-        let inner = state_ref.lock().map_err(|e| e.to_string())?;
+        let inner = state_ref.lock();
         let plan = inner.orchestration_plans.get(&plan_id)
             .ok_or_else(|| format!("No orchestration plan found for: {}", plan_id))?;
         plan.master_process_id.clone()
@@ -1770,7 +1743,7 @@ pub async fn get_agent_context_info(
     task_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<AgentContextInfo>, String> {
-    let inner = state.lock().map_err(|e| e.to_string())?;
+    let inner = state.lock();
 
     let plan = inner
         .orchestration_plans
@@ -1817,7 +1790,7 @@ pub async fn approve_decomposition(
     modified_tasks: Vec<crate::router::orchestrator::SubTaskDef>,
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<(), String> {
-    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let mut state = state.lock();
     let plan = state
         .orchestration_plans
         .get_mut(&plan_id)
@@ -1840,7 +1813,7 @@ pub async fn reject_decomposition(
     feedback: String,
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<(), String> {
-    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let mut state = state.lock();
     let plan = state
         .orchestration_plans
         .get_mut(&plan_id)

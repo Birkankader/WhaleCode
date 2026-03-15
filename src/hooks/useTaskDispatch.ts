@@ -37,7 +37,8 @@ export function useTaskDispatch() {
           return result.data;
         }
         return null;
-      } catch {
+      } catch (e) {
+        console.error('Failed to suggest tool:', e);
         return null;
       }
     },
@@ -156,7 +157,7 @@ export function useTaskDispatch() {
                   singleTaskResultText = msgText.length > 800 ? msgText.slice(0, 797) + '...' : msgText;
                 }
               }
-            } catch { /* not valid JSON */ }
+            } catch (e) { /* not valid JSON */ }
           }
         }
 
@@ -244,7 +245,8 @@ export function useTaskDispatch() {
         }
 
         return taskId;
-      } catch {
+      } catch (e) {
+        console.error('Failed to dispatch task:', e);
         useTaskStore.getState().updateTaskStatus(tempId, 'failed');
         return null;
       }

@@ -4876,6 +4876,7 @@ dependencies = [
  "keyring",
  "libc",
  "nix",
+ "parking_lot",
  "rusqlite",
  "rusqlite_migration",
  "serde",

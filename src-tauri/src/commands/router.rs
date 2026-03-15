@@ -17,7 +17,7 @@ pub async fn suggest_tool(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::router::models::RoutingSuggestion, String> {
     let (claude_busy, gemini_busy, codex_busy) = {
-        let inner = state.lock().map_err(|e| e.to_string())?;
+        let inner = state.lock();
         let mut cb = false;
         let mut gb = false;
         let mut xb = false;
@@ -100,7 +100,7 @@ pub async fn dispatch_task(
     // CRITICAL: Do NOT hold AppState lock while calling build_prompt_context (deadlock risk)
     let context = {
         let cache_hit = {
-            let inner = state.lock().map_err(|e| e.to_string())?;
+            let inner = state.lock();
             if let Some(ref cached) = inner.cached_prompt_context {
                 if cached.is_valid(&project_dir) {
                     Some(cached.context.clone())
@@ -115,7 +115,7 @@ pub async fn dispatch_task(
         if let Some(ctx) = cache_hit {
             // Cache hit: increment task counter
             {
-                let mut inner = state.lock().map_err(|e| e.to_string())?;
+                let mut inner = state.lock();
                 if let Some(ref mut cached) = inner.cached_prompt_context {
                     cached.tasks_since_cache += 1;
                 }
@@ -133,7 +133,7 @@ pub async fn dispatch_task(
 
             // Store in cache
             {
-                let mut inner = state.lock().map_err(|e| e.to_string())?;
+                let mut inner = state.lock();
                 inner.cached_prompt_context = Some(CachedPromptContext {
                     context: fresh_context.clone(),
                     project_dir: project_dir.clone(),
@@ -188,7 +188,7 @@ pub async fn dispatch_task(
 
     // Update the ProcessEntry with tool metadata
     {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
+        let mut inner = state.lock();
         if let Some(entry) = inner.processes.get_mut(&resolved_task_id) {
             entry.tool_name = tool_name;
             let truncated = if prompt.len() > 120 {

@@ -7,7 +7,7 @@ use crate::state::{AppState, ProcessStatus};
 pub async fn cleanup_completed_processes(
     state: tauri::State<'_, AppState>,
 ) -> Result<u32, String> {
-    let mut inner = state.lock().map_err(|e| e.to_string())?;
+    let mut inner = state.lock();
     let now = chrono::Utc::now().timestamp_millis();
     let thirty_sec_ms = 30 * 1000;
 

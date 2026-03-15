@@ -159,18 +159,12 @@ pub fn run() {
                 println!("App exiting — killing all tracked processes");
                 let state: tauri::State<AppState> = app_handle.state();
                 let lock_result = state.lock();
-                match lock_result {
-                    Ok(mut inner) => {
-                        for (_id, proc) in inner.processes.drain() {
-                            let _ = nix::sys::signal::killpg(
-                                nix::unistd::Pid::from_raw(proc.pgid),
-                                nix::sys::signal::Signal::SIGKILL,
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to lock state during exit: {}", e);
-                    }
+                let mut inner = lock_result;
+                for (_id, proc) in inner.processes.drain() {
+                    let _ = nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(proc.pgid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
                 }
             }
         });

@@ -40,7 +40,8 @@ export function useGeminiTask() {
       }
       setHasApiKey(false);
       return false;
-    } catch {
+    } catch (e) {
+      console.error('Failed to check Gemini API key:', e);
       setHasApiKey(false);
       return false;
     }
@@ -70,7 +71,7 @@ export function useGeminiTask() {
               if (parsed.type === 'result') {
                 lastResultJson = msg.data;
               }
-            } catch {
+            } catch (e) {
               /* not JSON, ignore */
             }
 
@@ -108,7 +109,8 @@ export function useGeminiTask() {
                 if (validateResult.status === 'error') {
                   isSilentFailure = true;
                 }
-              } catch {
+              } catch (e) {
+                console.error('Failed to validate Gemini result:', e);
                 isSilentFailure = true;
               }
             } else if (Number(msg.data) === 0) {

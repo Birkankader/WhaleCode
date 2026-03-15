@@ -40,7 +40,8 @@ export function useClaudeTask() {
       }
       setHasApiKey(false);
       return false;
-    } catch {
+    } catch (e) {
+      console.error('Failed to check Claude API key:', e);
       setHasApiKey(false);
       return false;
     }
@@ -70,7 +71,7 @@ export function useClaudeTask() {
               if (parsed.type === 'result') {
                 lastResultJson = msg.data;
               }
-            } catch {
+            } catch (e) {
               /* not JSON, ignore */
             }
 
@@ -107,7 +108,8 @@ export function useClaudeTask() {
                 if (validateResult.status === 'error') {
                   isSilentFailure = true;
                 }
-              } catch {
+              } catch (e) {
+                console.error('Failed to validate Claude result:', e);
                 isSilentFailure = true;
               }
             } else if (Number(msg.data) === 0) {

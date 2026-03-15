@@ -111,8 +111,7 @@ export function TerminalBottomPanel({ open, onToggle }: TerminalBottomPanelProps
       </button>
 
       {/* Panel content */}
-      {open && (
-        <div style={{ height, display: 'flex', flexDirection: 'column', background: '#07070f' }}>
+      <div style={{ height: open ? height : 0, overflow: 'hidden', transition: 'height 200ms cubic-bezier(0.4, 0, 0.2, 1)', display: 'flex', flexDirection: 'column', background: '#07070f' }}>
           {/* Resize handle */}
           <div
             onMouseDown={handleResizeStart}
@@ -165,7 +164,6 @@ export function TerminalBottomPanel({ open, onToggle }: TerminalBottomPanelProps
             )}
           </div>
         </div>
-      )}
     </div>
   );
 }

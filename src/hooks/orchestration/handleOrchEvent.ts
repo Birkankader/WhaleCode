@@ -6,10 +6,23 @@ import { commands } from '../../bindings';
 
 /* ── Structured orchestrator event handler ───────────────── */
 
-export interface OrchEvent {
-  type: string;
-  [key: string]: unknown;
-}
+export type OrchEvent =
+  | { type: 'phase_changed'; phase: string; detail?: string; task_count?: number; wave_count?: number }
+  | { type: 'task_assigned'; agent: string; description: string; prompt?: string }
+  | { type: 'task_completed'; summary?: string; exit_code?: number }
+  | { type: 'task_failed'; summary?: string; exit_code?: number }
+  | { type: 'wave_progress'; current: number; total: number }
+  | { type: 'task_skipped'; dag_id: string; reason: string }
+  | { type: 'task_retrying'; dag_id: string; attempt: number; max_retries: number }
+  | { type: 'task_fallback'; dag_id: string; from_agent: string; to_agent: string }
+  | { type: 'rate_limited'; dag_id: string; wait_seconds: number }
+  | { type: 'master_timeout'; timeout_minutes: number }
+  | { type: 'worker_timeout'; timeout_minutes: number }
+  | { type: 'review_timeout'; timeout_minutes: number }
+  | { type: 'question'; agent: string; content: string; plan_id?: string }
+  | { type: 'question_answered'; agent: string }
+  | { type: 'dispatch_error'; dag_id: string; error: string }
+  | { type: 'info'; message: string };
 
 export function handleOrchEvent(
   ev: OrchEvent,
@@ -25,7 +38,7 @@ export function handleOrchEvent(
 
   switch (ev.type) {
     case 'phase_changed': {
-      const phase = ev.phase as string;
+      const phase = ev.phase;
       if (phase === 'decomposing') {
         store.setOrchestrationPhase('decomposing');
         log('cmd', `Phase 1: ${ev.detail || 'Decomposing'}`);
@@ -104,9 +117,9 @@ export function handleOrchEvent(
     }
 
     case 'task_assigned': {
-      const agent = ev.agent as string;
-      const desc = ev.description as string;
-      const prompt = (ev.prompt as string) || desc; // Full prompt from backend, fallback to description
+      const agent = ev.agent;
+      const desc = ev.description;
+      const prompt = ev.prompt || desc; // Full prompt from backend, fallback to description
       const subId = crypto.randomUUID();
       const phase2Already = store.orchestrationPhase === 'executing';
       store.addTask({
@@ -132,7 +145,7 @@ export function handleOrchEvent(
       if (targetId) {
         store.updateTaskStatus(targetId, status);
       }
-      const summary = (ev.summary as string) || '';
+      const summary = ev.summary || '';
       log(
         ev.type === 'task_completed' ? 'success' : 'error',
         `${ev.type === 'task_completed' ? 'Completed' : 'Failed'} (exit ${ev.exit_code}): ${summary.slice(0, 200)}`,
@@ -153,7 +166,7 @@ export function handleOrchEvent(
     }
 
     case 'task_skipped': {
-      const dagId = ev.dag_id as string;
+      const dagId = ev.dag_id;
       const frontendId = dagToFrontendId.get(dagId);
       if (frontendId) {
         store.updateTaskStatus(frontendId, 'blocked');
@@ -165,7 +178,7 @@ export function handleOrchEvent(
     }
 
     case 'task_retrying': {
-      const dagId = ev.dag_id as string;
+      const dagId = ev.dag_id;
       const frontendId = dagToFrontendId.get(dagId);
       if (frontendId) {
         store.updateTaskStatus(frontendId, 'retrying');
@@ -178,8 +191,8 @@ export function handleOrchEvent(
     }
 
     case 'task_fallback': {
-      const dagId = ev.dag_id as string;
-      const newAgent = ev.to_agent as string;
+      const dagId = ev.dag_id;
+      const newAgent = ev.to_agent;
       const frontendId = dagToFrontendId.get(dagId);
       if (frontendId) {
         const task = store.tasks.get(frontendId);
@@ -211,9 +224,9 @@ export function handleOrchEvent(
       if (ev.plan_id) {
         store.setPendingQuestion({
           questionId: `q-${Date.now()}`,
-          sourceAgent: ev.agent as string,
-          content: ev.content as string,
-          planId: ev.plan_id as string,
+          sourceAgent: ev.agent,
+          content: ev.content,
+          planId: ev.plan_id,
         });
       }
       // Notify user — especially useful when app is in background
@@ -238,7 +251,7 @@ export function handleOrchEvent(
     }
 
     case 'info': {
-      log('info', ev.message as string);
+      log('info', ev.message);
       break;
     }
   }

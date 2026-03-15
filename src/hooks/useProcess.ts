@@ -132,7 +132,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     let channel: Channel<OutputEvent>;
     try {
       channel = new Channel<OutputEvent>();
-    } catch {
+    } catch (e) {
+      console.error('Failed to create output channel:', e);
       return null;
     }
 
@@ -193,7 +194,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       }
 
       return taskId;
-    } catch {
+    } catch (e) {
+      console.error('Failed to spawn process:', e);
       return null;
     }
   },
@@ -202,8 +204,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       await commands.cancelProcess(taskId);
       get()._updateStatus(taskId, 'failed');
-    } catch {
-      // Non-Tauri environment
+    } catch (e) {
+      console.error('Failed to cancel process:', e);
     }
   },
 
@@ -211,8 +213,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       await commands.pauseProcess(taskId);
       get()._updateStatus(taskId, 'paused');
-    } catch {
-      // Non-Tauri environment
+    } catch (e) {
+      console.error('Failed to pause process:', e);
     }
   },
 
@@ -220,8 +222,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       await commands.resumeProcess(taskId);
       get()._updateStatus(taskId, 'running');
-    } catch {
-      // Non-Tauri environment
+    } catch (e) {
+      console.error('Failed to resume process:', e);
     }
   },
 

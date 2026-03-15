@@ -57,6 +57,16 @@ export interface PendingQuestion {
   planId: string;
 }
 
+export type OrchestrationLogLevel = 'info' | 'success' | 'warn' | 'cmd' | 'error';
+
+export interface OrchestrationLogEntry {
+  id: string;
+  timestamp: string;
+  agent: ToolName;
+  level: OrchestrationLogLevel;
+  message: string;
+}
+
 interface TaskState {
   tasks: Map<string, TaskEntry>;
   orchestrationPlan: OrchestratorConfig | null;
@@ -79,8 +89,8 @@ interface TaskState {
   setOrchestrationPhase: (phase: OrchestrationPhase) => void;
   decomposedTasks: SubTaskEntry[];
   setDecomposedTasks: (tasks: SubTaskEntry[]) => void;
-  orchestrationLogs: Array<{ id: string; timestamp: string; agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }>;
-  addOrchestrationLog: (log: { agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }) => void;
+  orchestrationLogs: OrchestrationLogEntry[];
+  addOrchestrationLog: (log: Omit<OrchestrationLogEntry, 'id' | 'timestamp'>) => void;
   clearOrchestrationLogs: () => void;
   orchestrationStartedAt: number | null;
   lastActivityAt: number | null;

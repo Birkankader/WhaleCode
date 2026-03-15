@@ -218,7 +218,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       onClick={onClose}
     >
       <div
-        className="w-[520px] max-h-[420px] flex flex-col rounded-2xl border border-wc-border-strong bg-wc-panel shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
+        className="w-full max-w-[520px] max-h-[420px] flex flex-col rounded-2xl border border-wc-border-strong bg-wc-panel shadow-[0_24px_64px_rgba(0,0,0,0.6)]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label="Command palette"

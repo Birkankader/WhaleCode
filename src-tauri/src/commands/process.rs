@@ -50,7 +50,7 @@ pub fn resume_process(
 pub fn get_running_processes(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let inner = state.lock().map_err(|e| e.to_string())?;
+    let inner = state.lock();
     let running: Vec<String> = inner
         .processes
         .iter()

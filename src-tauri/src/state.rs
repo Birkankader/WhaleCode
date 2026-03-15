@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -114,7 +115,7 @@ mod tests {
     #[test]
     fn app_state_initializes_empty() {
         let state = AppState::default();
-        let inner = state.lock().unwrap();
+        let inner = state.lock();
         assert_eq!(inner.tasks.len(), 0);
         assert_eq!(inner.processes.len(), 0);
         assert!(inner.cached_prompt_context.is_none());
@@ -124,7 +125,7 @@ mod tests {
     fn app_state_insert_and_count() {
         let state = AppState::default();
         {
-            let mut inner = state.lock().unwrap();
+            let mut inner = state.lock();
             inner.tasks.insert(
                 "task-1".to_string(),
                 TaskInfo {
@@ -132,7 +133,7 @@ mod tests {
                 },
             );
         }
-        let inner = state.lock().unwrap();
+        let inner = state.lock();
         assert_eq!(inner.tasks.len(), 1);
     }
 
@@ -184,14 +185,14 @@ mod tests {
     #[test]
     fn reserved_tools_starts_empty() {
         let state = AppState::default();
-        let inner = state.lock().unwrap();
+        let inner = state.lock();
         assert!(inner.reserved_tools.is_empty());
     }
 
     #[test]
     fn reserved_tools_insert_and_check() {
         let state = AppState::default();
-        let mut inner = state.lock().unwrap();
+        let mut inner = state.lock();
 
         // First insert succeeds
         assert!(inner.reserved_tools.insert("claude".to_string()));
@@ -204,7 +205,7 @@ mod tests {
     #[test]
     fn reserved_tools_remove_allows_re_reservation() {
         let state = AppState::default();
-        let mut inner = state.lock().unwrap();
+        let mut inner = state.lock();
 
         inner.reserved_tools.insert("claude".to_string());
         inner.reserved_tools.remove("claude");
@@ -216,7 +217,7 @@ mod tests {
     #[test]
     fn reserved_tools_independent_of_processes() {
         let state = AppState::default();
-        let mut inner = state.lock().unwrap();
+        let mut inner = state.lock();
 
         // Reservation exists even with no matching process
         inner.reserved_tools.insert("claude".to_string());

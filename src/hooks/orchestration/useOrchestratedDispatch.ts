@@ -7,7 +7,7 @@ import {
   emitLocalProcessMessage,
   useProcessStore,
 } from '../useProcess';
-import { useTaskStore, type ToolName, type OrchestratorConfig } from '../../stores/taskStore';
+import { useTaskStore, type ToolName, type TaskStatus, type OrchestratorConfig } from '../../stores/taskStore';
 import { handleOrchEvent } from './handleOrchEvent';
 
 /**
@@ -57,7 +57,7 @@ export function useOrchestratedDispatch() {
               const ev = JSON.parse(line.slice(8));
               handleOrchEvent(ev, masterAgent, subTaskQueue, dagToFrontendId, dagCounter);
               if (ev.type === 'task_assigned') dagCounter++;
-            } catch { /* malformed event */ }
+            } catch (e) { console.error('Malformed orch event:', e); }
             return;
           }
 
@@ -76,7 +76,7 @@ export function useOrchestratedDispatch() {
                     } else if (parsed && Array.isArray(parsed.sub_tasks) && parsed.sub_tasks[0]?.assigned_agent) {
                       isDecompositionJson = true;
                     }
-                  } catch { /* not decomposition JSON */ }
+                  } catch (e) { /* not decomposition JSON */ }
                 }
                 if (resultText && !isDecompositionJson) {
                   lastResultText = resultText.length > 800 ? resultText.slice(0, 797) + '...' : resultText;
@@ -101,7 +101,7 @@ export function useOrchestratedDispatch() {
                   status: ev.is_error ? 'failed' : 'completed',
                 });
               }
-            } catch { /* not valid JSON */ }
+            } catch (e) { /* not valid JSON */ }
           }
           // Skip all other raw text (MCP warnings, echoed prompts, verbose agent output)
         }
@@ -153,14 +153,14 @@ export function useOrchestratedDispatch() {
           // Determine final phase status
           const phaseStr = plan.phase as string;
           const isFailure = phaseStr === 'Failed';
-          const finalStatus = isFailure ? 'failed' : 'completed';
+          const finalStatus: TaskStatus = isFailure ? 'failed' : 'completed';
 
           // Update the initial orchestration task that was added immediately at launch
           // Find it: it's the task with status 'running' matching the prompt
           const currentTasks = taskState.tasks;
           for (const [id, t] of currentTasks) {
             if (t.status === 'running' && t.prompt === prompt) {
-              taskState.updateTaskStatus(id, finalStatus as any);
+              taskState.updateTaskStatus(id, finalStatus);
               // Attach final result summary to the master task
               if (lastResultText) {
                 taskState.updateTaskResult(id, lastResultText);
