@@ -197,15 +197,72 @@ fn parse_decomposition_from_output(
     output_lines: &[String],
     adapter: &dyn ToolAdapter,
 ) -> Option<DecompositionResult> {
-    // Try adapter's extract_result first
+    debug!("[orchestrator] parse_decomposition: {} output lines to parse", output_lines.len());
+
+    // Strategy A: Try adapter's extract_result first (looks for "result" event)
     if let Some(result_text) = adapter.extract_result(output_lines) {
+        debug!("[orchestrator] adapter.extract_result returned {} chars", result_text.len());
         if let Some(decomp) = parse_decomposition_json(&result_text) {
             return Some(decomp);
         }
     }
 
-    // Fall back to scanning all output lines for JSON
+    // Strategy B: Extract text content from NDJSON message/result events
+    // Claude returns decomposition JSON inside message content blocks or result text
+    let mut extracted_texts: Vec<String> = Vec::new();
+    for line in output_lines {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') { continue; }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let event_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match event_type {
+                "message" | "assistant" => {
+                    // Extract text from content blocks
+                    if let Some(content) = parsed.get("content") {
+                        if let Some(arr) = content.as_array() {
+                            for block in arr {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    extracted_texts.push(text.to_string());
+                                }
+                            }
+                        } else if let Some(text) = content.as_str() {
+                            extracted_texts.push(text.to_string());
+                        }
+                    }
+                }
+                "result" => {
+                    if let Some(result) = parsed.get("result").and_then(|r| r.as_str()) {
+                        extracted_texts.push(result.to_string());
+                    }
+                    if let Some(response) = parsed.get("response").and_then(|r| r.as_str()) {
+                        extracted_texts.push(response.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Try parsing extracted texts (most likely to contain the JSON)
+    if !extracted_texts.is_empty() {
+        let combined_text = extracted_texts.join("\n");
+        debug!("[orchestrator] extracted {} text segments, {} total chars", extracted_texts.len(), combined_text.len());
+        if let Some(decomp) = parse_decomposition_json(&combined_text) {
+            debug!("[orchestrator] parse from extracted text succeeded");
+            return Some(decomp);
+        }
+        // Also try each segment individually
+        for text in &extracted_texts {
+            if let Some(decomp) = parse_decomposition_json(text) {
+                debug!("[orchestrator] parse from individual segment succeeded");
+                return Some(decomp);
+            }
+        }
+    }
+
+    // Strategy C: Fall back to scanning raw output lines
     let combined = output_lines.join("\n");
+    debug!("[orchestrator] falling back to raw combined output: {} chars", combined.len());
     parse_decomposition_json(&combined)
 }
 
