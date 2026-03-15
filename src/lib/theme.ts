@@ -1,38 +1,45 @@
-/** Design tokens matching the DesktopApp mockup */
+/**
+ * Design tokens — resolved from CSS custom properties.
+ * The canonical values live in index.css (--color-wc-*).
+ * This object provides JS access for the few places that still need it.
+ *
+ * PREFER Tailwind classes (bg-wc-accent, text-wc-text-primary, etc.) over C.* in new code.
+ * @deprecated Use Tailwind wc-* classes directly. This exists for gradual migration.
+ */
 export const C = {
-  bg: "#09090f",
-  sidebar: "#0c0c14",
-  panel: "#0f0f1a",
-  surface: "#13131f",
-  surfaceHover: "#191926",
-  border: "#1c1c2e",
-  borderStrong: "#252538",
-  accent: "#6366f1",
-  accentSoft: "#1e1b4b",
-  accentText: "#a5b4fc",
-  textPrimary: "#e2e8f0",
-  textSecondary: "#8b8fa8",
-  textMuted: "#4b4d66",
-  green: "#4ade80",
-  greenBg: "#052e16",
-  greenBorder: "#14532d",
-  amber: "#f59e0b",
-  amberBg: "#1c1000",
-  amberBorder: "#78350f",
-  red: "#f87171",
-  redBg: "#1f0000",
+  bg: "var(--color-wc-bg)",
+  sidebar: "var(--color-wc-sidebar)",
+  panel: "var(--color-wc-panel)",
+  surface: "var(--color-wc-surface)",
+  surfaceHover: "var(--color-wc-surface-hover)",
+  border: "var(--color-wc-border)",
+  borderStrong: "var(--color-wc-border-strong)",
+  accent: "var(--color-wc-accent)",
+  accentSoft: "var(--color-wc-accent-soft)",
+  accentText: "var(--color-wc-accent-text)",
+  textPrimary: "var(--color-wc-text-primary)",
+  textSecondary: "var(--color-wc-text-secondary)",
+  textMuted: "var(--color-wc-text-muted)",
+  green: "var(--color-wc-green)",
+  greenBg: "var(--color-wc-green-bg)",
+  greenBorder: "var(--color-wc-green-border)",
+  amber: "var(--color-wc-amber)",
+  amberBg: "var(--color-wc-amber-bg)",
+  amberBorder: "var(--color-wc-amber-border)",
+  red: "var(--color-wc-red)",
+  redBg: "var(--color-wc-red-bg)",
 } as const;
 
 export const STATUS: Record<string, { dot: string; label: string; bg: string; text: string }> = {
   done: { dot: C.green, label: "Done", bg: C.greenBg, text: C.green },
   running: { dot: C.amber, label: "In Progress", bg: C.amberBg, text: C.amber },
-  queued: { dot: C.textMuted, label: "Queued", bg: "#0f0f1a", text: C.textSecondary },
+  queued: { dot: C.textMuted, label: "Queued", bg: C.panel, text: C.textSecondary },
   review: { dot: C.accentText, label: "Review", bg: C.accentSoft, text: C.accentText },
-  orchestrating: { dot: "#8b5cf6", label: "Orchestrating", bg: C.accentSoft, text: C.accentText },
+  orchestrating: { dot: C.accent, label: "Orchestrating", bg: C.accentSoft, text: C.accentText },
   failed: { dot: C.red, label: "Failed", bg: C.redBg, text: C.red },
   blocked: { dot: C.red, label: "Blocked", bg: C.redBg, text: C.red },
   retrying: { dot: C.amber, label: "Retrying", bg: C.amberBg, text: C.amber },
-  idle: { dot: "#4b5563", label: "Idle", bg: "#0f0f1a", text: "#6b7280" },
+  idle: { dot: C.textMuted, label: "Idle", bg: C.panel, text: C.textSecondary },
 };
 
 export const LOG_COLOR: Record<string, string> = {

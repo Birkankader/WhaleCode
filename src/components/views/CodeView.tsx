@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { C } from '@/lib/theme';
+import { sanitizeShikiHtml } from '@/lib/sanitize';
 import { useUIStore } from '@/stores/uiStore';
 import { useFileExplorer, type TreeNode } from '@/hooks/useFileExplorer';
 import { commands } from '@/bindings';
@@ -331,7 +332,7 @@ function CodePanel({
           <div
             className="shiki-container text-[12px] leading-[20px] p-4"
             style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
-            dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+            dangerouslySetInnerHTML={{ __html: sanitizeShikiHtml(highlightedHtml) }}
           />
         ) : (
           <pre

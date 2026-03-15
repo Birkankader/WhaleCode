@@ -18,7 +18,7 @@
   --color-wc-accent-text: #a5b4fc;
   --color-wc-text-primary: #e2e8f0;
   --color-wc-text-secondary: #8b8fa8;
-  --color-wc-text-muted: #4b4d66;
+  --color-wc-text-muted: #7b7d96;
   --color-wc-green: #4ade80;
   --color-wc-green-bg: #052e16;
   --color-wc-green-border: #14532d;
@@ -201,6 +201,123 @@
 }
 .kanban-card-slide {
   animation: kanbanSlideIn 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Decomposition error card fade-in */
+@keyframes decompositionErrorFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.decomposition-error-fade-in {
+  animation: decompositionErrorFadeIn 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Indeterminate shimmer progress bar */
+@keyframes shimmerProgress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+.shimmer-bar {
+  animation: shimmerProgress 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Failed card shake */
+@keyframes failedShake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-4px); }
+  30% { transform: translateX(3px); }
+  45% { transform: translateX(-2px); }
+  60% { transform: translateX(1px); }
+  75% { transform: translateX(-1px); }
+}
+.failed-card-shake {
+  animation: failedShake 500ms ease-out;
+}
+
+/* Status bar heartbeat pulse */
+@keyframes heartbeatPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.6; }
+}
+.heartbeat-pulse {
+  animation: heartbeatPulse 1.5s ease-in-out infinite;
+}
+
+/* ── StagePipeline animations ───────────────────────────── */
+
+/* Subtle pulse on the active stage pill */
+@keyframes stagePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.25); }
+  50% { box-shadow: 0 0 12px 2px rgba(99, 102, 241, 0.15); }
+}
+.stage-pulse {
+  animation: stagePulse 2.4s ease-in-out infinite;
+}
+
+/* Pulsing dot inside the active stage */
+@keyframes stageDotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+.stage-dot-pulse {
+  animation: stageDotPulse 1.6s ease-in-out infinite;
+}
+
+/* ── DecomposingBanner animations ───────────────────────── */
+
+/* Horizontal shimmer sweep */
+@keyframes decomposingShimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.decomposing-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(99, 102, 241, 0.06) 30%,
+    rgba(99, 102, 241, 0.12) 50%,
+    rgba(99, 102, 241, 0.06) 70%,
+    transparent 100%
+  );
+  animation: decomposingShimmer 3s ease-in-out infinite;
+}
+
+/* Animated dots (sequential fade-in) */
+@keyframes decomposingDotFade {
+  0%, 20% { opacity: 0; }
+  40%, 100% { opacity: 1; }
+}
+.decomposing-dot {
+  opacity: 0;
+  animation: decomposingDotFade 1.4s ease-in-out infinite;
+}
+
+/* Banner entrance slide-down */
+@keyframes bannerSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.decomposing-banner {
+  animation: bannerSlideDown 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 ::-webkit-scrollbar {
