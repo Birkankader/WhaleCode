@@ -1,0 +1,476 @@
+/// Usage data fetcher — queries real usage APIs for Claude, Gemini, and Codex.
+/// Based on openusage (github.com/robinebers/openusage) plugin logic.
+
+use serde::{Deserialize, Serialize};
+use specta::Type;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct UsageLine {
+    pub line_type: String,  // "progress" | "text" | "badge"
+    pub label: String,
+    pub value: Option<String>,
+    pub used: Option<f64>,
+    pub limit: Option<f64>,
+    pub format_kind: Option<String>, // "percent" | "dollars" | "count"
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct AgentUsage {
+    pub agent: String,
+    pub plan: Option<String>,
+    pub lines: Vec<UsageLine>,
+    pub error: Option<String>,
+}
+
+/// Fetch usage for all agents that have valid credentials.
+pub async fn fetch_all_usage() -> Vec<AgentUsage> {
+    let mut results = Vec::new();
+
+    results.push(fetch_claude_usage().await);
+    results.push(fetch_codex_usage().await);
+    results.push(fetch_gemini_usage().await);
+
+    results
+}
+
+// ---------------------------------------------------------------------------
+// Claude Usage — api.anthropic.com/api/oauth/usage
+// ---------------------------------------------------------------------------
+
+async fn fetch_claude_usage() -> AgentUsage {
+    let token = match get_claude_token() {
+        Some(t) => t,
+        None => return AgentUsage {
+            agent: "claude".into(), plan: None, lines: vec![],
+            error: Some("Not authenticated".into()),
+        },
+    };
+
+    let client = reqwest::Client::new();
+    let resp = match client.get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {}", token.access_token))
+        .header("Accept", "application/json")
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "claude-code/2.1.69")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return AgentUsage {
+            agent: "claude".into(), plan: None, lines: vec![],
+            error: Some(format!("Request failed: {}", e)),
+        },
+    };
+
+    if !resp.status().is_success() {
+        return AgentUsage {
+            agent: "claude".into(), plan: None, lines: vec![],
+            error: Some(format!("HTTP {}", resp.status())),
+        };
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return AgentUsage {
+            agent: "claude".into(), plan: None, lines: vec![],
+            error: Some(format!("Invalid response: {}", e)),
+        },
+    };
+
+    let mut lines = Vec::new();
+
+    // Session (5h window)
+    if let Some(five_hour) = body.get("five_hour") {
+        if let Some(util) = five_hour.get("utilization").and_then(|u| u.as_f64()) {
+            lines.push(UsageLine {
+                line_type: "progress".into(), label: "Session".into(),
+                value: None, used: Some(util), limit: Some(100.0),
+                format_kind: Some("percent".into()),
+                resets_at: five_hour.get("resets_at").and_then(|r| r.as_str()).map(String::from),
+            });
+        }
+    }
+
+    // Weekly (7d window)
+    if let Some(seven_day) = body.get("seven_day") {
+        if let Some(util) = seven_day.get("utilization").and_then(|u| u.as_f64()) {
+            lines.push(UsageLine {
+                line_type: "progress".into(), label: "Weekly".into(),
+                value: None, used: Some(util), limit: Some(100.0),
+                format_kind: Some("percent".into()),
+                resets_at: seven_day.get("resets_at").and_then(|r| r.as_str()).map(String::from),
+            });
+        }
+    }
+
+    // Sonnet (7d window)
+    if let Some(sonnet) = body.get("seven_day_sonnet") {
+        if let Some(util) = sonnet.get("utilization").and_then(|u| u.as_f64()) {
+            lines.push(UsageLine {
+                line_type: "progress".into(), label: "Sonnet".into(),
+                value: None, used: Some(util), limit: Some(100.0),
+                format_kind: Some("percent".into()),
+                resets_at: sonnet.get("resets_at").and_then(|r| r.as_str()).map(String::from),
+            });
+        }
+    }
+
+    // Extra usage
+    if let Some(extra) = body.get("extra_usage") {
+        if extra.get("is_enabled").and_then(|e| e.as_bool()).unwrap_or(false) {
+            let used_cents = extra.get("used_credits").and_then(|u| u.as_f64()).unwrap_or(0.0);
+            let limit_cents = extra.get("monthly_limit").and_then(|l| l.as_f64()).unwrap_or(0.0);
+            lines.push(UsageLine {
+                line_type: "progress".into(), label: "Extra usage spent".into(),
+                value: None, used: Some(used_cents / 100.0), limit: Some(limit_cents / 100.0),
+                format_kind: Some("dollars".into()), resets_at: None,
+            });
+        }
+    }
+
+    let plan = token.plan;
+
+    AgentUsage { agent: "claude".into(), plan, lines, error: None }
+}
+
+struct ClaudeToken { access_token: String, plan: Option<String> }
+
+fn get_claude_token() -> Option<ClaudeToken> {
+    // 1. ~/.claude/.credentials.json
+    if let Ok(home) = std::env::var("HOME") {
+        let path = std::path::Path::new(&home).join(".claude").join(".credentials.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(oauth) = json.get("claudeAiOauth") {
+                    if let Some(token) = oauth.get("accessToken").and_then(|t| t.as_str()) {
+                        if !token.is_empty() {
+                            let sub = oauth.get("subscriptionType").and_then(|s| s.as_str()).unwrap_or("");
+                            let tier = oauth.get("rateLimitTier").and_then(|t| t.as_str()).unwrap_or("");
+                            let plan = if !sub.is_empty() {
+                                Some(format!("{}{}", capitalize(sub), if !tier.is_empty() { format!(" {}", tier) } else { String::new() }))
+                            } else { None };
+                            return Some(ClaudeToken { access_token: token.to_string(), plan });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Keychain
+    if let Ok(output) = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let json_str = if raw.starts_with('{') { raw } else {
+                super::scanner::hex_decode_utf8(&raw).unwrap_or(raw.clone())
+            };
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(oauth) = json.get("claudeAiOauth") {
+                    if let Some(token) = oauth.get("accessToken").and_then(|t| t.as_str()) {
+                        if !token.is_empty() {
+                            let sub = oauth.get("subscriptionType").and_then(|s| s.as_str()).unwrap_or("");
+                            let plan = if !sub.is_empty() { Some(capitalize(sub)) } else { None };
+                            return Some(ClaudeToken { access_token: token.to_string(), plan });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Codex Usage — chatgpt.com/backend-api/wham/usage
+// ---------------------------------------------------------------------------
+
+async fn fetch_codex_usage() -> AgentUsage {
+    let token = match get_codex_token() {
+        Some(t) => t,
+        None => return AgentUsage {
+            agent: "codex".into(), plan: None, lines: vec![],
+            error: Some("Not authenticated".into()),
+        },
+    };
+
+    let client = reqwest::Client::new();
+    let mut req = client.get("https://chatgpt.com/backend-api/wham/usage")
+        .header("Authorization", format!("Bearer {}", token.access_token))
+        .header("Accept", "application/json")
+        .header("User-Agent", "OpenUsage")
+        .timeout(std::time::Duration::from_secs(10));
+
+    if let Some(ref account_id) = token.account_id {
+        req = req.header("ChatGPT-Account-Id", account_id);
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => return AgentUsage {
+            agent: "codex".into(), plan: None, lines: vec![],
+            error: Some(format!("Request failed: {}", e)),
+        },
+    };
+
+    if !resp.status().is_success() {
+        return AgentUsage {
+            agent: "codex".into(), plan: None, lines: vec![],
+            error: Some(format!("HTTP {}", resp.status())),
+        };
+    }
+
+    // Read headers before consuming body
+    let primary_pct = resp.headers().get("x-codex-primary-used-percent")
+        .and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<f64>().ok());
+    let secondary_pct = resp.headers().get("x-codex-secondary-used-percent")
+        .and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<f64>().ok());
+    let credits_balance = resp.headers().get("x-codex-credits-balance")
+        .and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<f64>().ok());
+
+    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+
+    let mut lines = Vec::new();
+
+    // Session — prefer header, fallback to body
+    let session_used = primary_pct.or_else(|| {
+        body.pointer("/rate_limit/primary_window/used_percent").and_then(|v| v.as_f64())
+    });
+    if let Some(used) = session_used {
+        lines.push(UsageLine {
+            line_type: "progress".into(), label: "Session".into(),
+            value: None, used: Some(used), limit: Some(100.0),
+            format_kind: Some("percent".into()), resets_at: None,
+        });
+    }
+
+    // Weekly — prefer header, fallback to body
+    let weekly_used = secondary_pct.or_else(|| {
+        body.pointer("/rate_limit/secondary_window/used_percent").and_then(|v| v.as_f64())
+    });
+    if let Some(used) = weekly_used {
+        lines.push(UsageLine {
+            line_type: "progress".into(), label: "Weekly".into(),
+            value: None, used: Some(used), limit: Some(100.0),
+            format_kind: Some("percent".into()), resets_at: None,
+        });
+    }
+
+    // Credits
+    let credits = credits_balance.or_else(|| {
+        body.pointer("/credits/balance").and_then(|v| v.as_f64())
+    });
+    if let Some(remaining) = credits {
+        lines.push(UsageLine {
+            line_type: "progress".into(), label: "Credits".into(),
+            value: None, used: Some((1000.0 - remaining).max(0.0).min(1000.0)),
+            limit: Some(1000.0),
+            format_kind: Some("count".into()), resets_at: None,
+        });
+    }
+
+    let plan = body.get("plan_type").and_then(|p| p.as_str()).map(|p| capitalize(p));
+
+    AgentUsage { agent: "codex".into(), plan, lines, error: None }
+}
+
+struct CodexToken { access_token: String, account_id: Option<String> }
+
+fn get_codex_token() -> Option<CodexToken> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let codex_home = std::env::var("CODEX_HOME").ok();
+
+    let paths: Vec<std::path::PathBuf> = vec![
+        codex_home.as_ref().map(|h| std::path::PathBuf::from(h).join("auth.json")),
+        Some(std::path::PathBuf::from(&home).join(".config").join("codex").join("auth.json")),
+        Some(std::path::PathBuf::from(&home).join(".codex").join("auth.json")),
+    ].into_iter().flatten().collect();
+
+    for path in &paths {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(token) = json.pointer("/tokens/access_token").and_then(|t| t.as_str()) {
+                    if !token.is_empty() {
+                        let account_id = json.pointer("/tokens/account_id").and_then(|a| a.as_str()).map(String::from);
+                        return Some(CodexToken { access_token: token.to_string(), account_id });
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Gemini Usage — cloudcode-pa.googleapis.com
+// ---------------------------------------------------------------------------
+
+async fn fetch_gemini_usage() -> AgentUsage {
+    let token = match get_gemini_token() {
+        Some(t) => t,
+        None => return AgentUsage {
+            agent: "gemini".into(), plan: None, lines: vec![],
+            error: Some("Not authenticated".into()),
+        },
+    };
+
+    // Step 1: loadCodeAssist to discover project + tier
+    let client = reqwest::Client::new();
+    let load_resp = client.post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "metadata": { "ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI", "duetProject": "default" }
+        }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    let (project_id, plan) = match load_resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let project = deep_find_string(&body, "cloudaicompanionProject");
+            let tier = deep_find_string(&body, "tier")
+                .or_else(|| deep_find_string(&body, "userTier"))
+                .or_else(|| deep_find_string(&body, "subscriptionTier"));
+            let plan = tier.map(|t| match t.as_str() {
+                "standard-tier" => "Paid".to_string(),
+                "legacy-tier" => "Legacy".to_string(),
+                "free-tier" => "Free".to_string(),
+                other => capitalize(other),
+            });
+            (project, plan)
+        }
+        _ => (None, None),
+    };
+
+    // Step 2: retrieveUserQuota
+    let quota_body = if let Some(ref pid) = project_id {
+        serde_json::json!({ "project": pid })
+    } else {
+        serde_json::json!({})
+    };
+
+    let quota_resp = client.post("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(&quota_body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    let mut lines = Vec::new();
+
+    if let Ok(r) = quota_resp {
+        if r.status().is_success() {
+            if let Ok(body) = r.json::<serde_json::Value>().await {
+                let buckets = collect_quota_buckets(&body);
+                // Group by model family
+                let mut pro_worst: Option<(f64, Option<String>)> = None;
+                let mut flash_worst: Option<(f64, Option<String>)> = None;
+                for (remaining, model, reset) in &buckets {
+                    let model_lower = model.to_lowercase();
+                    let target = if model_lower.contains("pro") { &mut pro_worst }
+                                 else if model_lower.contains("flash") { &mut flash_worst }
+                                 else { &mut pro_worst }; // default to pro
+                    if target.is_none() || *remaining < target.as_ref().unwrap().0 {
+                        *target = Some((*remaining, reset.clone()));
+                    }
+                }
+                if let Some((remaining, reset)) = pro_worst {
+                    let used = ((1.0 - remaining) * 100.0).round();
+                    lines.push(UsageLine {
+                        line_type: "progress".into(), label: "Pro".into(),
+                        value: None, used: Some(used), limit: Some(100.0),
+                        format_kind: Some("percent".into()), resets_at: reset,
+                    });
+                }
+                if let Some((remaining, reset)) = flash_worst {
+                    let used = ((1.0 - remaining) * 100.0).round();
+                    lines.push(UsageLine {
+                        line_type: "progress".into(), label: "Flash".into(),
+                        value: None, used: Some(used), limit: Some(100.0),
+                        format_kind: Some("percent".into()), resets_at: reset,
+                    });
+                }
+            }
+        }
+    }
+
+    AgentUsage { agent: "gemini".into(), plan, lines, error: None }
+}
+
+fn get_gemini_token() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        let path = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                return json.get("access_token").and_then(|t| t.as_str())
+                    .filter(|t| !t.is_empty()).map(String::from);
+            }
+        }
+    }
+    None
+}
+
+/// Recursively walk JSON to find objects with remainingFraction.
+fn collect_quota_buckets(val: &serde_json::Value) -> Vec<(f64, String, Option<String>)> {
+    let mut buckets = Vec::new();
+    match val {
+        serde_json::Value::Object(map) => {
+            if let Some(remaining) = map.get("remainingFraction").and_then(|r| r.as_f64()) {
+                let model = map.get("modelId").or(map.get("model_id"))
+                    .and_then(|m| m.as_str()).unwrap_or("unknown").to_string();
+                let reset = map.get("resetTime").or(map.get("reset_time"))
+                    .and_then(|r| r.as_str().map(String::from).or(r.as_f64().map(|n| n.to_string())));
+                buckets.push((remaining, model, reset));
+            }
+            for (_, v) in map { buckets.extend(collect_quota_buckets(v)); }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr { buckets.extend(collect_quota_buckets(v)); }
+        }
+        _ => {}
+    }
+    buckets
+}
+
+/// Deep search for a string value by key name.
+fn deep_find_string(val: &serde_json::Value, key: &str) -> Option<String> {
+    match val {
+        serde_json::Value::Object(map) => {
+            if let Some(v) = map.get(key).and_then(|v| v.as_str()) {
+                return Some(v.to_string());
+            }
+            for (_, v) in map {
+                if let Some(found) = deep_find_string(v, key) { return Some(found); }
+            }
+            None
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                if let Some(found) = deep_find_string(v, key) { return Some(found); }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}

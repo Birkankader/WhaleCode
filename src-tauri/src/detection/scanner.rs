@@ -269,7 +269,7 @@ fn check_codex_auth() -> AuthStatus {
 // Hex decode helper (for macOS Keychain hex-encoded payloads)
 // ---------------------------------------------------------------------------
 
-fn hex_decode_utf8(hex: &str) -> Option<String> {
+pub fn hex_decode_utf8(hex: &str) -> Option<String> {
     let hex = hex.trim();
     if hex.len() % 2 != 0 { return None; }
     // Check if it looks like hex (all chars are hex digits)

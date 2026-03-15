@@ -17,7 +17,7 @@ mod error;
 
 use commands::{
     cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
-    delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key, detect_agents,
+    delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key, detect_agents, fetch_agent_usage,
     dispatch_orchestrated_task, dispatch_task, get_agent_context_info, get_context_summary,
     get_orchestration_history, get_recent_changes, get_task_count, get_worktree_diff, has_claude_api_key, has_codex_api_key,
     has_gemini_api_key, list_worktrees, merge_worktree, optimize_prompt, pause_process,
@@ -83,6 +83,7 @@ pub fn run() {
         reject_decomposition,
         approve_orchestration,
         detect_agents,
+        fetch_agent_usage,
         git_status,
         git_stage_files,
         git_unstage_files,
