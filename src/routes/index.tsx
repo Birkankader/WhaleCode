@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Toaster } from 'sonner';
 import { AppShell } from '../components/layout/AppShell';
-import { KanbanView } from '../components/views/KanbanView';
+import { WorkingView } from '../components/views/WorkingView';
 import { UsageView } from '../components/views/UsageView';
 import { CodeReviewView } from '../components/views/CodeReviewView';
 import { DoneView } from '../components/views/DoneView';
@@ -31,9 +31,29 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       commands.cleanupCompletedProcesses().catch(() => {});
-    }, 30 * 1000);
+
+      // Heartbeat: ask backend which processes are actually running
+      // and reconcile frontend task state
+      try {
+        const result = await commands.getRunningProcesses();
+        if (result.status === 'ok') {
+          const backendRunning = new Set(result.data);
+          const taskState = useTaskStore.getState();
+          const newTasks = new Map(taskState.tasks);
+          let changed = false;
+          for (const [id, task] of newTasks) {
+            if ((task.status === 'running' || task.status === 'retrying') && !backendRunning.has(id)) {
+              // Frontend thinks it's running, backend says it's not → mark failed
+              newTasks.set(id, { ...task, status: 'failed' });
+              changed = true;
+            }
+          }
+          if (changed) useTaskStore.setState({ tasks: newTasks });
+        }
+      } catch { /* backend may not have this command yet */ }
+    }, 15 * 1000); // Every 15 seconds
     return () => clearInterval(interval);
   }, []);
 
@@ -45,91 +65,59 @@ export function App() {
     }
   }, [orchestrationPhase, setActiveView]);
 
-  // If dev mode turned off while on terminal-only view, go to working
-  useEffect(() => {
-    if (!developerMode && activeView === 'terminal') {
-      setActiveView('kanban');
-    }
-  }, [developerMode, activeView, setActiveView]);
-
-  // Terminal panel state (VS Code-style bottom panel)
+  // Terminal panel state
   const [terminalOpen, setTerminalOpen] = useState(false);
-
-  // Auto-open terminal when orchestration starts
   useEffect(() => {
     if (orchestrationPhase === 'decomposing' || orchestrationPhase === 'executing') {
       setTerminalOpen(true);
     }
   }, [orchestrationPhase]);
 
+  // Primary view is 'kanban' internally but shows WorkingView
+  const isWorkingView = activeView === 'kanban' || activeView === 'terminal';
+
   return (
     <>
       <Toaster
         position="bottom-right"
-        toastOptions={{
-          style: {
-            background: '#13131f',
-            border: '1px solid #252538',
-            color: '#e2e8f0',
-            fontSize: 12,
-          },
-        }}
+        toastOptions={{ style: { background: '#13131f', border: '1px solid #252538', color: '#e2e8f0', fontSize: 12 } }}
         theme="dark"
       />
       <TaskApprovalView />
       <AppShell>
         <div className="flex flex-col flex-1 overflow-hidden">
-          {/* Main content area */}
           <div className="flex flex-1 overflow-hidden min-h-0">
             <div className="flex-1 overflow-hidden">
-              {/* Working view — Kanban board (primary view) */}
-              {(activeView === 'kanban' || activeView === 'terminal') && (
-                <ErrorBoundary fallbackLabel="Board failed to load">
-                  <KanbanView selectedTask={selectedTaskId} setSelectedTask={setSelectedTaskId} />
+              {isWorkingView && (
+                <ErrorBoundary fallbackLabel="Working view failed to load">
+                  <WorkingView selectedTask={selectedTaskId} setSelectedTask={setSelectedTaskId} />
                 </ErrorBoundary>
               )}
-
-              {/* Usage — token/cost tracking */}
               {activeView === 'usage' && (
                 <ErrorBoundary fallbackLabel="Usage view failed to load">
                   <UsageView />
                 </ErrorBoundary>
               )}
-
-              {/* Review — shown automatically when orchestration completes */}
               {activeView === 'review' && (
                 <ErrorBoundary fallbackLabel="Review failed to load">
                   <CodeReviewView onDone={() => setActiveView('done')} />
                 </ErrorBoundary>
               )}
-
-              {/* Done — completion summary */}
               {activeView === 'done' && (
                 <ErrorBoundary fallbackLabel="Done view failed to load">
-                  <DoneView
-                    onNew={() => {
-                      setShowSetup(true);
-                      setActiveView('kanban');
-                    }}
-                  />
+                  <DoneView onNew={() => { setShowSetup(true); setActiveView('kanban'); }} />
                 </ErrorBoundary>
               )}
-
-              {/* Settings */}
               {activeView === 'settings' && (
                 <ErrorBoundary fallbackLabel="Settings failed to load">
                   <ApiKeySettings />
                 </ErrorBoundary>
               )}
-
-              {/* Git */}
               {activeView === 'git' && (
                 <ErrorBoundary fallbackLabel="Git view failed to load">
                   <GitView />
                 </ErrorBoundary>
               )}
-
-              {/* Code browser */}
               {activeView === 'code' && (
                 <ErrorBoundary fallbackLabel="Code view failed to load">
                   <CodeView />
@@ -137,15 +125,13 @@ export function App() {
               )}
             </div>
 
-            {/* Task detail side panel */}
-            {activeView === 'kanban' && selectedTaskId && (
+            {isWorkingView && selectedTaskId && (
               <ErrorBoundary fallbackLabel="Task detail failed to load">
                 <TaskDetail taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
               </ErrorBoundary>
             )}
           </div>
 
-          {/* Terminal bottom panel — VS Code style, always available */}
           <TerminalBottomPanel
             open={terminalOpen}
             onToggle={() => setTerminalOpen(!terminalOpen)}

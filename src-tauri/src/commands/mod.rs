@@ -52,7 +52,7 @@ pub use codex::{
     validate_codex_result,
 };
 pub use context::{get_context_summary, get_orchestration_history, get_recent_changes, record_task_completion_cmd};
-pub use process::{cancel_process, pause_process, resume_process, spawn_process};
+pub use process::{cancel_process, get_running_processes, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
 pub use orchestrator::{
     dispatch_orchestrated_task, get_agent_context_info,
