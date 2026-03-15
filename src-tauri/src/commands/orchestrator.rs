@@ -660,40 +660,14 @@ pub async fn dispatch_orchestrated_task(
         "phase": "decomposing", "detail": "Decomposing task via master agent"
     }));
 
-    // Determine spawn strategy:
-    // - Claude supports interactive mode (piped stdin + EOF triggers processing)
-    // - Gemini/Codex need single-shot mode with -p flag
-    let use_interactive = config.master_agent == "claude";
+    // Phase 1 ALWAYS uses single-shot mode (-p flag) for decomposition.
+    // This ensures Claude returns one response and exits, rather than
+    // starting tool calls and running indefinitely.
+    // Interactive mode is only used in Phase 2 (worker question routing)
+    // and Phase 3 (review).
+    let use_interactive = false; // Decomposition is always single-shot
 
-    let master_task_id = if use_interactive {
-        // Interactive mode: spawn, pipe prompt via stdin, close stdin to trigger EOF
-        let tool_command = adapter.build_interactive_command(&project_dir, &api_key);
-        let task_id = process::manager::spawn_interactive(
-            tool_command,
-            &format!("Orchestration master: {}", truncate(&prompt, 60)),
-            &config.master_agent,
-            on_event.clone(),
-            state_ref,
-        ).await.map_err(|e| {
-            process::manager::release_tool_slot(state_ref, &config.master_agent);
-            e
-        })?;
-
-        if let Err(e) = process::manager::send_to_process(state_ref, &task_id, &decompose_prompt) {
-            let _ = kill_process(state_ref, &task_id).await;
-            process::manager::release_tool_slot(state_ref, &config.master_agent);
-            return Err(e);
-        }
-        if let Err(e) = process::manager::close_stdin(state_ref, &task_id) {
-            let _ = kill_process(state_ref, &task_id).await;
-            process::manager::release_tool_slot(state_ref, &config.master_agent);
-            return Err(e);
-        }
-        task_id
-    } else {
-        // Single-shot mode: pass prompt via -p flag (works for Gemini, Codex)
-        // We use spawn_interactive which accepts ToolCommand + &AppState,
-        // but the command itself includes -p so it runs and exits.
+    let master_task_id = {
         let tool_command = adapter.build_command(&decompose_prompt, &project_dir, &api_key);
         let task_id = process::manager::spawn_interactive(
             tool_command,

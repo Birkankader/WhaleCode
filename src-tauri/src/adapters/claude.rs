@@ -109,6 +109,8 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
+            "--max-turns".to_string(),
+            "1".to_string(),
             "--dangerously-skip-permissions".to_string(),
         ],
         env: build_env(api_key),
