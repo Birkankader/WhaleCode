@@ -75,6 +75,7 @@ export function handleOrchEvent(
                       toast.error('Auto-approve failed');
                     } else {
                       toast.success(`Auto-approved ${pendingWorkers.length} task${pendingWorkers.length !== 1 ? 's' : ''}`);
+                      useTaskStore.getState().addOrchestrationLog({ agent: 'claude' as ToolName, level: 'info', message: `Auto-approved ${pendingWorkers.length} tasks` });
                     }
                   })
                   .catch((err: unknown) => {

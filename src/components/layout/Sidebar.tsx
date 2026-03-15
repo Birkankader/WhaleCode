@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { History, Settings } from 'lucide-react';
 import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
@@ -236,13 +237,13 @@ export function Sidebar() {
       >
         <Tooltip label="History">
           <IconButton active={showHistory} onClick={() => setShowHistory(!showHistory)} aria-label="Session history">
-            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9776;</span>
+            <History size={16} />
           </IconButton>
         </Tooltip>
 
         <Tooltip label="Settings">
           <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')} aria-label="Settings">
-            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9881;</span>
+            <Settings size={16} />
           </IconButton>
         </Tooltip>
       </div>

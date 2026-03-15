@@ -34,7 +34,9 @@ fn emit_orch(channel: &Channel<OutputEvent>, event_type: &str, data: serde_json:
     };
     obj.insert("type".to_string(), serde_json::Value::String(event_type.to_string()));
     let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
-    channel.send(OutputEvent::Stdout(format!("@@orch::{}", json))).ok();
+    if let Err(e) = channel.send(OutputEvent::Stdout(format!("@@orch::{}", json))) {
+        log::warn!("emit_orch send failed: {}", e);
+    }
 }
 
 // ---------------------------------------------------------------------------

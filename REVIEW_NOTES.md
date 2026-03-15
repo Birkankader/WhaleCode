@@ -14,10 +14,10 @@
 - [x] `as any` cast in useOrchestratedDispatch.ts:163
 - [x] messengerStore.ts:62-67 — blind `as string`/`as number` casts
 - [x] handleOrchEvent.ts OrchEvent typed as `{ type: string; [key: string]: unknown }`
-- [ ] Every taskStore updater creates `new Map()` — O(n) clone per update
+- [x] taskStore updateTask() helper (reduced boilerplate) `new Map()` — O(n) clone per update
 
 ### Minor
-- [ ] 15 `eprintln!` debug statements in orchestrator.rs — use tracing::debug!
+- [x] 15 eprintln! → log::debug! statements in orchestrator.rs — use tracing::debug!
 - [ ] useProcess.ts: `_updateStatus`/`_removeProcess` underscore convention unclear
 - [ ] taskStore: lastOutputLine, lastOutputPreview, lastEventAt overlap
 - [x] Inline orchestration log type — extract OrchestrationLogEntry interface
@@ -60,11 +60,11 @@
 ### Critical
 - [ ] Navigation mental model (6/10) — 5 overlapping nav paradigms
 - [x] ⌘-number shortcut mismatch — CommandPalette vs AppShell
-- [ ] clearSession() wipes data without confirmation
+- [x] clearSession() now asks confirmation data without confirmation
 
 ### Major
-- [ ] No agents detected = dead end (no "Check Again" button)
-- [ ] SetupPanel step 0 requires session name (low-value ceremony)
+- [x] OnboardingWizard has Check Again button (no "Check Again" button)
+- [x] Session name auto-generated (low-value ceremony)
 - [ ] Dev Mode toggle always visible in header (expert-only feature)
 - [ ] StagePipeline + DecomposingBanner should merge into one
 - [ ] Settings in sidebar but also ⌘P — inconsistent (page vs panel?)
@@ -74,13 +74,13 @@
 ### Minor
 - [ ] SetupPanel canContinue disabled button has no tooltip
 - [x] Quick Task now shows project picker — no indication
-- [ ] ErrorBoundary has no "Reload View" button
+- [x] ErrorBoundary has Reload button button
 - [ ] Orchestration error only shown as toast (transient)
 - [ ] 15s heartbeat delay before stale task detected
 - [ ] No focus trap in SetupPanel, OnboardingWizard, TaskApprovalView
 - [ ] Tabs shown before any orchestration (empty, meaningless)
 - [ ] Sidebar icons unlabeled (tooltip-only)
-- [ ] NotificationCenter "Clear all" has no confirmation
+- [x] NotificationCenter Clear all has undo toast confirmation
 - [ ] Auto-approve fires without notification/log entry
 
 ---
@@ -136,5 +136,5 @@
 ### Minor
 - [ ] No CHANGELOG
 - [ ] No promotional text
-- [ ] Font specified 3 different ways
-- [ ] Monospace font stack inconsistent
+- [x] Font consolidated to CSS body + --font-mono ways
+- [x] Monospace font stack unified via --font-mono inconsistent

@@ -53,7 +53,7 @@ export function App() {
           if (changed) useTaskStore.setState({ tasks: newTasks });
         }
       } catch { /* backend may not have this command yet */ }
-    }, 15 * 1000); // Every 15 seconds
+    }, 5_000); // Every 5 seconds
     return () => clearInterval(interval);
   }, []);
 

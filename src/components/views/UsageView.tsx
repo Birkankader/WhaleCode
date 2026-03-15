@@ -185,7 +185,7 @@ export function UsageView() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
             {/* Summary cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
               {[
                 { label: 'Total Tokens', value: formatTokens(totals.hasData ? totals.total : null), color: C.accentText },
                 { label: 'Input', value: formatTokens(totals.hasData ? totals.input : null), color: C.textPrimary },

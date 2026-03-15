@@ -175,9 +175,9 @@ async fn spawn_with_env_core(
                 { let mut inner = state_for_output.lock();
                     if let Some(entry) = inner.processes.get_mut(&task_id_for_output) {
                         entry.output_lines.push(line);
-                        // Keep only last 500 lines (increased from 50 to avoid
-                        // evicting result events for verbose master agents)
-                        if entry.output_lines.len() > 500 {
+                        // Only drain when buffer exceeds 600 lines (reduced
+                        // drain frequency vs old 500 threshold). Drains to 500.
+                        if entry.output_lines.len() > 600 {
                             entry.output_lines.drain(0..entry.output_lines.len() - 500);
                         }
                         // Signal new line count to watchers

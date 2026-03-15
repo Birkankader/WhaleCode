@@ -118,7 +118,9 @@ interface ProcessState {
   pauseProcess: (taskId: string) => Promise<void>;
   resumeProcess: (taskId: string) => Promise<void>;
 
+  /** @internal — called by dispatch hooks, not by UI components directly */
   _updateStatus: (taskId: string, status: ProcessStatus, exitCode?: number) => void;
+  /** @internal — called by dispatch hooks, not by UI components directly */
   _removeProcess: (taskId: string) => void;
 }
 
