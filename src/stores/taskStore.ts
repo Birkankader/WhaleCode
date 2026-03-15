@@ -31,7 +31,6 @@ export interface TaskEntry {
   // Process info (merged from processStore — single source of truth)
   exitCode?: number;
   lastEventAt?: number;
-  lastOutputPreview?: string;
 }
 
 export interface AgentConfig {
@@ -89,7 +88,7 @@ interface TaskState {
   updateTaskAgent: (taskId: string, toolName: ToolName) => void;
   updateTaskResult: (taskId: string, resultSummary: string) => void;
   updateTaskOutputLine: (taskId: string, line: string) => void;
-  updateTaskProcess: (taskId: string, update: Partial<Pick<TaskEntry, 'exitCode' | 'lastEventAt' | 'lastOutputPreview' | 'status'>>) => void;
+  updateTaskProcess: (taskId: string, update: Partial<Pick<TaskEntry, 'exitCode' | 'lastEventAt' | 'status'>>) => void;
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;

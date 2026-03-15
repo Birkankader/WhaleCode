@@ -1,8 +1,10 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef } from 'react';
 import { Check, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { C } from '@/lib/theme';
 import { useTaskStore, type OrchestrationPhase } from '@/stores/taskStore';
 import { useElapsedTime, formatElapsed } from '@/hooks/useElapsedTime';
+import { commands } from '@/bindings';
 
 /* ── Stage definitions ─────────────────────────────────── */
 
@@ -56,6 +58,35 @@ export const StagePipeline = memo(function StagePipeline() {
   const hasActiveStage = activeIndex >= 0 && phase !== 'completed';
   const elapsed = useElapsedTime(hasActiveStage);
 
+  // Decomposing banner state (merged inline)
+  const orchestrationPlan = useTaskStore((s) => s.orchestrationPlan);
+  const activePlan = useTaskStore((s) => s.activePlan);
+  const masterAgent = orchestrationPlan?.masterAgent ?? 'claude';
+
+  const handleCancel = useCallback(async () => {
+    const taskId = activePlan?.task_id;
+    if (!taskId) {
+      toast.error('No active task to cancel');
+      return;
+    }
+    try {
+      const result = await commands.cancelProcess(taskId);
+      if (result.status === 'error') {
+        toast.error('Cancel failed', { description: String(result.error) });
+      } else {
+        toast.success('Orchestration cancelled');
+        useTaskStore.getState().setOrchestrationPhase('failed');
+        useTaskStore.getState().addOrchestrationLog({
+          agent: masterAgent,
+          level: 'warn',
+          message: 'Orchestration cancelled by user',
+        });
+      }
+    } catch (e) {
+      toast.error('Cancel failed', { description: String(e) });
+    }
+  }, [activePlan, masterAgent]);
+
   if (phase === 'idle') return null;
 
   return (
@@ -75,6 +106,8 @@ export const StagePipeline = memo(function StagePipeline() {
             ? true
             : i < activeIndex;
         const isStageFailed = isFailed && i === failedIndex;
+        const isDecomposing = stage.key === 'decompose' && isActive;
+
         return (
           <div key={stage.key} className="flex items-center">
             {/* Connector line (not before first) */}
@@ -100,18 +133,23 @@ export const StagePipeline = memo(function StagePipeline() {
             {/* Stage node */}
             <div className="flex items-center gap-1.5 relative">
               <div
-                className={isActive ? 'stage-pulse' : ''}
+                className={[
+                  isActive ? 'stage-pulse' : '',
+                  isDecomposing ? 'decomposing-shimmer' : '',
+                ].filter(Boolean).join(' ')}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
-                  padding: '4px 10px',
+                  padding: isDecomposing ? '4px 12px' : '4px 10px',
                   borderRadius: 999,
                   fontSize: 11,
                   fontWeight: 600,
                   fontFamily: 'Inter, sans-serif',
                   whiteSpace: 'nowrap',
                   transition: 'all 300ms ease',
+                  position: 'relative',
+                  overflow: isDecomposing ? 'hidden' : undefined,
                   background: isActive
                     ? C.accentSoft
                     : isCompleted
@@ -157,8 +195,19 @@ export const StagePipeline = memo(function StagePipeline() {
                   />
                 )}
 
-                {/* Label */}
-                <span>{stage.label}</span>
+                {/* Label — enriched when decomposing */}
+                {isDecomposing ? (
+                  <>
+                    <span>Analyzing</span>
+                    <span style={{ color: C.textSecondary, fontSize: 11 }}>
+                      <span className="decomposing-dot" style={{ animationDelay: '0ms' }}>.</span>
+                      <span className="decomposing-dot" style={{ animationDelay: '200ms' }}>.</span>
+                      <span className="decomposing-dot" style={{ animationDelay: '400ms' }}>.</span>
+                    </span>
+                  </>
+                ) : (
+                  <span>{stage.label}</span>
+                )}
 
                 {/* Elapsed time (only on active stage) */}
                 {isActive && elapsed > 0 && (
@@ -172,6 +221,34 @@ export const StagePipeline = memo(function StagePipeline() {
                   >
                     {formatElapsed(elapsed)}
                   </span>
+                )}
+
+                {/* Inline cancel button (decomposing only) */}
+                {isDecomposing && (
+                  <button
+                    onClick={handleCancel}
+                    className="flex items-center justify-center flex-shrink-0 transition-colors"
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: '50%',
+                      background: 'transparent',
+                      border: 'none',
+                      color: C.textMuted,
+                      cursor: 'pointer',
+                      marginLeft: 2,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = C.redBg;
+                      e.currentTarget.style.color = C.red;
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                      e.currentTarget.style.color = C.textMuted;
+                    }}
+                  >
+                    <X size={10} strokeWidth={2.5} />
+                  </button>
                 )}
               </div>
             </div>

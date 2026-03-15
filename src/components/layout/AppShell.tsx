@@ -9,7 +9,6 @@ import { SetupPanel } from './SetupPanel';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { useOrchestrationLaunch } from '@/hooks/useOrchestrationLaunch';
 import { StagePipeline } from '@/components/orchestration/StagePipeline';
-import { DecomposingBanner } from '@/components/orchestration/DecomposingBanner';
 import { CommandPalette } from '@/components/shared/CommandPalette';
 import { OnboardingWizard } from '@/components/shared/OnboardingWizard';
 import type { AppView } from '@/stores/uiStore';
@@ -111,8 +110,6 @@ export function AppShell({ children }: AppShellProps) {
           {/* Stage pipeline (shown when orchestration is active) */}
           {orchestrationPhase !== 'idle' && <StagePipeline />}
 
-          {/* Decomposing banner (shown during decomposing phase) */}
-          {orchestrationPhase === 'decomposing' && <DecomposingBanner />}
 
           {/* Progress strip (only on kanban) */}
           {activeView === 'kanban' && (

@@ -13,19 +13,28 @@ export function ContentHeader() {
   const activeView = useUIStore((s) => s.activeView);
   const setActiveView = useUIStore((s) => s.setActiveView);
   const storedSessionName = useUIStore((s) => s.sessionName);
+  const tasks = useTaskStore((s) => s.tasks);
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
   const activePlan = useTaskStore((s) => s.activePlan);
 
   const sessionName = storedSessionName || (activePlan ? 'Active Session' : 'No Session');
   const sessionStatus = orchestrationPhase === 'idle' ? 'idle' : 'running';
   const hasReviewReady = orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed';
+  const hasActivity = tasks.size > 0 || orchestrationPhase !== 'idle';
 
-  const tabs: { key: AppView; label: string; icon: React.ReactNode }[] = useMemo(() => [
-    { key: 'kanban', label: 'Working', icon: <LayoutGrid size={14} /> },
-    { key: 'usage', label: 'Usage', icon: <Target size={14} /> },
-    { key: 'git', label: 'Git', icon: <GitBranch size={14} /> },
-    { key: 'code', label: 'Code', icon: <Code size={14} /> },
-  ], []);
+  const tabs: { key: AppView; label: string; icon: React.ReactNode }[] = useMemo(() => {
+    const base: { key: AppView; label: string; icon: React.ReactNode }[] = [
+      { key: 'kanban', label: 'Working', icon: <LayoutGrid size={14} /> },
+    ];
+    if (hasActivity) {
+      base.push(
+        { key: 'usage', label: 'Usage', icon: <Target size={14} /> },
+        { key: 'git', label: 'Git', icon: <GitBranch size={14} /> },
+        { key: 'code', label: 'Code', icon: <Code size={14} /> },
+      );
+    }
+    return base;
+  }, [hasActivity]);
 
   return (
     <div className="flex items-center gap-0 border-b border-wc-border bg-wc-panel h-[44px] shrink-0 pl-1 pr-4">

@@ -4,6 +4,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore, type ToolName, type OrchestratorConfig } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
+import { emitLocalProcessMessage } from '@/hooks/useProcess';
 import { humanizeError } from '@/lib/humanizeError';
 
 export interface LaunchConfig {
@@ -85,6 +86,7 @@ export function useOrchestrationLaunch() {
           console.error('Launch failed:', e);
           toast.error('Orchestration failed', { description: humanizeError(e) });
           store.addOrchestrationLog({ agent: masterToolName, level: 'error', message: `Launch failed: ${e}` });
+          emitLocalProcessMessage(orchTaskId, `[error] Orchestration launch failed: ${humanizeError(e)}`, 'stderr');
           store.setOrchestrationPhase('failed');
         });
     },

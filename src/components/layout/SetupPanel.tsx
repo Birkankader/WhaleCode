@@ -802,6 +802,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
           <div>
             {step < 2 ? (
+              <span title={!canContinue ? (step === 0 ? 'Select a project directory to continue' : 'Select a conductor agent to continue') : undefined}>
               <button
                 onClick={() => setStep((s) => s + 1)}
                 disabled={!canContinue}
@@ -820,7 +821,9 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               >
                 Continue
               </button>
+              </span>
             ) : (
+              <span title={!canContinue ? 'Enter a task description to launch' : undefined}>
               <button
                 onClick={handleLaunch}
                 disabled={!canContinue}
@@ -840,6 +843,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               >
                 Launch
               </button>
+              </span>
             )}
           </div>
         </div>
