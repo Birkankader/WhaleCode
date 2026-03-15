@@ -1,224 +1,309 @@
-use super::models::{AuthStatus, DetectedAgent};
-use crate::credentials::{
-    codex_keychain, gemini_keychain, keychain,
-};
-use std::time::Duration;
-use tokio::process::Command;
+use crate::credentials::{keychain, gemini_keychain, codex_keychain};
+use crate::detection::models::{AuthStatus, DetectedAgent};
 
-/// Maximum time to wait for a CLI command before giving up.
-const CLI_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Scan for all known CLI agents and return their detection results.
-pub async fn scan_agents() -> Vec<DetectedAgent> {
-    let mut agents = Vec::new();
-
-    agents.push(scan_claude().await);
-    agents.push(scan_gemini().await);
-    agents.push(scan_codex().await);
-
-    agents
+/// Check if a CLI tool is installed by looking for it in PATH.
+fn is_installed(name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
-async fn scan_claude() -> DetectedAgent {
-    let (installed, binary_path, version) = check_cli("claude").await;
+fn get_version(name: &str) -> Option<String> {
+    let output = std::process::Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next().unwrap_or("").trim().to_string();
+    if line.is_empty() { None } else { Some(line) }
+}
+
+/// Scan for all supported agents.
+pub async fn detect_all_agents() -> Vec<DetectedAgent> {
+    let claude = detect_claude().await;
+    let gemini = detect_gemini().await;
+    let codex = detect_codex().await;
+    vec![claude, gemini, codex]
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code
+// ---------------------------------------------------------------------------
+// Auth sources (per openusage/plugins/claude/plugin.js):
+// 1. ~/.claude/.credentials.json → claudeAiOauth.accessToken
+// 2. macOS Keychain service "Claude Code-credentials" → same JSON
+// 3. ANTHROPIC_API_KEY env var
+
+async fn detect_claude() -> DetectedAgent {
+    let installed = is_installed("claude");
+    let version = if installed { get_version("claude") } else { None };
     let auth_status = if !installed {
         AuthStatus::NotInstalled
     } else {
-        check_claude_auth().await
+        check_claude_auth()
     };
-
     DetectedAgent {
         tool_name: "claude".to_string(),
+        installed,
+        binary_path: None,
+        version,
+        auth_status,
         display_name: "Claude Code".to_string(),
-        installed,
-        binary_path,
-        version,
-        auth_status,
     }
 }
 
-async fn scan_gemini() -> DetectedAgent {
-    let (installed, binary_path, version) = check_cli("gemini").await;
-    let auth_status = if !installed {
-        AuthStatus::NotInstalled
-    } else {
-        check_gemini_auth().await
-    };
-
-    DetectedAgent {
-        tool_name: "gemini".to_string(),
-        display_name: "Gemini CLI".to_string(),
-        installed,
-        binary_path,
-        version,
-        auth_status,
-    }
-}
-
-async fn scan_codex() -> DetectedAgent {
-    let (installed, binary_path, version) = check_cli("codex").await;
-    let auth_status = if !installed {
-        AuthStatus::NotInstalled
-    } else {
-        check_codex_auth().await
-    };
-
-    DetectedAgent {
-        tool_name: "codex".to_string(),
-        display_name: "Codex CLI".to_string(),
-        installed,
-        binary_path,
-        version,
-        auth_status,
-    }
-}
-
-/// Check if a CLI tool is installed by running `which <name>` and `<name> --version`.
-/// Returns (installed, binary_path, version).
-async fn check_cli(name: &str) -> (bool, Option<String>, Option<String>) {
-    // Find the binary path via `which`
-    let binary_path = match run_with_timeout("which", &[name]).await {
-        Some(output) => {
-            let path = output.trim().to_string();
-            if path.is_empty() { None } else { Some(path) }
+fn check_claude_auth() -> AuthStatus {
+    // 1. Check ~/.claude/.credentials.json
+    if let Ok(home) = std::env::var("HOME") {
+        let cred_path = std::path::Path::new(&home).join(".claude").join(".credentials.json");
+        if cred_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cred_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if json.get("claudeAiOauth")
+                        .and_then(|o| o.get("accessToken"))
+                        .and_then(|t| t.as_str())
+                        .map(|t| !t.is_empty())
+                        .unwrap_or(false)
+                    {
+                        return AuthStatus::Authenticated;
+                    }
+                }
+            }
         }
-        None => None,
-    };
-
-    if binary_path.is_none() {
-        return (false, None, None);
     }
 
-    // Get the version string
-    let version = match run_with_timeout(name, &["--version"]).await {
-        Some(output) => {
-            let v = output.trim().to_string();
-            if v.is_empty() { None } else { Some(v) }
+    // 2. Check macOS Keychain — "Claude Code-credentials"
+    if let Ok(output) = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // May be hex-encoded — try to parse as JSON directly or decode hex
+            let json_str = if raw.starts_with('{') {
+                raw
+            } else {
+                hex_decode_utf8(&raw).unwrap_or(raw)
+            };
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if json.get("claudeAiOauth")
+                    .and_then(|o| o.get("accessToken"))
+                    .and_then(|t| t.as_str())
+                    .map(|t| !t.is_empty())
+                    .unwrap_or(false)
+                {
+                    return AuthStatus::Authenticated;
+                }
+            }
         }
-        None => None,
-    };
-
-    (true, binary_path, version)
-}
-
-/// Run a command with a timeout and return its stdout as a String, or None on failure/timeout.
-async fn run_with_timeout(program: &str, args: &[&str]) -> Option<String> {
-    let result = tokio::time::timeout(
-        CLI_TIMEOUT,
-        Command::new(program).args(args).output(),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(output)) if output.status.success() => {
-            Some(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        _ => None,
     }
-}
 
-/// Check Claude auth: keychain API key, actual CLI auth test, or env var.
-async fn check_claude_auth() -> AuthStatus {
-    // First check the keychain
+    // 3. WhaleCode's own keychain
     if keychain::has_api_key() {
         return AuthStatus::Authenticated;
     }
 
-    // Check ANTHROPIC_API_KEY env var
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+    // 4. ANTHROPIC_API_KEY env var
+    if std::env::var("ANTHROPIC_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
         return AuthStatus::Authenticated;
-    }
-
-    // Quick CLI auth probe — run claude with a minimal prompt to check if authenticated
-    if let Ok(output) = tokio::process::Command::new("claude")
-        .args(&["-p", "hi", "--output-format", "stream-json", "--verbose", "--max-turns", "1"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.contains("authentication_failed") || stdout.contains("Not logged in") {
-            return AuthStatus::NeedsAuth;
-        }
-        if output.status.success() || stdout.contains("\"type\":\"result\"") {
-            return AuthStatus::Authenticated;
-        }
     }
 
     AuthStatus::NeedsAuth
 }
 
-/// Check Gemini auth: keychain API key, ~/.gemini/oauth_creds.json, or env vars.
-async fn check_gemini_auth() -> AuthStatus {
-    // Check keychain
+// ---------------------------------------------------------------------------
+// Gemini CLI
+// ---------------------------------------------------------------------------
+// Auth sources (per openusage/plugins/gemini/plugin.js):
+// 1. ~/.gemini/oauth_creds.json → access_token or refresh_token
+// 2. GEMINI_API_KEY or GOOGLE_API_KEY env var
+
+async fn detect_gemini() -> DetectedAgent {
+    let installed = is_installed("gemini");
+    let version = if installed { get_version("gemini") } else { None };
+    let auth_status = if !installed {
+        AuthStatus::NotInstalled
+    } else {
+        check_gemini_auth()
+    };
+    DetectedAgent {
+        tool_name: "gemini".to_string(),
+        installed,
+        binary_path: None,
+        version,
+        auth_status,
+        display_name: "Gemini CLI".to_string(),
+    }
+}
+
+fn check_gemini_auth() -> AuthStatus {
+    // 1. ~/.gemini/oauth_creds.json
+    if let Ok(home) = std::env::var("HOME") {
+        let cred_path = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
+        if cred_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cred_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let has_access = json.get("access_token").and_then(|t| t.as_str()).map(|t| !t.is_empty()).unwrap_or(false);
+                    let has_refresh = json.get("refresh_token").and_then(|t| t.as_str()).map(|t| !t.is_empty()).unwrap_or(false);
+                    if has_access || has_refresh {
+                        return AuthStatus::Authenticated;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. WhaleCode's own keychain
     if gemini_keychain::has_gemini_api_key() {
         return AuthStatus::Authenticated;
     }
 
-    // Check for Gemini CLI OAuth credentials (~/.gemini/oauth_creds.json)
-    if let Ok(home) = std::env::var("HOME") {
-        let oauth_creds = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
-        if oauth_creds.exists() {
-            return AuthStatus::Authenticated;
-        }
+    // 3. Env vars
+    if std::env::var("GEMINI_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
+        return AuthStatus::Authenticated;
     }
-
-    // Check env vars
-    if std::env::var("GEMINI_API_KEY").is_ok() || std::env::var("GOOGLE_API_KEY").is_ok() {
+    if std::env::var("GOOGLE_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
         return AuthStatus::Authenticated;
     }
 
     AuthStatus::NeedsAuth
 }
 
-/// Check Codex auth: keychain API key or OPENAI_API_KEY env var.
-async fn check_codex_auth() -> AuthStatus {
-    // Check keychain
+// ---------------------------------------------------------------------------
+// Codex CLI
+// ---------------------------------------------------------------------------
+// Auth sources (per openusage/plugins/codex/plugin.js):
+// 1. $CODEX_HOME/auth.json → tokens.access_token
+// 2. ~/.config/codex/auth.json
+// 3. ~/.codex/auth.json
+// 4. macOS Keychain "Codex Auth"
+// 5. OPENAI_API_KEY env var
+
+async fn detect_codex() -> DetectedAgent {
+    let installed = is_installed("codex");
+    let version = if installed { get_version("codex") } else { None };
+    let auth_status = if !installed {
+        AuthStatus::NotInstalled
+    } else {
+        check_codex_auth()
+    };
+    DetectedAgent {
+        tool_name: "codex".to_string(),
+        installed,
+        binary_path: None,
+        version,
+        auth_status,
+        display_name: "Codex CLI".to_string(),
+    }
+}
+
+fn check_codex_auth() -> AuthStatus {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Auth file paths (in priority order)
+    let codex_home = std::env::var("CODEX_HOME").ok();
+    let auth_paths: Vec<std::path::PathBuf> = vec![
+        codex_home.as_ref().map(|h| std::path::PathBuf::from(h).join("auth.json")),
+        Some(std::path::PathBuf::from(&home).join(".config").join("codex").join("auth.json")),
+        Some(std::path::PathBuf::from(&home).join(".codex").join("auth.json")),
+    ].into_iter().flatten().collect();
+
+    for path in &auth_paths {
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let has_token = json.get("tokens")
+                        .and_then(|t| t.get("access_token"))
+                        .and_then(|t| t.as_str())
+                        .map(|t| !t.is_empty())
+                        .unwrap_or(false);
+                    let has_api_key = json.get("OPENAI_API_KEY")
+                        .and_then(|k| k.as_str())
+                        .map(|k| !k.is_empty())
+                        .unwrap_or(false);
+                    if has_token || has_api_key {
+                        return AuthStatus::Authenticated;
+                    }
+                }
+            }
+        }
+    }
+
+    // macOS Keychain — "Codex Auth"
+    if let Ok(output) = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Codex Auth", "-w"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !raw.is_empty() {
+                return AuthStatus::Authenticated;
+            }
+        }
+    }
+
+    // WhaleCode's own keychain
     if codex_keychain::has_codex_api_key() {
         return AuthStatus::Authenticated;
     }
 
-    // Check env var
-    if std::env::var("OPENAI_API_KEY").is_ok() {
+    // OPENAI_API_KEY env var
+    if std::env::var("OPENAI_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
         return AuthStatus::Authenticated;
     }
 
     AuthStatus::NeedsAuth
+}
+
+// ---------------------------------------------------------------------------
+// Hex decode helper (for macOS Keychain hex-encoded payloads)
+// ---------------------------------------------------------------------------
+
+fn hex_decode_utf8(hex: &str) -> Option<String> {
+    let hex = hex.trim();
+    if hex.len() % 2 != 0 { return None; }
+    // Check if it looks like hex (all chars are hex digits)
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) { return None; }
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&hex[i..i+2], 16).ok())
+        .collect();
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_run_with_timeout_succeeds() {
-        // `echo` should always work
-        let result = run_with_timeout("echo", &["hello"]).await;
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().trim(), "hello");
+    #[test]
+    fn test_hex_decode_valid() {
+        assert_eq!(hex_decode_utf8("48656c6c6f"), Some("Hello".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_run_with_timeout_fails_for_nonexistent() {
-        let result = run_with_timeout("nonexistent_binary_xyz_999", &[]).await;
-        assert!(result.is_none());
+    #[test]
+    fn test_hex_decode_json() {
+        // 7b0a = {\n
+        assert_eq!(hex_decode_utf8("7b0a"), Some("{\n".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_check_cli_nonexistent() {
-        let (installed, path, version) = check_cli("nonexistent_binary_xyz_999").await;
-        assert!(!installed);
-        assert!(path.is_none());
-        assert!(version.is_none());
+    #[test]
+    fn test_hex_decode_invalid() {
+        assert_eq!(hex_decode_utf8("not hex"), None);
+        assert_eq!(hex_decode_utf8("123"), None); // odd length
     }
 
-    #[tokio::test]
-    async fn test_scan_agents_returns_three() {
-        let agents = scan_agents().await;
-        assert_eq!(agents.len(), 3);
-        assert_eq!(agents[0].tool_name, "claude");
-        assert_eq!(agents[1].tool_name, "gemini");
-        assert_eq!(agents[2].tool_name, "codex");
+    #[test]
+    fn test_hex_decode_empty() {
+        assert_eq!(hex_decode_utf8(""), Some(String::new()));
     }
 }
