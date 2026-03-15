@@ -150,16 +150,14 @@ export function Sidebar() {
   const activeView = useUIStore((s) => s.activeView);
   const setActiveView = useUIStore((s) => s.setActiveView);
   const setShowSetup = useUIStore((s) => s.setShowSetup);
-  const activePlan = useTaskStore((s) => s.activePlan);
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
   const tasks = useTaskStore((s) => s.tasks);
   const sessionName = useUIStore((s) => s.sessionName);
-  const projectDir = useUIStore((s) => s.projectDir);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Session is visible if there's an active plan OR if there are persisted tasks with a project
-  const hasSession = activePlan != null || (tasks.size > 0 && projectDir);
-  const displayLabel = sessionName || (activePlan ? `Session ${activePlan.task_id.slice(0, 6)}` : 'Session');
+  // Session is visible when there are tasks in the current runtime session
+  const hasSession = tasks.size > 0 || orchestrationPhase !== 'idle';
+  const displayLabel = sessionName || 'Session';
 
   const phaseToColor = (phase: string): string => {
     switch (phase) {

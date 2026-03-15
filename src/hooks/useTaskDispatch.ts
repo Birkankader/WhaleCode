@@ -10,7 +10,7 @@ import {
   emitLocalProcessMessage,
   useProcessStore,
 } from './useProcess';
-import { useTaskStore, type ToolName } from '../stores/taskStore';
+import { useTaskStore, type ToolName, type TaskStatus } from '../stores/taskStore';
 import { useOrchestratedDispatch } from './orchestration/useOrchestratedDispatch';
 
 // Re-export for consumers that may need the type
@@ -162,13 +162,16 @@ export function useTaskDispatch() {
 
         if (msg.event === 'exit') {
           const code = Number(msg.data);
+          const finalStatus = code === 0 ? 'completed' : 'failed';
 
-          // Update process store status — always use tempId for consistency
-          useProcessStore.getState()._updateStatus(
-            tempId,
-            code === 0 ? 'completed' : 'failed',
-            code,
-          );
+          // Update task store with process exit info (single source of truth)
+          useTaskStore.getState().updateTaskProcess(tempId, {
+            status: finalStatus as TaskStatus,
+            exitCode: code,
+          });
+
+          // Also update via legacy processStore for components still using it
+          useProcessStore.getState()._updateStatus(tempId, finalStatus, code);
 
           // Update task store status + attach result text
           useTaskStore.getState().updateTaskStatus(

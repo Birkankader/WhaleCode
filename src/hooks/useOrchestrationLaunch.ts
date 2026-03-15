@@ -45,21 +45,13 @@ export function useOrchestrationLaunch() {
       setShowSetup(false);
       setActiveView('kanban');
 
-      // Clean previous session's tasks before starting a new one
+      // Clean previous session before starting a new one
       const store = useTaskStore.getState();
-      const oldTasks = store.tasks;
-      if (oldTasks.size > 0) {
-        const freshTasks = new Map<string, import('@/stores/taskStore').TaskEntry>();
-        useTaskStore.setState({ tasks: freshTasks });
-      }
-      store.setActivePlan(null);
-      store.setPendingQuestion(null);
-      store.setDecomposedTasks([]);
+      store.clearSession();
 
-      // Store orchestrator config so sidebar can read master/worker roles immediately
+      // Store orchestrator config
       store.setOrchestrationPlan(orchestratorConfig);
       store.setOrchestrationPhase('decomposing');
-      store.clearOrchestrationLogs();
 
       // Add an orchestration task immediately so the Kanban board shows progress
       const orchTaskId = crypto.randomUUID();

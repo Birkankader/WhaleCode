@@ -14,7 +14,6 @@ import { ErrorBoundary } from '../components/shared/ErrorBoundary';
 import { initMessengerListener, cleanupMessengerListener } from '../stores/messengerStore';
 import { useUIStore } from '../stores/uiStore';
 import { useTaskStore } from '../stores/taskStore';
-import { useProcessStore } from '../hooks/useProcess';
 import { commands } from '../bindings';
 import { TerminalBottomPanel } from '../components/terminal/TerminalBottomPanel';
 
@@ -34,15 +33,6 @@ export function App() {
   useEffect(() => {
     const interval = setInterval(() => {
       commands.cleanupCompletedProcesses().catch(() => {});
-      const taskState = useTaskStore.getState();
-      for (const [id, task] of taskState.tasks) {
-        if (task.status === 'running' || task.status === 'retrying') {
-          const proc = useProcessStore.getState().processes.get(id);
-          if (proc && (proc.status === 'completed' || proc.status === 'failed')) {
-            taskState.updateTaskStatus(id, proc.status as any);
-          }
-        }
-      }
     }, 30 * 1000);
     return () => clearInterval(interval);
   }, []);
