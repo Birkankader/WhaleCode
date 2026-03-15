@@ -1,6 +1,19 @@
 import { create } from 'zustand';
 
 export type ToolName = 'claude' | 'gemini' | 'codex';
+
+// Helper: immutably update a single task entry in the Map
+function updateTask(
+  tasks: Map<string, TaskEntry>,
+  taskId: string,
+  updater: (task: TaskEntry) => TaskEntry,
+): Map<string, TaskEntry> {
+  const task = tasks.get(taskId);
+  if (!task) return tasks;
+  const newTasks = new Map(tasks);
+  newTasks.set(taskId, updater(task));
+  return newTasks;
+}
 export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review' | 'blocked' | 'retrying' | 'falling_back';
 export type OrchestrationPhase = 'idle' | 'decomposing' | 'awaiting_approval' | 'executing' | 'reviewing' | 'completed' | 'failed';
 
@@ -118,53 +131,23 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   },
 
   updateTaskStatus: (taskId, status) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, status });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, status })) }));
   },
 
   updateTaskAgent: (taskId, toolName) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, toolName });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, toolName })) }));
   },
 
   updateTaskResult: (taskId, resultSummary) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, resultSummary });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, resultSummary })) }));
   },
 
   updateTaskOutputLine: (taskId, line) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, lastOutputLine: line });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, lastOutputLine: line })) }));
   },
 
   updateTaskProcess: (taskId, update) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, ...update });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, ...update })) }));
   },
 
   removeTask: (taskId) => {

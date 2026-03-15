@@ -346,7 +346,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
           <div
             style={{
               fontSize: 12,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontFamily: 'var(--font-mono)',
               color: C.accentText,
             }}
           >

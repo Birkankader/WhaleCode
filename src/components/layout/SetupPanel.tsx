@@ -86,7 +86,9 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
   // Local state
   const [step, setStep] = useState(0);
-  const [sessionName, setSessionName] = useState('');
+  const [sessionName, setSessionName] = useState(
+    new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' session'
+  );
   const [projectDir, setProjectDir] = useState(globalProjectDir || '');
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
@@ -122,7 +124,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
   useEffect(() => {
     if (showSetup) {
       setStep(0);
-      setSessionName('');
+      setSessionName(new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' session');
       setProjectDir(globalProjectDir || '');
       setMaster(null);
       setWorkerCounts({});
@@ -416,7 +418,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
                   <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {projectDir.split('/').pop()}
                   </div>
-                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
                     {projectDir}
                   </div>
                 </div>

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Bell, Check, Trash2, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { useNotificationStore, type AppNotification } from '@/stores/notificationStore';
 import { useUIStore, type AppView } from '@/stores/uiStore';
 
@@ -29,6 +30,7 @@ export function NotificationCenter() {
   const markRead = useNotificationStore((s) => s.markRead);
   const markAllRead = useNotificationStore((s) => s.markAllRead);
   const clearAll = useNotificationStore((s) => s.clearAll);
+  const restoreNotifications = useNotificationStore((s) => s.restoreNotifications);
   const setActiveView = useUIStore((s) => s.setActiveView);
   const setSelectedTaskId = useUIStore((s) => s.setSelectedTaskId);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -98,7 +100,17 @@ export function NotificationCenter() {
               )}
               {notifications.length > 0 && (
                 <button
-                  onClick={clearAll}
+                  onClick={() => {
+                    const saved = [...notifications];
+                    clearAll();
+                    toast('Notifications cleared', {
+                      action: {
+                        label: 'Undo',
+                        onClick: () => restoreNotifications(saved),
+                      },
+                      duration: 5000,
+                    });
+                  }}
                   className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-wc-text-muted hover:text-wc-red hover:bg-wc-red-bg transition-colors"
                   title="Clear all"
                 >

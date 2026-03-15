@@ -1,5 +1,6 @@
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
+use log::debug;
 
 use crate::adapters::{AskUserResponse, ToolAdapter};
 use crate::context::store::ContextStore;
@@ -223,10 +224,10 @@ fn parse_decomposition_json(output: &str) -> Option<DecompositionResult> {
 
     // Strategy 1: Direct parse
     if let Some(result) = try_parse_decomposition(trimmed) {
-        eprintln!("[orchestrator] parse_decomposition_json: Strategy 1 (direct) succeeded");
+        debug!("[orchestrator] parse_decomposition_json: Strategy 1 (direct) succeeded");
         return Some(result);
     }
-    eprintln!("[orchestrator] parse_decomposition_json: Strategy 1 (direct) failed");
+    debug!("[orchestrator] parse_decomposition_json: Strategy 1 (direct) failed");
 
     // Strategy 2: Extract from markdown code fences
     if let Some(start) = output.find("```json") {
@@ -237,21 +238,21 @@ fn parse_decomposition_json(output: &str) -> Option<DecompositionResult> {
             after_fence
         };
         if let Some(result) = try_parse_decomposition(json_str.trim()) {
-            eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (markdown fence) succeeded");
+            debug!("[orchestrator] parse_decomposition_json: Strategy 2 (markdown fence) succeeded");
             return Some(result);
         }
-        eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (markdown fence) failed");
+        debug!("[orchestrator] parse_decomposition_json: Strategy 2 (markdown fence) failed");
     } else if let Some(start) = output.find("```") {
         // Try plain ``` fence (no json tag)
         let after_fence = &output[start + 3..];
         if let Some(end) = after_fence.find("```") {
             let json_str = &after_fence[..end];
             if let Some(result) = try_parse_decomposition(json_str.trim()) {
-                eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (plain fence) succeeded");
+                debug!("[orchestrator] parse_decomposition_json: Strategy 2 (plain fence) succeeded");
                 return Some(result);
             }
         }
-        eprintln!("[orchestrator] parse_decomposition_json: Strategy 2 (plain fence) failed");
+        debug!("[orchestrator] parse_decomposition_json: Strategy 2 (plain fence) failed");
     }
 
     // Strategy 3: First `{` to last `}`
@@ -259,27 +260,27 @@ fn parse_decomposition_json(output: &str) -> Option<DecompositionResult> {
         if start < end {
             let json_str = &output[start..=end];
             if let Some(result) = try_parse_decomposition(json_str.trim()) {
-                eprintln!("[orchestrator] parse_decomposition_json: Strategy 3 (braces) succeeded");
+                debug!("[orchestrator] parse_decomposition_json: Strategy 3 (braces) succeeded");
                 return Some(result);
             }
-            eprintln!("[orchestrator] parse_decomposition_json: Strategy 3 (braces) failed");
+            debug!("[orchestrator] parse_decomposition_json: Strategy 3 (braces) failed");
         }
     }
 
     // Strategy 4: Scan for `"tasks"` key and extract the enclosing object
     // This handles cases where the JSON is deeply embedded in natural language
     if let Some(result) = extract_tasks_key_object(output) {
-        eprintln!("[orchestrator] parse_decomposition_json: Strategy 4 (tasks key scan) succeeded");
+        debug!("[orchestrator] parse_decomposition_json: Strategy 4 (tasks key scan) succeeded");
         return Some(result);
     }
-    eprintln!("[orchestrator] parse_decomposition_json: Strategy 4 (tasks key scan) failed");
+    debug!("[orchestrator] parse_decomposition_json: Strategy 4 (tasks key scan) failed");
 
     // Strategy 5: Find any JSON array `[{...}]` and wrap as `{"tasks": [...]}`
     if let Some(result) = extract_json_array_as_tasks(output) {
-        eprintln!("[orchestrator] parse_decomposition_json: Strategy 5 (array wrap) succeeded");
+        debug!("[orchestrator] parse_decomposition_json: Strategy 5 (array wrap) succeeded");
         return Some(result);
     }
-    eprintln!("[orchestrator] parse_decomposition_json: Strategy 5 (array wrap) failed — all strategies exhausted");
+    debug!("[orchestrator] parse_decomposition_json: Strategy 5 (array wrap) failed — all strategies exhausted");
 
     None
 }
@@ -697,7 +698,7 @@ pub async fn dispatch_orchestrated_task(
         }
         None => {
             // --- Retry ONCE with a clarifying follow-up prompt ---
-            eprintln!("[orchestrator] Decomposition parse failed on first attempt, retrying...");
+            debug!("[orchestrator] Decomposition parse failed on first attempt, retrying...");
             emit_orch(&on_event, "info", serde_json::json!({
                 "message": "First decomposition attempt was not valid JSON. Retrying with clarification..."
             }));
@@ -805,7 +806,7 @@ pub async fn dispatch_orchestrated_task(
 
             match retry_result {
                 Some(result) => {
-                    eprintln!("[orchestrator] Decomposition retry succeeded");
+                    debug!("[orchestrator] Decomposition retry succeeded");
                     emit_messenger(&app_handle, MessengerMessage::agent(
                         &plan.task_id,
                         &config.master_agent,
@@ -820,7 +821,7 @@ pub async fn dispatch_orchestrated_task(
                     result
                 }
                 None => {
-                    eprintln!("[orchestrator] Decomposition retry also failed — falling back to single-task mode");
+                    debug!("[orchestrator] Decomposition retry also failed — falling back to single-task mode");
 
                     // Instead of failing completely, create a single task with the original prompt
                     // assigned to the master agent. This handles simple/conversational prompts gracefully.

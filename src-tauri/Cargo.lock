@@ -4875,6 +4875,7 @@ dependencies = [
  "ignore",
  "keyring",
  "libc",
+ "log",
  "nix",
  "parking_lot",
  "rusqlite",

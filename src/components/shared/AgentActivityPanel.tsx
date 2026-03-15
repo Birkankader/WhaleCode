@@ -133,7 +133,7 @@ export function AgentActivityPanel({ taskId }: AgentActivityPanelProps) {
           border: `1px solid ${C.border}`,
           fontSize: 10,
           color: C.textSecondary,
-          fontFamily: 'ui-monospace, monospace',
+          fontFamily: 'var(--font-mono)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',

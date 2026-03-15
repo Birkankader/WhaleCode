@@ -174,7 +174,28 @@ export function OnboardingWizard() {
                   ))}
                   {!hasAnyAgent && (
                     <div className="mt-3 p-3 rounded-xl bg-wc-amber-bg border border-wc-amber-border text-xs text-wc-amber leading-relaxed">
-                      No agents found. Install at least one CLI tool and restart WhaleCode.
+                      No agents found. Install at least one CLI tool and try again.
+                      <button
+                        onClick={() => {
+                          setLoading(true);
+                          commands.detectAgents()
+                            .then((result) => {
+                              if (result.status === 'ok') {
+                                setAgents(result.data.map((a: BackendDetectedAgent) => ({
+                                  name: a.display_name,
+                                  cli: a.tool_name,
+                                  installed: true,
+                                  authenticated: a.auth_status === 'Authenticated',
+                                  version: a.version,
+                                })));
+                              }
+                            })
+                            .finally(() => setLoading(false));
+                        }}
+                        className="ml-2 px-2 py-0.5 rounded-md bg-wc-amber/20 text-wc-amber font-semibold hover:bg-wc-amber/30 transition-colors"
+                      >
+                        Check Again
+                      </button>
                     </div>
                   )}
                 </div>

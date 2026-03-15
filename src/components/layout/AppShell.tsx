@@ -94,7 +94,7 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <div
       className="h-screen flex flex-col overflow-hidden"
-      style={{ background: C.bg, color: C.textPrimary, fontFamily: "'Inter', system-ui, sans-serif" }}
+      style={{ background: C.bg, color: C.textPrimary }}
     >
       <div className="flex flex-1 overflow-hidden relative">
         <Sidebar />

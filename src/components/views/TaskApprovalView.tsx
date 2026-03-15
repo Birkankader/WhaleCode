@@ -506,7 +506,7 @@ export function TaskApprovalView() {
                             color: C.textSecondary,
                             fontSize: 11,
                             lineHeight: '16px',
-                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            fontFamily: 'var(--font-mono)',
                             resize: 'vertical',
                             outline: 'none',
                           }}
@@ -524,7 +524,7 @@ export function TaskApprovalView() {
                             fontSize: 11,
                             lineHeight: '16px',
                             color: C.textSecondary,
-                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            fontFamily: 'var(--font-mono)',
                             maxHeight: 80,
                             overflow: 'auto',
                             whiteSpace: 'pre-wrap',
@@ -603,7 +603,7 @@ export function TaskApprovalView() {
                           border: `1px solid ${C.accent}25`,
                           borderRadius: 4,
                           padding: '1px 6px',
-                          fontFamily: 'ui-monospace, "SF Mono", monospace',
+                          fontFamily: 'var(--font-mono)',
                         }}
                       >
                         <FileCode2 size={9} />

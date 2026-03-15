@@ -33,6 +33,7 @@ ignore = "0.4"
 tauri-plugin-dialog = "2.6.0"
 thiserror = "1"
 parking_lot = "0.12"
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

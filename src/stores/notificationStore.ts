@@ -17,6 +17,7 @@ interface NotificationState {
   markRead: (id: string) => void;
   markAllRead: () => void;
   clearAll: () => void;
+  restoreNotifications: (notifications: AppNotification[]) => void;
 }
 
 export const useNotificationStore = create<NotificationState>((set) => ({
@@ -78,6 +79,11 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   },
 
   clearAll: () => set({ notifications: [], unreadCount: 0 }),
+
+  restoreNotifications: (notifications) => set({
+    notifications,
+    unreadCount: notifications.filter((n) => !n.read).length,
+  }),
 }));
 
 /**

@@ -233,7 +233,7 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
                       <div style={{
                         fontSize: 10, color: C.textMuted, marginTop: 3,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        fontFamily: 'ui-monospace, monospace',
+                        fontFamily: 'var(--font-mono)',
                       }}>
                         {task.lastOutputLine}
                       </div>
@@ -252,7 +252,7 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
                   {/* Right side — status + elapsed + actions */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                     {task.startedAt && (
-                      <span style={{ fontSize: 10, color: C.textMuted, fontFamily: 'ui-monospace, monospace' }}>
+                      <span style={{ fontSize: 10, color: C.textMuted, fontFamily: 'var(--font-mono)' }}>
                         {formatElapsed(elapsed)}
                       </span>
                     )}

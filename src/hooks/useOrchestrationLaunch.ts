@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { toast } from 'sonner';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore, type ToolName, type OrchestratorConfig } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
@@ -25,7 +26,7 @@ export function useOrchestrationLaunch() {
   const { dispatchOrchestratedTask } = useTaskDispatch();
 
   const handleLaunch = useCallback(
-    (config: LaunchConfig) => {
+    async (config: LaunchConfig) => {
       if (!config.master || !config.taskDescription.trim() || !config.projectDir.trim()) return;
 
       const masterToolName = config.master.cli as ToolName;
@@ -47,6 +48,13 @@ export function useOrchestrationLaunch() {
 
       // Clean previous session before starting a new one
       const store = useTaskStore.getState();
+      if (store.tasks.size > 0) {
+        const confirmed = await ask('This will clear the current session. Continue?', {
+          title: 'Clear Session',
+          kind: 'warning',
+        });
+        if (!confirmed) return;
+      }
       store.clearSession();
 
       // Store orchestrator config

@@ -563,7 +563,7 @@ export function DecompositionErrorCard() {
                         background: C.panel,
                         fontSize: 11,
                         lineHeight: '16px',
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontFamily: 'var(--font-mono)',
                       }}
                     >
                       <span style={{ color: C.textMuted, flexShrink: 0 }}>{log.timestamp}</span>

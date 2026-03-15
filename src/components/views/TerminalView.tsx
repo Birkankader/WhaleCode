@@ -417,7 +417,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                   cursor: 'pointer',
                   fontSize: 11,
                   fontWeight: 600,
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  fontFamily: 'var(--font-mono)',
                   background: mode === m ? C.accent + '30' : 'transparent',
                   color: mode === m ? C.accentText : C.textMuted,
                   transition: 'all 0.15s',
@@ -428,7 +428,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
             ))}
           </div>
           {mode === 'standalone' && activeProcessId && (
-            <span style={{ fontSize: 10, color: C.textMuted, marginLeft: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+            <span style={{ fontSize: 10, color: C.textMuted, marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
               pid:{activeProcessId.slice(0, 8)}
             </span>
           )}
@@ -456,7 +456,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                       alignItems: 'flex-start',
                       gap: 10,
                       padding: '6px 0',
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontFamily: 'var(--font-mono)',
                       fontSize: 12,
                       lineHeight: '20px',
                     }}
@@ -521,7 +521,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                 <div
                   key={line.id}
                   style={{
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontFamily: 'var(--font-mono)',
                     fontSize: 12,
                     lineHeight: '20px',
                     padding: '1px 0',
@@ -615,7 +615,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                 outline: 'none',
                 color: C.textPrimary,
                 fontSize: 13,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontFamily: 'var(--font-mono)',
               }}
             />
           </div>
@@ -690,7 +690,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                     <span
                       style={{
                         fontSize: 11,
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontFamily: 'var(--font-mono)',
                         color: C.textPrimary,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',

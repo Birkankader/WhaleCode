@@ -211,7 +211,7 @@ function ElapsedTimer({ startedAt }: { startedAt: number }) {
   }, [startedAt]);
 
   return (
-    <span style={{ fontSize: 11, color: C.textMuted, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+    <span style={{ fontSize: 11, color: C.textMuted, fontFamily: 'var(--font-mono)' }}>
       {formatElapsedTimer(elapsed)}
     </span>
   );
@@ -580,7 +580,7 @@ function TaskCard({
           style={{
             fontSize: 10,
             lineHeight: '15px',
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontFamily: 'var(--font-mono)',
             color: C.textMuted,
             padding: '6px 8px',
             borderRadius: 8,
@@ -1192,7 +1192,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
                         alignItems: 'flex-start',
                         gap: 8,
                         padding: '3px 0',
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontFamily: 'var(--font-mono)',
                         fontSize: 11,
                         lineHeight: '18px',
                       }}

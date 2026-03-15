@@ -148,7 +148,7 @@ export function TaskIdentity({ display }: { display: TaskDisplayData }) {
               fontSize: 11,
               lineHeight: '16px',
               color: C.textSecondary,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontFamily: 'var(--font-mono)',
               maxHeight: 120,
               overflow: 'auto',
               whiteSpace: 'pre-wrap',
@@ -161,7 +161,7 @@ export function TaskIdentity({ display }: { display: TaskDisplayData }) {
         <div
           style={{
             fontSize: 11,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontFamily: 'var(--font-mono)',
             color: C.textMuted,
           }}
         >

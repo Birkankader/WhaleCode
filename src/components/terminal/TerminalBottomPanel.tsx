@@ -132,7 +132,7 @@ export function TerminalBottomPanel({ open, onToggle }: TerminalBottomPanelProps
               flex: 1,
               overflowY: 'auto',
               padding: '8px 12px',
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontFamily: 'var(--font-mono)',
               fontSize: 11,
               lineHeight: '18px',
             }}

@@ -200,7 +200,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
                 color: C.textPrimary,
                 lineHeight: '22px',
                 whiteSpace: 'pre-wrap',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontFamily: 'var(--font-mono)',
               }}
             >
               {reviewText}
@@ -255,7 +255,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
                   <span
                     style={{
                       fontSize: 12,
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontFamily: 'var(--font-mono)',
                       color: C.textPrimary,
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
