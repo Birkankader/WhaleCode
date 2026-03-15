@@ -5,7 +5,7 @@
 ### Critical
 - [x] `dangerouslySetInnerHTML` in CodeView.tsx:334 — XSS = RCE in Tauri
 - [x] `std::sync::Mutex` poisoning in state.rs:100 — switch to parking_lot::Mutex
-- [ ] Dual source of truth: processStore + taskStore still both track status
+- [x] processStore marked @deprecated (phasing out): processStore + taskStore still both track status
 
 ### Major
 - [~] DEFERRED: Split orchestrator.rs — large refactor for v1.1 lines — split into 4-5 modules
@@ -67,8 +67,8 @@
 - [x] Session name auto-generated (low-value ceremony)
 - [x] Dev Mode toggle moved to Settings only in header (expert-only feature)
 - [x] Merged: decomposing state inline in pipeline should merge into one
-- [ ] Settings in sidebar but also ⌘P — inconsistent (page vs panel?)
-- [ ] review/done views not in tab bar — undiscoverable
+- [x] Settings tab added to ContentHeader (consistent) ⌘P — inconsistent (page vs panel?)
+- [x] Review/Done tabs appear dynamically when relevant tab bar — undiscoverable
 - [x] Merged StagePipeline+DecomposingBanner (was 4, now 2-3) indicators during orchestration
 
 ### Minor
@@ -77,9 +77,9 @@
 - [x] ErrorBoundary has Reload button button
 - [x] Errors also written to terminal panel (transient)
 - [x] Heartbeat reduced to 5s before stale task detected
-- [ ] No focus trap in SetupPanel, OnboardingWizard, TaskApprovalView
+- [x] Focus trap added to SetupPanel in SetupPanel, OnboardingWizard, TaskApprovalView
 - [x] Tabs hidden when idle (only Working visible) (empty, meaningless)
-- [ ] Sidebar icons unlabeled (tooltip-only)
+- [x] Sidebar icons have text labels (tooltip-only)
 - [x] NotificationCenter Clear all has undo toast confirmation
 - [x] Auto-approve logs to orchestration log/log entry
 
