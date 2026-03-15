@@ -829,28 +829,33 @@ pub async fn dispatch_orchestrated_task(
                     result
                 }
                 None => {
-                    eprintln!("[orchestrator] Decomposition retry also failed — giving up");
-                    // Kill the master process — retry also failed
-                    let current_master = plan.master_process_id.as_deref().unwrap_or(&master_task_id);
-                    let _ = kill_process(state_ref, current_master).await;
-                    update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
-                    plan.phase = OrchestrationPhase::Failed;
+                    eprintln!("[orchestrator] Decomposition retry also failed — falling back to single-task mode");
+
+                    // Instead of failing completely, create a single task with the original prompt
+                    // assigned to the master agent. This handles simple/conversational prompts gracefully.
+                    let fallback_decomposition = DecompositionResult {
+                        tasks: vec![crate::router::orchestrator::SubTaskDef {
+                            agent: config.master_agent.clone(),
+                            prompt: prompt.clone(),
+                            description: if prompt.len() > 60 { format!("{}...", &prompt[..57]) } else { prompt.clone() },
+                            depends_on: vec![],
+                        }],
+                    };
+
                     emit_messenger(&app_handle, MessengerMessage::system(
                         &plan.task_id,
-                        "Decomposition failed: could not parse JSON from master agent output (tried twice)".to_string(),
+                        "Could not decompose into sub-tasks. Running as a single task.".to_string(),
                         MessageType::TaskFailed,
                     ));
-                    // Schedule plan cleanup after configured delay
-                    let cleanup_state = state_ref.clone();
-                    let cleanup_plan_id = plan.task_id.clone();
-                    let cleanup_delay_inner = cleanup_delay;
-                    tokio::spawn(async move {
-                        tokio::time::sleep(cleanup_delay_inner).await;
-                        if let Ok(mut guard) = cleanup_state.lock() {
-                            guard.orchestration_plans.remove(&cleanup_plan_id);
-                        }
-                    });
-                    return Ok(plan);
+                    emit_orch(&on_event, "info", serde_json::json!({
+                        "message": "Fallback: running original prompt as single task"
+                    }));
+
+                    // Kill the old master process before proceeding
+                    let current_master = plan.master_process_id.as_deref().unwrap_or(&master_task_id);
+                    let _ = kill_process(state_ref, current_master).await;
+
+                    fallback_decomposition
                 }
             }
         }

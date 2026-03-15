@@ -121,25 +121,25 @@ impl Orchestrator {
             .collect();
 
         format!(
-            "You are a task orchestrator. Analyze the following task and decompose it into sub-tasks \
-             for the available agents. Return ONLY a JSON object with no other text.\n\n\
+            "You are a task orchestrator. Your ONLY job is to return a JSON task plan.\n\n\
              Available agents:\n{}\n\n\
-             Task: {}\n\n\
-             Return format (strict JSON, no markdown fences):\n\
-             {{\"tasks\": [{{\"id\": \"t1\", \"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt>\", \"description\": \"<short description>\", \"depends_on\": [\"t0\"]}}]}}\n\n\
+             User request: {}\n\n\
+             INSTRUCTIONS:\n\
+             - You MUST return ONLY a JSON object. No greetings, no explanations, no markdown.\n\
+             - If the request is simple, conversational, or a single task, return it as ONE task.\n\
+             - If it's complex, decompose it into multiple sub-tasks.\n\n\
+             Return format (strict JSON, no code fences):\n\
+             {{\"tasks\": [{{\"id\": \"t1\", \"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt for the agent>\", \"description\": \"<short description>\", \"depends_on\": []}}]}}\n\n\
              Rules:\n\
              - Give each task a short id like t1, t2, t3\n\
-             - Use depends_on to specify which task IDs must complete before this task can start\n\
-             - Tasks with no dependencies should have an empty depends_on array\n\
+             - Use depends_on to specify dependencies (empty array if none)\n\
              - Tasks that CAN run in parallel SHOULD have independent dependencies\n\
              - Assign each sub-task to the most appropriate agent\n\
-             - Each agent can receive multiple tasks\n\
              - Prompts should be self-contained and detailed\n\
-             - You may assign tasks to yourself\n\
-             - CRITICAL: Each agent works in an isolated git worktree. To prevent merge conflicts, \
-             ensure sub-tasks do NOT modify the same files. If two tasks must touch the same file, \
-             merge them into a single task for one agent. Explicitly tell each agent which files it \
-             should create or modify and which files it must NOT touch.",
+             - CRITICAL: Each agent works in an isolated git worktree. Do NOT assign tasks that \
+             modify the same files to different agents.\n\
+             - EVEN FOR SIMPLE REQUESTS: You must still return the JSON format above with at least one task.\n\
+             - NEVER respond with plain text. ALWAYS respond with JSON.",
             agent_list.join("\n"),
             prompt
         )
