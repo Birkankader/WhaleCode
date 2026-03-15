@@ -23,6 +23,7 @@ function extractFilePills(text: string): string[] {
 interface EditableTask {
   id: string;
   description: string;
+  prompt: string;
   agent: ToolName;
   removed: boolean;
   dependsOn: string | null;
@@ -34,6 +35,7 @@ export function TaskApprovalView() {
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
   const autoApprove = useUIStore((s) => s.autoApprove);
   const setAutoApprove = useUIStore((s) => s.setAutoApprove);
+  const developerMode = useUIStore((s) => s.developerMode);
   const [approving, setApproving] = useState(false);
   const [visible, setVisible] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -48,7 +50,8 @@ export function TaskApprovalView() {
       if (task.role === 'worker' && task.status === 'pending') {
         workers.push({
           id,
-          description: task.prompt,
+          description: task.description,
+          prompt: task.prompt,
           agent: task.toolName,
           removed: false,
           dependsOn: task.dependsOn,
@@ -73,13 +76,15 @@ export function TaskApprovalView() {
   useEffect(() => {
     if (isOpen) {
       requestAnimationFrame(() => setVisible(true));
-      // Start 5-second auto-approve countdown
-      setCountdown(5);
+      // Start countdown only if auto-approve is enabled
+      if (autoApprove) {
+        setCountdown(5);
+      }
     } else {
       setVisible(false);
       setCountdown(null);
     }
-  }, [isOpen]);
+  }, [isOpen, autoApprove]);
 
   // Countdown timer — auto-approves when reaching 0
   useEffect(() => {
@@ -167,7 +172,7 @@ export function TaskApprovalView() {
     // Add to local edited list
     setEditedTasks(prev => [
       ...(prev ?? []),
-      { id: newId, description: desc, agent: newTaskAgent, removed: false, dependsOn: null },
+      { id: newId, description: desc, prompt: desc, agent: newTaskAgent, removed: false, dependsOn: null },
     ]);
 
     setNewTaskPrompt('');
@@ -191,9 +196,9 @@ export function TaskApprovalView() {
         .filter(t => !t.removed)
         .map(t => ({
           agent: t.agent,
-          prompt: t.description,
+          prompt: t.prompt,
           description: t.description.length > 60 ? t.description.slice(0, 57) + '...' : t.description,
-          depends_on: [] as string[],
+          depends_on: t.dependsOn ? [t.dependsOn] : ([] as string[]),
         }));
 
       // Command auto-generated at runtime by tauri-specta
@@ -475,6 +480,61 @@ export function TaskApprovalView() {
                     >
                       {task.description}
                     </div>
+
+                    {/* Full prompt — visible below description */}
+                    {!task.removed && task.prompt !== task.description && (
+                      developerMode ? (
+                        <textarea
+                          value={task.prompt}
+                          onChange={(e) => {
+                            setCountdown(null);
+                            setEditedTasks(prev => {
+                              if (!prev) return prev;
+                              const next = [...prev];
+                              next[idx] = { ...next[idx], prompt: e.target.value };
+                              return next;
+                            });
+                          }}
+                          rows={3}
+                          style={{
+                            width: '100%',
+                            marginTop: 6,
+                            padding: '8px 10px',
+                            borderRadius: 8,
+                            background: C.panel,
+                            border: `1px solid ${C.border}`,
+                            color: C.textSecondary,
+                            fontSize: 11,
+                            lineHeight: '16px',
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            resize: 'vertical',
+                            outline: 'none',
+                          }}
+                          onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
+                          onBlur={(e) => { e.currentTarget.style.borderColor = C.border; }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            padding: '6px 10px',
+                            borderRadius: 8,
+                            background: C.panel,
+                            border: `1px solid ${C.border}`,
+                            fontSize: 11,
+                            lineHeight: '16px',
+                            color: C.textSecondary,
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            maxHeight: 80,
+                            overflow: 'auto',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {task.prompt}
+                        </div>
+                      )
+                    )}
                   </div>
 
                   {/* Agent selector */}

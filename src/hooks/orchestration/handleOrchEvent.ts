@@ -106,11 +106,12 @@ export function handleOrchEvent(
     case 'task_assigned': {
       const agent = ev.agent as string;
       const desc = ev.description as string;
+      const prompt = (ev.prompt as string) || desc; // Full prompt from backend, fallback to description
       const subId = crypto.randomUUID();
       const phase2Already = store.orchestrationPhase === 'executing';
       store.addTask({
         taskId: subId,
-        prompt: desc,
+        prompt,
         toolName: agent as ToolName,
         status: phase2Already ? 'running' : 'pending',
         description: desc.length > 60 ? desc.slice(0, 57) + '...' : desc,

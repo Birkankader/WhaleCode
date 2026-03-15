@@ -60,6 +60,7 @@ export function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     const st = STATUS[stKey] ?? STATUS.idle;
     return {
       title: task.description || task.prompt.slice(0, 60),
+      prompt: task.prompt,
       id: task.taskId,
       agent: task.toolName,
       status: task.status,

@@ -883,7 +883,8 @@ pub async fn dispatch_orchestrated_task(
     for sub_def in &decomposition.tasks {
         emit_orch(&on_event, "task_assigned", serde_json::json!({
             "agent": sub_def.agent,
-            "description": sub_def.description
+            "description": sub_def.description,
+            "prompt": sub_def.prompt
         }));
     }
 

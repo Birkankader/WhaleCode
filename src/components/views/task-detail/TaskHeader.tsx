@@ -6,6 +6,7 @@ import type { ToolName } from '@/stores/taskStore';
 
 export interface TaskDisplayData {
   title: string;
+  prompt: string;
   id: string;
   agent: ToolName;
   status: string;
@@ -134,6 +135,29 @@ export function TaskIdentity({ display }: { display: TaskDisplayData }) {
         >
           {display.title}
         </div>
+        {/* Full prompt (if different from title) */}
+        {display.prompt && display.prompt !== display.title && (
+          <div
+            style={{
+              marginTop: 4,
+              marginBottom: 4,
+              padding: '8px 10px',
+              borderRadius: 8,
+              background: C.panel,
+              border: `1px solid ${C.border}`,
+              fontSize: 11,
+              lineHeight: '16px',
+              color: C.textSecondary,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              maxHeight: 120,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {display.prompt}
+          </div>
+        )}
         <div
           style={{
             fontSize: 11,
