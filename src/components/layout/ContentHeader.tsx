@@ -20,15 +20,13 @@ export function ContentHeader() {
   const sessionName = storedSessionName || (activePlan ? 'Active Session' : 'No Session');
   const sessionStatus = orchestrationPhase === 'idle' ? 'idle' : 'running';
   const hasReviewReady = orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed';
-  const showTerminalTab = developerMode || orchestrationPhase !== 'idle';
 
   const tabs: { key: AppView; label: string; icon: string }[] = useMemo(() => [
-    { key: 'kanban', label: 'Board', icon: '⊞' },
-    ...(showTerminalTab ? [{ key: 'terminal' as const, label: 'Terminal', icon: '⌨' }] : []),
+    { key: 'kanban', label: 'Working', icon: '⊞' },
     { key: 'usage', label: 'Usage', icon: '◎' },
     { key: 'git', label: 'Git', icon: '⎇' },
     { key: 'code', label: 'Code', icon: '◈' },
-  ], [showTerminalTab]);
+  ], []);
 
   return (
     <div className="flex items-center gap-0 border-b border-wc-border bg-wc-panel h-[44px] shrink-0 pl-1 pr-4">

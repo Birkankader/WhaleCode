@@ -37,10 +37,9 @@ export function AppShell({ children }: AppShellProps) {
   // Global keyboard shortcuts
   const viewShortcuts: [string, AppView][] = [
     ['1', 'kanban'],
-    ['2', 'terminal'],
-    ['3', 'usage'],
-    ['4', 'review'],
-    ['5', 'done'],
+    ['2', 'usage'],
+    ['3', 'git'],
+    ['4', 'code'],
   ];
 
   const hotkeys = useMemo(

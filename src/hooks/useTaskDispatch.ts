@@ -109,6 +109,8 @@ export function useTaskDispatch() {
         toolName === 'codex' ? formatCodexEvent :
         formatGeminiEvent;
 
+      let lastOutputUpdateAt = 0;
+
       channel.onmessage = (msg: OutputEvent) => {
         let formattedMsg = msg;
 
@@ -116,6 +118,16 @@ export function useTaskDispatch() {
           const formatted = formatEvent(msg.data);
           if (!formatted) return; // Skip empty/suppressed events
           formattedMsg = { event: 'stdout', data: formatted };
+
+          // Update lastOutputLine for live preview on task cards (throttled to 500ms)
+          const now = Date.now();
+          if (now - lastOutputUpdateAt > 500) {
+            const previewLine = formatted.trim();
+            if (previewLine.length > 0) {
+              lastOutputUpdateAt = now;
+              useTaskStore.getState().updateTaskOutputLine(tempId, previewLine.slice(0, 160));
+            }
+          }
 
           // Capture result text from NDJSON events for single tasks
           const rawLine = msg.data;
@@ -150,11 +162,10 @@ export function useTaskDispatch() {
 
         if (msg.event === 'exit') {
           const code = Number(msg.data);
-          const finalId = resolvedTaskId ?? tempId;
 
-          // Update process store status
+          // Update process store status — always use tempId for consistency
           useProcessStore.getState()._updateStatus(
-            finalId,
+            tempId,
             code === 0 ? 'completed' : 'failed',
             code,
           );
@@ -169,7 +180,7 @@ export function useTaskDispatch() {
           }
 
           // Emit the exit event
-          emitProcessOutput(finalId, formattedMsg);
+          emitProcessOutput(tempId, formattedMsg);
           return;
         }
 
@@ -178,7 +189,7 @@ export function useTaskDispatch() {
           earlyEvents.push(formattedMsg);
           return;
         }
-        emitProcessOutput(resolvedTaskId, formattedMsg);
+        emitProcessOutput(tempId, formattedMsg);
       };
 
       try {
@@ -193,11 +204,13 @@ export function useTaskDispatch() {
         const taskId = result.data;
         resolvedTaskId = taskId;
 
-        // Register in process store (same pattern as useClaudeTask/useGeminiTask)
+        // Register in process store — use tempId for consistency with taskStore
+        // Backend usually returns the same tempId, but we normalize here
+        const processKey = tempId;
         const store = useProcessStore.getState();
         const newProcesses = new Map(store.processes);
-        newProcesses.set(taskId, {
-          taskId,
+        newProcesses.set(processKey, {
+          taskId: processKey,
           cmd: `${toolName}: ${description}`,
           status: 'running',
           channel,
@@ -208,10 +221,10 @@ export function useTaskDispatch() {
         });
         useProcessStore.setState({
           processes: newProcesses,
-          activeProcessId: taskId,
+          activeProcessId: processKey,
         });
 
-        emitLocalProcessMessage(taskId, `$ ${prompt}`);
+        emitLocalProcessMessage(processKey, `$ ${prompt}`);
 
         // Update task store with real taskId and running status
         const taskState = useTaskStore.getState();
@@ -224,7 +237,7 @@ export function useTaskDispatch() {
 
         // Replay early events
         for (const ev of earlyEvents) {
-          emitProcessOutput(taskId, ev);
+          emitProcessOutput(tempId, ev);
         }
 
         return taskId;

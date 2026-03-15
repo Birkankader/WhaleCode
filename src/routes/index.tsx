@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Toaster } from 'sonner';
 import { AppShell } from '../components/layout/AppShell';
 import { KanbanView } from '../components/views/KanbanView';
-import { TerminalView } from '../components/views/TerminalView';
 import { UsageView } from '../components/views/UsageView';
 import { CodeReviewView } from '../components/views/CodeReviewView';
 import { DoneView } from '../components/views/DoneView';
@@ -17,6 +16,7 @@ import { useUIStore } from '../stores/uiStore';
 import { useTaskStore } from '../stores/taskStore';
 import { useProcessStore } from '../hooks/useProcess';
 import { commands } from '../bindings';
+import { TerminalBottomPanel } from '../components/terminal/TerminalBottomPanel';
 
 export function App() {
   const activeView = useUIStore((s) => s.activeView);
@@ -34,38 +34,43 @@ export function App() {
   useEffect(() => {
     const interval = setInterval(() => {
       commands.cleanupCompletedProcesses().catch(() => {});
-
-      // Reconcile: check if any "running" frontend tasks have dead backend processes
       const taskState = useTaskStore.getState();
       for (const [id, task] of taskState.tasks) {
         if (task.status === 'running' || task.status === 'retrying') {
-          // If the process store has no entry or shows completed/failed, sync it
           const proc = useProcessStore.getState().processes.get(id);
           if (proc && (proc.status === 'completed' || proc.status === 'failed')) {
             taskState.updateTaskStatus(id, proc.status as any);
           }
         }
       }
-    }, 30 * 1000); // Every 30 seconds
+    }, 30 * 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // If dev mode is turned off while on terminal view, fall back to kanban
+  // Auto-navigate to review when orchestration completes
+  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  useEffect(() => {
+    if (orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed') {
+      setActiveView('review');
+    }
+  }, [orchestrationPhase, setActiveView]);
+
+  // If dev mode turned off while on terminal-only view, go to working
   useEffect(() => {
     if (!developerMode && activeView === 'terminal') {
       setActiveView('kanban');
     }
   }, [developerMode, activeView, setActiveView]);
 
-  // Auto-navigate to review when orchestration enters reviewing/completed phase
-  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  // Terminal panel state (VS Code-style bottom panel)
+  const [terminalOpen, setTerminalOpen] = useState(false);
+
+  // Auto-open terminal when orchestration starts
   useEffect(() => {
-    if (orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed') {
-      setActiveView('review');
-    } else if (activeView === 'review' || activeView === 'done') {
-      setActiveView('kanban');
+    if (orchestrationPhase === 'decomposing' || orchestrationPhase === 'executing') {
+      setTerminalOpen(true);
     }
-  }, [orchestrationPhase, activeView, setActiveView]);
+  }, [orchestrationPhase]);
 
   return (
     <>
@@ -83,61 +88,79 @@ export function App() {
       />
       <TaskApprovalView />
       <AppShell>
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-hidden">
-            {activeView === 'kanban' && (
-              <ErrorBoundary fallbackLabel="Board failed to load">
-                <KanbanView selectedTask={selectedTaskId} setSelectedTask={setSelectedTaskId} />
-              </ErrorBoundary>
-            )}
-            {activeView === 'terminal' && (
-              <ErrorBoundary fallbackLabel="Terminal failed to load">
-                <TerminalView devMode={developerMode} />
-              </ErrorBoundary>
-            )}
-            {activeView === 'usage' && (
-              <ErrorBoundary fallbackLabel="Usage view failed to load">
-                <UsageView />
-              </ErrorBoundary>
-            )}
-            {activeView === 'review' && (
-              <ErrorBoundary fallbackLabel="Review failed to load">
-                <CodeReviewView onDone={() => setActiveView('done')} />
-              </ErrorBoundary>
-            )}
-            {activeView === 'done' && (
-              <ErrorBoundary fallbackLabel="Done view failed to load">
-                <DoneView
-                  onNew={() => {
-                    setShowSetup(true);
-                    setActiveView('kanban');
-                  }}
-                />
-              </ErrorBoundary>
-            )}
-            {activeView === 'settings' && (
-              <ErrorBoundary fallbackLabel="Settings failed to load">
-                <ApiKeySettings />
-              </ErrorBoundary>
-            )}
-            {activeView === 'git' && (
-              <ErrorBoundary fallbackLabel="Git view failed to load">
-                <GitView />
-              </ErrorBoundary>
-            )}
-            {activeView === 'code' && (
-              <ErrorBoundary fallbackLabel="Code view failed to load">
-                <CodeView />
+        <div className="flex flex-col flex-1 overflow-hidden">
+          {/* Main content area */}
+          <div className="flex flex-1 overflow-hidden min-h-0">
+            <div className="flex-1 overflow-hidden">
+              {/* Working view — Kanban board (primary view) */}
+              {(activeView === 'kanban' || activeView === 'terminal') && (
+                <ErrorBoundary fallbackLabel="Board failed to load">
+                  <KanbanView selectedTask={selectedTaskId} setSelectedTask={setSelectedTaskId} />
+                </ErrorBoundary>
+              )}
+
+              {/* Usage — token/cost tracking */}
+              {activeView === 'usage' && (
+                <ErrorBoundary fallbackLabel="Usage view failed to load">
+                  <UsageView />
+                </ErrorBoundary>
+              )}
+
+              {/* Review — shown automatically when orchestration completes */}
+              {activeView === 'review' && (
+                <ErrorBoundary fallbackLabel="Review failed to load">
+                  <CodeReviewView onDone={() => setActiveView('done')} />
+                </ErrorBoundary>
+              )}
+
+              {/* Done — completion summary */}
+              {activeView === 'done' && (
+                <ErrorBoundary fallbackLabel="Done view failed to load">
+                  <DoneView
+                    onNew={() => {
+                      setShowSetup(true);
+                      setActiveView('kanban');
+                    }}
+                  />
+                </ErrorBoundary>
+              )}
+
+              {/* Settings */}
+              {activeView === 'settings' && (
+                <ErrorBoundary fallbackLabel="Settings failed to load">
+                  <ApiKeySettings />
+                </ErrorBoundary>
+              )}
+
+              {/* Git */}
+              {activeView === 'git' && (
+                <ErrorBoundary fallbackLabel="Git view failed to load">
+                  <GitView />
+                </ErrorBoundary>
+              )}
+
+              {/* Code browser */}
+              {activeView === 'code' && (
+                <ErrorBoundary fallbackLabel="Code view failed to load">
+                  <CodeView />
+                </ErrorBoundary>
+              )}
+            </div>
+
+            {/* Task detail side panel */}
+            {activeView === 'kanban' && selectedTaskId && (
+              <ErrorBoundary fallbackLabel="Task detail failed to load">
+                <TaskDetail taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
               </ErrorBoundary>
             )}
           </div>
 
-          {/* Task detail panel (only on kanban) */}
-          {activeView === 'kanban' && selectedTaskId && (
-            <ErrorBoundary fallbackLabel="Task detail failed to load">
-              <TaskDetail taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
-            </ErrorBoundary>
-          )}
+          {/* Terminal bottom panel — VS Code style, always available */}
+          <TerminalBottomPanel
+            open={terminalOpen}
+            onToggle={() => setTerminalOpen(!terminalOpen)}
+            devMode={developerMode}
+          />
         </div>
       </AppShell>
     </>
