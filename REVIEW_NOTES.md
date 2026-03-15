@@ -18,12 +18,12 @@
 
 ### Minor
 - [x] 15 eprintln! → log::debug! statements in orchestrator.rs — use tracing::debug!
-- [ ] useProcess.ts: `_updateStatus`/`_removeProcess` underscore convention unclear
+- [x] useProcess.ts: JSDoc on _updateStatus`/`_removeProcess` underscore convention unclear
 - [ ] taskStore: lastOutputLine, lastOutputPreview, lastEventAt overlap
 - [x] Inline orchestration log type — extract OrchestrationLogEntry interface
-- [ ] emit_orch uses .unwrap_or_default() + .ok() — silent failure
+- [x] emit_orch logs send failures .unwrap_or_default() + .ok() — silent failure
 - [x] notificationStore: unreadCount recomputed via filter on every markRead
-- [ ] process/manager.rs: output_lines.drain() inside mutex lock on hot path
+- [x] process/manager.rs: drain threshold optimized.drain() inside mutex lock on hot path
 
 ---
 
@@ -38,7 +38,7 @@
 - [x] AgentBadge duplicated in 7 files (~200 lines)
 - [x] StatusPill duplicated in 4 files
 - [ ] 12 different border-radius values
-- [ ] 3 icon systems: Lucide / HTML entities / Emoji
+- [x] Icons unified to Lucide (Sidebar + ContentHeader): Lucide / HTML entities / Emoji
 - [ ] No Modal/Overlay shared component (4 files each build their own)
 - [ ] 12 arbitrary font sizes (8px-26px) — no type scale
 - [x] Sidebar onMouseEnter/onMouseLeave style manipulation anti-pattern
@@ -50,7 +50,7 @@
 - [x] Sidebar tooltip appears instantly (needs 100ms delay)
 - [x] .dark CSS block is identical to :root (dead code)
 - [x] Scrollbar thumb too faint (0.28 opacity)
-- [ ] UsageView grid-cols-4 has no responsive breakpoint
+- [x] UsageView responsive auto-fit grid has no responsive breakpoint
 - [x] CommandPalette w-[520px] fixed — could overflow
 
 ---
@@ -65,7 +65,7 @@
 ### Major
 - [x] OnboardingWizard has Check Again button (no "Check Again" button)
 - [x] Session name auto-generated (low-value ceremony)
-- [ ] Dev Mode toggle always visible in header (expert-only feature)
+- [x] Dev Mode toggle moved to Settings only in header (expert-only feature)
 - [ ] StagePipeline + DecomposingBanner should merge into one
 - [ ] Settings in sidebar but also ⌘P — inconsistent (page vs panel?)
 - [ ] review/done views not in tab bar — undiscoverable
@@ -76,12 +76,12 @@
 - [x] Quick Task now shows project picker — no indication
 - [x] ErrorBoundary has Reload button button
 - [ ] Orchestration error only shown as toast (transient)
-- [ ] 15s heartbeat delay before stale task detected
+- [x] Heartbeat reduced to 5s before stale task detected
 - [ ] No focus trap in SetupPanel, OnboardingWizard, TaskApprovalView
 - [ ] Tabs shown before any orchestration (empty, meaningless)
 - [ ] Sidebar icons unlabeled (tooltip-only)
 - [x] NotificationCenter Clear all has undo toast confirmation
-- [ ] Auto-approve fires without notification/log entry
+- [x] Auto-approve logs to orchestration log/log entry
 
 ---
 
@@ -134,7 +134,7 @@
 - [x] CSP disabled (csp: null)
 
 ### Minor
-- [ ] No CHANGELOG
+- [x] CHANGELOG.md created
 - [ ] No promotional text
 - [x] Font consolidated to CSS body + --font-mono ways
 - [x] Monospace font stack unified via --font-mono inconsistent
