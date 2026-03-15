@@ -836,11 +836,6 @@ pub async fn dispatch_orchestrated_task(
                         }],
                     };
 
-                    emit_messenger(&app_handle, MessengerMessage::system(
-                        &plan.task_id,
-                        "Could not decompose into sub-tasks. Running as a single task.".to_string(),
-                        MessageType::TaskFailed,
-                    ));
                     emit_orch(&on_event, "info", serde_json::json!({
                         "message": "Fallback: running original prompt as single task"
                     }));
@@ -882,6 +877,25 @@ pub async fn dispatch_orchestrated_task(
         }));
     }
 
+    // For single-task fallback, skip approval entirely and go straight to execution
+    let is_single_task_fallback = decomposition.tasks.len() == 1;
+    if is_single_task_fallback {
+        // Skip approval — auto-approve the single task
+        emit_orch(&on_event, "phase_changed", serde_json::json!({
+            "phase": "executing",
+            "detail": "Single task — auto-executing",
+            "task_count": 1,
+            "wave_count": 1
+        }));
+        plan.phase = OrchestrationPhase::Executing;
+        {
+            let mut inner = state_ref.lock();
+            if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
+                p.phase = OrchestrationPhase::Executing;
+            }
+            inner.approval_signals.remove(&plan.task_id);
+        }
+    } else {
     // Emit awaiting_approval event
     emit_orch(&on_event, "phase_changed", serde_json::json!({
         "phase": "awaiting_approval",
@@ -918,6 +932,7 @@ pub async fn dispatch_orchestrated_task(
         let mut inner = state_ref.lock();
         inner.approval_signals.remove(&plan.task_id);
     }
+    } // end of multi-task approval block
 
     // Re-read decomposition in case user modified it during approval
     let decomposition = {
