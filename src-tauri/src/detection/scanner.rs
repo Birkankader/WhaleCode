@@ -117,25 +117,33 @@ async fn run_with_timeout(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 
-/// Check Claude auth: keychain API key or ~/.claude/ directory with auth config.
+/// Check Claude auth: keychain API key, actual CLI auth test, or env var.
 async fn check_claude_auth() -> AuthStatus {
     // First check the keychain
     if keychain::has_api_key() {
         return AuthStatus::Authenticated;
     }
 
-    // Check for ~/.claude/ directory which indicates the CLI has been authenticated
-    if let Ok(home) = std::env::var("HOME") {
-        let claude_dir = std::path::Path::new(&home).join(".claude");
-        if claude_dir.exists() {
-            // The CLI may be using its own OAuth/session-based auth
-            return AuthStatus::Authenticated;
-        }
-    }
-
     // Check ANTHROPIC_API_KEY env var
     if std::env::var("ANTHROPIC_API_KEY").is_ok() {
         return AuthStatus::Authenticated;
+    }
+
+    // Quick CLI auth probe — run claude with a minimal prompt to check if authenticated
+    if let Ok(output) = tokio::process::Command::new("claude")
+        .args(&["-p", "hi", "--output-format", "stream-json", "--verbose", "--max-turns", "1"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("authentication_failed") || stdout.contains("Not logged in") {
+            return AuthStatus::NeedsAuth;
+        }
+        if output.status.success() || stdout.contains("\"type\":\"result\"") {
+            return AuthStatus::Authenticated;
+        }
     }
 
     AuthStatus::NeedsAuth
