@@ -16,6 +16,7 @@ const ERROR_PATTERNS: [RegExp, string][] = [
   [/ENOTFOUND|ECONNREFUSED|fetch failed/i, 'Network connection failed. Check your internet connection.'],
   [/rate limit/i, 'API rate limit reached. The system will retry automatically.'],
   [/authentication|unauthorized|403/i, 'Authentication failed. Please check your API key in Settings.'],
+  [/not logged in|run.*\/login/i, 'Agent is not logged in. Run the login command in your terminal first.'],
   [/ENOMEM|out of memory/i, 'System is low on memory. Close other applications and try again.'],
   [/Lock poisoned/i, 'An internal error occurred. Please restart the application.'],
   [/Merge conflict/i, 'Merge conflict detected. Review the changes manually before merging.'],
