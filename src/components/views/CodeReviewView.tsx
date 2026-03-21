@@ -160,7 +160,8 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
 
   const entries = Array.from(worktreeEntries.values());
   const pendingCount = entries.filter(e => (worktreeStatuses.get(e.dagId) ?? 'pending') === 'pending').length;
-  const allHandled = entries.length > 0 && pendingCount === 0;
+  const errorCount = entries.filter(e => worktreeStatuses.get(e.dagId) === 'error').length;
+  const allHandled = entries.length > 0 && pendingCount === 0 && errorCount === 0;
   const hasWorktrees = worktreeEntries.size > 0;
 
   const handleWorktreeClose = useCallback((dagId: string, action: 'merged' | 'discarded') => {

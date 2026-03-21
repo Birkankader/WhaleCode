@@ -105,8 +105,8 @@ export function useWorktree(projectDir: string) {
   );
 
   const selectiveMerge = useCallback(
-    async (branchName: string, acceptedFiles: string[]) => {
-      if (!projectDir) return;
+    async (branchName: string, acceptedFiles: string[]): Promise<boolean> => {
+      if (!projectDir) return false;
       setLoading(true);
       setError(null);
       try {
@@ -115,11 +115,14 @@ export function useWorktree(projectDir: string) {
           setConflicts(null);
           setDiffReport(null);
           await refreshWorktrees();
+          return true;
         } else {
           setError(result.error);
+          return false;
         }
       } catch (err) {
         setError('Failed to merge selected files');
+        return false;
       } finally {
         setLoading(false);
       }

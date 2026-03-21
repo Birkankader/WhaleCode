@@ -217,7 +217,8 @@ export function TaskApprovalView() {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        // Cancel auto-approve countdown and close
+        // Cancel auto-approve countdown and hide overlay
+        // (overlay stays mounted but pointer-events: none prevents blocking)
         setCountdown(null);
         setVisible(false);
       }
@@ -262,6 +263,7 @@ export function TaskApprovalView() {
         paddingTop: '8vh',
         background: visible ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0)',
         backdropFilter: visible ? 'blur(3px)' : 'blur(0px)',
+        pointerEvents: visible ? 'auto' : 'none',
         transition: 'background 200ms ease-out, backdrop-filter 200ms ease-out',
       }}
     >

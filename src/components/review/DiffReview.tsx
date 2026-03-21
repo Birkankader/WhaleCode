@@ -105,8 +105,11 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
 
     setMerging(true);
     try {
-      await selectiveMerge(branchName, Array.from(acceptedFiles));
-      onClose('merged');
+      const success = await selectiveMerge(branchName, Array.from(acceptedFiles));
+      onClose(success ? 'merged' : 'discarded');
+    } catch {
+      // selectiveMerge threw — merge genuinely failed
+      onClose('discarded');
     } finally {
       setMerging(false);
     }
@@ -121,6 +124,9 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
 
     setMerging(true);
     try {
+      // Note: cleanupWorktrees only prunes stale/orphaned worktrees via cleanup_stale_worktrees().
+      // The active worktree for this branch may persist until the next cleanup cycle or app restart.
+      // A proper fix would expose remove_worktree(branchName) as a Tauri command.
       await cleanupWorktrees();
       onClose('discarded');
     } finally {
