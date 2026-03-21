@@ -49,6 +49,15 @@ pub fn read_file_content(base_path: &Path, relative_path: &str) -> Result<FileCo
         return Err(format!("Not a file: {}", full_path.display()));
     }
 
+    // Safety: don't allow reading outside base_path
+    let canonical_base = base_path.canonicalize()
+        .map_err(|e| format!("Invalid base path: {}", e))?;
+    let canonical_file = full_path.canonicalize()
+        .map_err(|e| format!("Invalid file path: {}", e))?;
+    if !canonical_file.starts_with(&canonical_base) {
+        return Err("Cannot read outside project directory".to_string());
+    }
+
     let metadata = fs::metadata(&full_path)
         .map_err(|e| format!("Failed to read metadata: {}", e))?;
     let file_size = metadata.len();
@@ -128,6 +137,14 @@ mod tests {
     fn test_read_nonexistent_file() {
         let dir = TempDir::new().unwrap();
         let result = read_file_content(dir.path(), "nope.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_rejects_path_traversal() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("safe.txt"), "ok").unwrap();
+        let result = read_file_content(dir.path(), "../escape.txt");
         assert!(result.is_err());
     }
 
