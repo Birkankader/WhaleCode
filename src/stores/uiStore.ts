@@ -63,7 +63,7 @@ export const useUIStore = create<UIState>()(persist((set) => ({
   setDeveloperMode: (enabled) => set({ developerMode: enabled }),
   showQuickTask: false,
   setShowQuickTask: (show) => set({ showQuickTask: show }),
-  autoApprove: true,
+  autoApprove: false,
   setAutoApprove: (enabled) => set({ autoApprove: enabled }),
 }), {
   name: 'whalecode-ui',

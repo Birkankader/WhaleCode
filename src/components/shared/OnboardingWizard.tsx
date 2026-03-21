@@ -42,7 +42,7 @@ export function OnboardingWizard() {
           setAgents(result.data.map((a: BackendDetectedAgent) => ({
             name: a.display_name,
             cli: a.tool_name,
-            installed: true,
+            installed: a.installed,
             authenticated: a.auth_status === 'Authenticated',
             version: a.version,
           })));
@@ -184,7 +184,7 @@ export function OnboardingWizard() {
                                 setAgents(result.data.map((a: BackendDetectedAgent) => ({
                                   name: a.display_name,
                                   cli: a.tool_name,
-                                  installed: true,
+                                  installed: a.installed,
                                   authenticated: a.auth_status === 'Authenticated',
                                   version: a.version,
                                 })));

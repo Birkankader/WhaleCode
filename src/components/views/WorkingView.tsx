@@ -56,12 +56,20 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
   // Search
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Force re-render every second for elapsed timers
+  // Force re-render every second for elapsed timers (only when running tasks exist)
+  const hasRunningTasks = useMemo(() => {
+    for (const [, task] of tasks) {
+      if (task.status === 'running') return true;
+    }
+    return false;
+  }, [tasks]);
+
   const [, setTick] = useState(0);
   useEffect(() => {
+    if (!hasRunningTasks) return;
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [hasRunningTasks]);
 
   // Build task list
   const taskList = useMemo(() => {

@@ -126,15 +126,9 @@ function Pill({ children, bg, color }: { children: React.ReactNode; bg: string; 
 }
 
 function PulsingDot({ color }: { color: string }) {
-  const [opacity, setOpacity] = useState(1);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setOpacity((prev) => (prev === 1 ? 0.3 : 1));
-    }, 800);
-    return () => clearInterval(interval);
-  }, []);
   return (
     <span
+      className="animate-pulse"
       style={{
         width: 8,
         height: 8,
@@ -142,8 +136,6 @@ function PulsingDot({ color }: { color: string }) {
         background: color,
         display: 'inline-block',
         flexShrink: 0,
-        opacity,
-        transition: 'opacity 600ms ease',
       }}
     />
   );
@@ -678,12 +670,20 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
     document.addEventListener('mouseup', handleMouseUp);
   }, [logPanelHeight]);
 
-  // Force re-render every second for elapsed timers
+  // Force re-render every second for elapsed timers (only when running tasks exist)
+  const hasRunningTasks = useMemo(() => {
+    for (const [, task] of tasks) {
+      if (task.status === 'running') return true;
+    }
+    return false;
+  }, [tasks]);
+
   const [, setTick] = useState(0);
   useEffect(() => {
+    if (!hasRunningTasks) return;
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [hasRunningTasks]);
 
   // Retry: confirm, then dispatch a new task, then remove the old failed one
   const handleRetry = useCallback(async (failedTask: MappedTask) => {
@@ -797,14 +797,26 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
     const newStatus = statusMap[targetCol];
     if (!newStatus) return;
 
-    // Only allow moving completed/failed tasks back to queued (for re-queue)
-    // or pending tasks to done (mark as done manually)
     const store = useTaskStore.getState();
     const task = store.tasks.get(taskId);
     if (!task) return;
 
     const currentCol = mapColumn(task.status);
-    if (currentCol === targetCol) return; // Same column, no-op
+    if (currentCol === targetCol) return;
+
+    // Only allow valid transitions:
+    // - completed/failed → queued (re-queue)
+    // - pending → done (manually mark complete)
+    const validTransitions: Record<string, string[]> = {
+      queued: ['done', 'running'],   // from queued: can go to done
+      running: [],                    // from running: cannot drag
+      done: ['queued'],              // from done: can go back to queued
+    };
+    const allowedTargets = validTransitions[currentCol] ?? [];
+    if (!allowedTargets.includes(targetCol)) {
+      toast.error(`Cannot move ${currentCol} tasks to ${targetCol}`);
+      return;
+    }
 
     store.updateTaskStatus(taskId, newStatus as any);
     store.addOrchestrationLog({
