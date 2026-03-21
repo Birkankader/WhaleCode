@@ -36,7 +36,7 @@ export function parseClaudeEvent(line: string): ClaudeStreamEvent | null {
       return parsed as ClaudeStreamEvent;
     }
     return null;
-  } catch {
+  } catch { // expected: not valid JSON
     return null;
   }
 }

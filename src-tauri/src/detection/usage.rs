@@ -1,8 +1,7 @@
 /// Usage data fetcher — queries real usage APIs for Claude, Gemini, and Codex.
 /// Based on openusage (github.com/robinebers/openusage) plugin logic.
 
-// TODO: Extract shared credential resolution to detection/credentials.rs
-
+use crate::detection::credentials;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -139,54 +138,14 @@ async fn fetch_claude_usage(client: &reqwest::Client) -> AgentUsage {
 struct ClaudeToken { access_token: String, plan: Option<String> }
 
 fn get_claude_token() -> Option<ClaudeToken> {
-    // 1. ~/.claude/.credentials.json
-    if let Ok(home) = std::env::var("HOME") {
-        let path = std::path::Path::new(&home).join(".claude").join(".credentials.json");
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(oauth) = json.get("claudeAiOauth") {
-                    if let Some(token) = oauth.get("accessToken").and_then(|t| t.as_str()) {
-                        if !token.is_empty() {
-                            let sub = oauth.get("subscriptionType").and_then(|s| s.as_str()).unwrap_or("");
-                            let tier = oauth.get("rateLimitTier").and_then(|t| t.as_str()).unwrap_or("");
-                            let plan = if !sub.is_empty() {
-                                Some(format!("{}{}", capitalize(sub), if !tier.is_empty() { format!(" {}", tier) } else { String::new() }))
-                            } else { None };
-                            return Some(ClaudeToken { access_token: token.to_string(), plan });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Keychain
-    if let Ok(output) = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let json_str = if raw.starts_with('{') { raw } else {
-                super::scanner::hex_decode_utf8(&raw).unwrap_or(raw.clone())
-            };
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if let Some(oauth) = json.get("claudeAiOauth") {
-                    if let Some(token) = oauth.get("accessToken").and_then(|t| t.as_str()) {
-                        if !token.is_empty() {
-                            let sub = oauth.get("subscriptionType").and_then(|s| s.as_str()).unwrap_or("");
-                            let plan = if !sub.is_empty() { Some(capitalize(sub)) } else { None };
-                            return Some(ClaudeToken { access_token: token.to_string(), plan });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
+    let cred = credentials::get_claude_oauth_credential()?;
+    let plan = cred.subscription_type.as_deref().map(|sub| {
+        let tier_suffix = cred.rate_limit_tier.as_deref()
+            .map(|t| format!(" {}", t))
+            .unwrap_or_default();
+        format!("{}{}", capitalize(sub), tier_suffix)
+    });
+    Some(ClaudeToken { access_token: cred.access_token, plan })
 }
 
 // ---------------------------------------------------------------------------
@@ -284,29 +243,8 @@ async fn fetch_codex_usage(client: &reqwest::Client) -> AgentUsage {
 struct CodexToken { access_token: String, account_id: Option<String> }
 
 fn get_codex_token() -> Option<CodexToken> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let codex_home = std::env::var("CODEX_HOME").ok();
-
-    let paths: Vec<std::path::PathBuf> = vec![
-        codex_home.as_ref().map(|h| std::path::PathBuf::from(h).join("auth.json")),
-        Some(std::path::PathBuf::from(&home).join(".config").join("codex").join("auth.json")),
-        Some(std::path::PathBuf::from(&home).join(".codex").join("auth.json")),
-    ].into_iter().flatten().collect();
-
-    for path in &paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(token) = json.pointer("/tokens/access_token").and_then(|t| t.as_str()) {
-                    if !token.is_empty() {
-                        let account_id = json.pointer("/tokens/account_id").and_then(|a| a.as_str()).map(String::from);
-                        return Some(CodexToken { access_token: token.to_string(), account_id });
-                    }
-                }
-            }
-        }
-    }
-
-    None
+    let cred = credentials::get_codex_oauth_credential()?;
+    Some(CodexToken { access_token: cred.access_token, account_id: cred.account_id })
 }
 
 // ---------------------------------------------------------------------------
@@ -416,34 +354,7 @@ async fn fetch_gemini_usage(client: &reqwest::Client) -> AgentUsage {
 /// None and log a warning. A full refresh flow would require the client_id,
 /// client_secret, and refresh_token dance with Google's OAuth2 endpoint.
 fn get_gemini_token() -> Option<String> {
-    if let Ok(home) = std::env::var("HOME") {
-        let path = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                // Check for token expiry before returning
-                // The creds file may contain "expiry" (ISO 8601 string) or
-                // "expires_at" (unix timestamp) depending on the SDK version.
-                let is_expired = json.get("expiry")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|exp| exp < chrono::Utc::now())
-                    .or_else(|| {
-                        json.get("expires_at")
-                            .and_then(|v| v.as_i64())
-                            .map(|ts| ts < chrono::Utc::now().timestamp())
-                    });
-
-                if is_expired == Some(true) {
-                    eprintln!("[whalecode] Gemini OAuth token is expired; refresh not implemented");
-                    return None;
-                }
-
-                return json.get("access_token").and_then(|t| t.as_str())
-                    .filter(|t| !t.is_empty()).map(String::from);
-            }
-        }
-    }
-    None
+    credentials::get_gemini_oauth_token()
 }
 
 /// Recursively walk JSON to find objects with remainingFraction.

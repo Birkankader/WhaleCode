@@ -1,4 +1,5 @@
 use crate::git::{diff, log, models::*, operations, status};
+use crate::utils::validate_project_dir;
 
 #[tauri::command]
 #[specta::specta]
@@ -13,6 +14,7 @@ pub async fn git_status(project_dir: String) -> Result<GitStatusReport, String> 
 #[specta::specta]
 pub async fn git_stage_files(project_dir: String, paths: Vec<String>) -> Result<(), String> {
     let path = super::expand_tilde(&project_dir);
+    validate_project_dir(&path)?;
     tokio::task::spawn_blocking(move || operations::stage_files(&path, &paths))
         .await
         .map_err(|e| format!("Task failed: {}", e))?
@@ -22,6 +24,7 @@ pub async fn git_stage_files(project_dir: String, paths: Vec<String>) -> Result<
 #[specta::specta]
 pub async fn git_unstage_files(project_dir: String, paths: Vec<String>) -> Result<(), String> {
     let path = super::expand_tilde(&project_dir);
+    validate_project_dir(&path)?;
     tokio::task::spawn_blocking(move || operations::unstage_files(&path, &paths))
         .await
         .map_err(|e| format!("Task failed: {}", e))?
@@ -31,6 +34,7 @@ pub async fn git_unstage_files(project_dir: String, paths: Vec<String>) -> Resul
 #[specta::specta]
 pub async fn git_commit(project_dir: String, message: String) -> Result<String, String> {
     let path = super::expand_tilde(&project_dir);
+    validate_project_dir(&path)?;
     tokio::task::spawn_blocking(move || operations::commit(&path, &message))
         .await
         .map_err(|e| format!("Task failed: {}", e))?
@@ -58,6 +62,7 @@ pub async fn git_log(project_dir: String, limit: u32) -> Result<Vec<GitLogEntry>
 #[specta::specta]
 pub async fn git_pull(project_dir: String) -> Result<GitPullResult, String> {
     let path = super::expand_tilde(&project_dir);
+    validate_project_dir(&path)?;
     let output = tokio::process::Command::new("git")
         .args(["pull"])
         .current_dir(&path)
@@ -83,6 +88,7 @@ pub async fn git_pull(project_dir: String) -> Result<GitPullResult, String> {
 #[specta::specta]
 pub async fn git_push(project_dir: String) -> Result<GitPushResult, String> {
     let path = super::expand_tilde(&project_dir);
+    validate_project_dir(&path)?;
     let output = tokio::process::Command::new("git")
         .args(["push"])
         .current_dir(&path)

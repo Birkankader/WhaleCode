@@ -165,7 +165,7 @@ function CodePanel({
           theme: 'github-dark-default',
         });
         if (!cancelled) setHighlightedHtml(html);
-      } catch {
+      } catch { // expected: language may not be loaded in shiki
         if (!cancelled) setHighlightedHtml('');
       }
     });

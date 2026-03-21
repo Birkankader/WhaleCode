@@ -171,18 +171,26 @@ async fn spawn_with_env_core(
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 stdout_channel.send(OutputEvent::Stdout(line.clone())).ok();
-                // Store output line for review phase summaries
-                { let mut inner = state_for_output.lock();
+                // Store output line for review phase summaries.
+                // Lock scope is kept minimal: push + conditional truncate + read count.
+                let count = {
+                    let mut inner = state_for_output.lock();
                     if let Some(entry) = inner.processes.get_mut(&task_id_for_output) {
                         entry.output_lines.push(line);
-                        // Only drain when buffer exceeds 600 lines (reduced
-                        // drain frequency vs old 500 threshold). Drains to 500.
-                        if entry.output_lines.len() > 600 {
-                            entry.output_lines.drain(0..entry.output_lines.len() - 500);
+                        let len = entry.output_lines.len();
+                        if len > 600 {
+                            // Drop oldest lines. drain(..N) shifts remaining elements
+                            // which is O(500) — acceptable at 600-line intervals.
+                            entry.output_lines.drain(..len - 500);
                         }
-                        // Signal new line count to watchers
-                        line_count_tx.send(entry.output_lines.len()).ok();
+                        Some(entry.output_lines.len())
+                    } else {
+                        None
                     }
+                };
+                // Signal new line count outside the mutex lock
+                if let Some(c) = count {
+                    line_count_tx.send(c).ok();
                 }
             }
         });

@@ -179,7 +179,8 @@ export function useClaudeTask() {
           for (const ev of earlyEvents) {
             emitProcessOutput(taskId, ev);
           }
-        }).catch(() => {
+        }).catch((e) => {
+          console.warn('Claude spawn failed:', e);
           resolve({ taskId: null, hitRateLimit: false, silentFailure: false });
         });
       });

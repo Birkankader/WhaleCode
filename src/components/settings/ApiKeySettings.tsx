@@ -75,7 +75,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       } else {
         setClaudeHasKey(false);
       }
-    } catch {
+    } catch { // IPC may fail during init — default to "no key"
       setClaudeHasKey(false);
     }
   }, []);
@@ -88,7 +88,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       } else {
         setGeminiHasKey(false);
       }
-    } catch {
+    } catch { // IPC may fail during init — default to "no key"
       setGeminiHasKey(false);
     }
   }, []);
@@ -101,7 +101,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       } else {
         setCodexHasKey(false);
       }
-    } catch {
+    } catch { // IPC may fail during init — default to "no key"
       setCodexHasKey(false);
     }
   }, []);
@@ -403,7 +403,7 @@ function ConfigField({ label, description, configKey, suffix }: {
         setValue(String(result.data[configKey]));
         setLoaded(true);
       }
-    }).catch(() => {});
+    }).catch((e) => { console.warn('Failed to load config:', e); });
   }, [configKey]);
 
   // Save on blur or Enter
@@ -417,7 +417,7 @@ function ConfigField({ label, description, configKey, suffix }: {
         const updated = { ...current.data, [configKey]: num };
         await commands.setConfig(updated);
       }
-    } catch { /* silently fail */ }
+    } catch (e) { console.warn('Failed to save config:', e); }
     finally { setSaving(false); }
   }, [value, configKey]);
 

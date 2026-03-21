@@ -180,7 +180,8 @@ export function useGeminiTask() {
           for (const ev of earlyEvents) {
             emitProcessOutput(taskId, ev);
           }
-        }).catch(() => {
+        }).catch((e) => {
+          console.warn('Gemini spawn failed:', e);
           resolve({ taskId: null, hitRateLimit: false, silentFailure: false });
         });
       });

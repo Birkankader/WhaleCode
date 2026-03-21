@@ -32,7 +32,7 @@ export function App() {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      commands.cleanupCompletedProcesses().catch(() => {});
+      commands.cleanupCompletedProcesses().catch(() => { /* fire-and-forget cleanup */ });
 
       // Heartbeat: ask backend which processes are actually running
       // and reconcile frontend task state

@@ -1,7 +1,5 @@
-use crate::credentials::{keychain, gemini_keychain, codex_keychain};
+use crate::detection::credentials;
 use crate::detection::models::{AuthStatus, DetectedAgent};
-
-// TODO: Extract shared credential resolution to detection/credentials.rs
 
 const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -82,64 +80,11 @@ async fn detect_claude() -> DetectedAgent {
 }
 
 fn check_claude_auth() -> AuthStatus {
-    // 1. Check ~/.claude/.credentials.json
-    if let Ok(home) = std::env::var("HOME") {
-        let cred_path = std::path::Path::new(&home).join(".claude").join(".credentials.json");
-        if cred_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cred_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if json.get("claudeAiOauth")
-                        .and_then(|o| o.get("accessToken"))
-                        .and_then(|t| t.as_str())
-                        .map(|t| !t.is_empty())
-                        .unwrap_or(false)
-                    {
-                        return AuthStatus::Authenticated;
-                    }
-                }
-            }
-        }
+    if credentials::has_claude_auth() {
+        AuthStatus::Authenticated
+    } else {
+        AuthStatus::NeedsAuth
     }
-
-    // 2. Check macOS Keychain — "Claude Code-credentials"
-    if let Ok(output) = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            // May be hex-encoded — try to parse as JSON directly or decode hex
-            let json_str = if raw.starts_with('{') {
-                raw
-            } else {
-                hex_decode_utf8(&raw).unwrap_or(raw)
-            };
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if json.get("claudeAiOauth")
-                    .and_then(|o| o.get("accessToken"))
-                    .and_then(|t| t.as_str())
-                    .map(|t| !t.is_empty())
-                    .unwrap_or(false)
-                {
-                    return AuthStatus::Authenticated;
-                }
-            }
-        }
-    }
-
-    // 3. WhaleCode's own keychain
-    if keychain::has_api_key() {
-        return AuthStatus::Authenticated;
-    }
-
-    // 4. ANTHROPIC_API_KEY env var
-    if std::env::var("ANTHROPIC_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
-        return AuthStatus::Authenticated;
-    }
-
-    AuthStatus::NeedsAuth
 }
 
 // ---------------------------------------------------------------------------
@@ -168,36 +113,11 @@ async fn detect_gemini() -> DetectedAgent {
 }
 
 fn check_gemini_auth() -> AuthStatus {
-    // 1. ~/.gemini/oauth_creds.json
-    if let Ok(home) = std::env::var("HOME") {
-        let cred_path = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
-        if cred_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cred_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let has_access = json.get("access_token").and_then(|t| t.as_str()).map(|t| !t.is_empty()).unwrap_or(false);
-                    let has_refresh = json.get("refresh_token").and_then(|t| t.as_str()).map(|t| !t.is_empty()).unwrap_or(false);
-                    if has_access || has_refresh {
-                        return AuthStatus::Authenticated;
-                    }
-                }
-            }
-        }
+    if credentials::has_gemini_auth() {
+        AuthStatus::Authenticated
+    } else {
+        AuthStatus::NeedsAuth
     }
-
-    // 2. WhaleCode's own keychain
-    if gemini_keychain::has_gemini_api_key() {
-        return AuthStatus::Authenticated;
-    }
-
-    // 3. Env vars
-    if std::env::var("GEMINI_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
-        return AuthStatus::Authenticated;
-    }
-    if std::env::var("GOOGLE_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
-        return AuthStatus::Authenticated;
-    }
-
-    AuthStatus::NeedsAuth
 }
 
 // ---------------------------------------------------------------------------
@@ -229,63 +149,11 @@ async fn detect_codex() -> DetectedAgent {
 }
 
 fn check_codex_auth() -> AuthStatus {
-    let home = std::env::var("HOME").unwrap_or_default();
-
-    // Auth file paths (in priority order)
-    let codex_home = std::env::var("CODEX_HOME").ok();
-    let auth_paths: Vec<std::path::PathBuf> = vec![
-        codex_home.as_ref().map(|h| std::path::PathBuf::from(h).join("auth.json")),
-        Some(std::path::PathBuf::from(&home).join(".config").join("codex").join("auth.json")),
-        Some(std::path::PathBuf::from(&home).join(".codex").join("auth.json")),
-    ].into_iter().flatten().collect();
-
-    for path in &auth_paths {
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let has_token = json.get("tokens")
-                        .and_then(|t| t.get("access_token"))
-                        .and_then(|t| t.as_str())
-                        .map(|t| !t.is_empty())
-                        .unwrap_or(false);
-                    let has_api_key = json.get("OPENAI_API_KEY")
-                        .and_then(|k| k.as_str())
-                        .map(|k| !k.is_empty())
-                        .unwrap_or(false);
-                    if has_token || has_api_key {
-                        return AuthStatus::Authenticated;
-                    }
-                }
-            }
-        }
+    if credentials::has_codex_auth() {
+        AuthStatus::Authenticated
+    } else {
+        AuthStatus::NeedsAuth
     }
-
-    // macOS Keychain — "Codex Auth"
-    if let Ok(output) = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Codex Auth", "-w"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !raw.is_empty() {
-                return AuthStatus::Authenticated;
-            }
-        }
-    }
-
-    // WhaleCode's own keychain
-    if codex_keychain::has_codex_api_key() {
-        return AuthStatus::Authenticated;
-    }
-
-    // OPENAI_API_KEY env var
-    if std::env::var("OPENAI_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
-        return AuthStatus::Authenticated;
-    }
-
-    AuthStatus::NeedsAuth
 }
 
 // ---------------------------------------------------------------------------

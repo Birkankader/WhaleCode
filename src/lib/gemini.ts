@@ -54,7 +54,7 @@ export function parseGeminiEvent(line: string): GeminiStreamEvent | null {
       return parsed as GeminiStreamEvent;
     }
     return null;
-  } catch {
+  } catch { // expected: not valid JSON
     return null;
   }
 }
