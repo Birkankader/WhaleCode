@@ -1,8 +1,5 @@
-import { toast } from 'sonner';
 import { useTaskStore, type ToolName, type TaskStatus, type WorktreeReviewEntry } from '../../stores/taskStore';
-import { useUIStore } from '../../stores/uiStore';
 import { emitOrchestrationNotification } from '../../stores/notificationStore';
-import { commands } from '../../bindings';
 import { asToolName } from '../../lib/agents';
 
 /* ── Structured orchestrator event handler ───────────────── */
@@ -47,6 +44,7 @@ export function handleOrchEvent(
     case 'phase_changed': {
       const phase = ev.phase;
       if (phase === 'decomposing') {
+        lastOutputUpdateByDag.clear();
         store.setOrchestrationPhase('decomposing');
         // Set activePlan early from enriched event so it's available before awaiting_approval
         if (ev.plan_id) {
@@ -60,70 +58,14 @@ export function handleOrchEvent(
       } else if (phase === 'awaiting_approval') {
         store.setOrchestrationPhase('awaiting_approval');
         log('info', `${ev.task_count} sub-tasks ready for approval`);
-
-        // Auto-approve if the setting is enabled
-        if (useUIStore.getState().autoApprove) {
-          const taskStore = useTaskStore.getState();
-          const activePlan = taskStore.activePlan;
-          if (activePlan) {
-            // Use a short delay to ensure all task_assigned events have been processed
-            // before scanning the store. This fixes the race condition where
-            // awaiting_approval fires before task_assigned events populate the store.
-            setTimeout(() => {
-              const currentStore = useTaskStore.getState();
-              const pendingWorkers: Array<{ agent: string; prompt: string; description: string; depends_on: string[] }> = [];
-              for (const [, task] of currentStore.tasks) {
-                if (task.role === 'worker' && task.status === 'pending') {
-                  pendingWorkers.push({
-                    agent: task.toolName,
-                    prompt: task.prompt,
-                    description: task.description,
-                    depends_on: [],
-                  });
-                }
-              }
-              if (pendingWorkers.length > 0) {
-                commands.approveOrchestration(activePlan.task_id, pendingWorkers)
-                  .then((result) => {
-                    if (result.status === 'error') {
-                      console.error('Auto-approve failed:', result.error);
-                      toast.error('Auto-approve failed');
-                    } else {
-                      toast.success(`Auto-approved ${pendingWorkers.length} task${pendingWorkers.length !== 1 ? 's' : ''}`);
-                      useTaskStore.getState().addOrchestrationLog({ agent: asToolName('claude'), level: 'info', message: `Auto-approved ${pendingWorkers.length} tasks` });
-                    }
-                  })
-                  .catch((err: unknown) => {
-                    console.error('Auto-approve IPC failed:', err);
-                    toast.error('Auto-approve failed');
-                  });
-              } else {
-                // Fallback: approve with empty list — backend will use its own decomposition
-                commands.approveOrchestration(activePlan.task_id, null)
-                  .then((result) => {
-                    if (result.status === 'error') {
-                      console.error('Auto-approve fallback failed:', result.error);
-                    } else {
-                      toast.success('Auto-approved (using backend decomposition)');
-                    }
-                  })
-                  .catch((err: unknown) => {
-                    console.error('Auto-approve fallback IPC failed:', err);
-                  });
-              }
-            }, 100);
-          }
-        }
       } else if (phase === 'executing') {
         store.setOrchestrationPhase('executing');
         // Move pending worker tasks to running
-        const newTasks = new Map(store.tasks);
-        for (const [id, task] of newTasks) {
+        for (const [id, task] of store.tasks) {
           if (task.status === 'pending' && task.role === 'worker') {
-            newTasks.set(id, { ...task, status: 'running', startedAt: Date.now() });
+            store.updateTaskStatus(id, 'running');
           }
         }
-        useTaskStore.setState({ tasks: newTasks });
         log('cmd', `Phase 2: Executing ${ev.task_count ?? ''} sub-tasks in ${ev.wave_count ?? ''} wave(s)`);
       } else if (phase === 'reviewing') {
         store.setOrchestrationPhase('reviewing');

@@ -163,27 +163,18 @@ export function useTaskDispatch() {
 
         if (msg.event === 'exit') {
           const code = Number(msg.data);
-          const finalStatus = code === 0 ? 'completed' : 'failed';
+          const finalStatus: TaskStatus = code === 0 ? 'completed' : 'failed';
 
-          // Update task store with process exit info (single source of truth)
-          useTaskStore.getState().updateTaskProcess(tempId, {
-            status: finalStatus as TaskStatus,
-            exitCode: code,
-          });
-
-          // Also update via legacy processStore for components still using it
-          useProcessStore.getState()._updateStatus(tempId, finalStatus, code);
-
-          // Update task store status + attach result text
-          useTaskStore.getState().updateTaskStatus(
-            tempId,
-            code === 0 ? 'completed' : 'failed',
-          );
+          // Update task store (single source of truth)
+          useTaskStore.getState().updateTaskStatus(tempId, finalStatus);
+          useTaskStore.getState().updateTaskProcess(tempId, { exitCode: code });
           if (singleTaskResultText) {
             useTaskStore.getState().updateTaskResult(tempId, singleTaskResultText);
           }
 
-          // Emit the exit event
+          // Legacy processStore for xterm/OutputConsole compatibility
+          useProcessStore.getState()._updateStatus(tempId, finalStatus, code);
+
           emitProcessOutput(tempId, formattedMsg);
           return;
         }

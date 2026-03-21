@@ -83,6 +83,7 @@ export function TaskApprovalView() {
     } else {
       setVisible(false);
       setCountdown(null);
+      setEditedTasks(null); // Reset for next session
     }
   }, [isOpen, autoApprove]);
 
@@ -201,8 +202,7 @@ export function TaskApprovalView() {
           depends_on: t.dependsOn ? [t.dependsOn] : ([] as string[]),
         }));
 
-      // Command auto-generated at runtime by tauri-specta
-      await (commands as Record<string, Function>).approveOrchestration(activePlan.task_id, modifiedTasks);
+      await commands.approveOrchestration(activePlan.task_id, modifiedTasks);
       toast.success('Tasks approved -- execution starting');
     } catch (e) {
       console.error('Approval failed:', e);

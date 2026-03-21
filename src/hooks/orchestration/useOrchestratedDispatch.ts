@@ -213,13 +213,11 @@ export function useOrchestratedDispatch() {
         taskState.setOrchestrationPhase('failed');
 
         // Mark any running tasks as failed
-        const currentTasks = new Map(taskState.tasks);
-        for (const [id, t] of currentTasks) {
+        for (const [id, t] of taskState.tasks) {
           if (t.status === 'running') {
-            currentTasks.set(id, { ...t, status: 'failed' });
+            taskState.updateTaskStatus(id, 'failed');
           }
         }
-        useTaskStore.setState({ tasks: currentTasks });
 
         throw e;
       }
