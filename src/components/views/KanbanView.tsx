@@ -91,14 +91,8 @@ function formatElapsedTimer(ms: number): string {
 function StatusDot({ color, size = 8 }: { color: string; size?: number }) {
   return (
     <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: '50%',
-        background: color,
-        display: 'inline-block',
-        flexShrink: 0,
-      }}
+      className="inline-block rounded-full shrink-0"
+      style={{ width: size, height: size, background: color }}
     />
   );
 }
@@ -106,19 +100,8 @@ function StatusDot({ color, size = 8 }: { color: string; size?: number }) {
 function Pill({ children, bg, color }: { children: React.ReactNode; bg: string; color: string }) {
   return (
     <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 4,
-        padding: '2px 8px',
-        borderRadius: 999,
-        background: bg,
-        color,
-        fontSize: 11,
-        fontWeight: 600,
-        fontFamily: 'Inter, sans-serif',
-        lineHeight: '18px',
-      }}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold font-[Inter,sans-serif] leading-[18px]"
+      style={{ background: bg, color }}
     >
       {children}
     </span>
@@ -128,15 +111,8 @@ function Pill({ children, bg, color }: { children: React.ReactNode; bg: string; 
 function PulsingDot({ color }: { color: string }) {
   return (
     <span
-      className="animate-pulse"
-      style={{
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: color,
-        display: 'inline-block',
-        flexShrink: 0,
-      }}
+      className="animate-pulse inline-block w-2 h-2 rounded-full shrink-0"
+      style={{ background: color }}
     />
   );
 }
@@ -145,20 +121,9 @@ function RoleBadge({ role }: { role: 'master' | 'worker' }) {
   const isMaster = role === 'master';
   return (
     <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 3,
-        padding: '1px 6px',
-        borderRadius: 6,
-        fontSize: 9,
-        fontWeight: 700,
-        textTransform: 'uppercase',
-        letterSpacing: '0.04em',
-        background: isMaster ? 'rgba(245,158,11,0.15)' : 'rgba(109,94,252,0.12)',
-        color: isMaster ? '#f59e0b' : '#8b5cf6',
-        flexShrink: 0,
-      }}
+      className={`inline-flex items-center gap-[3px] px-1.5 py-px rounded-md text-[9px] font-bold uppercase tracking-[0.04em] shrink-0 ${
+        isMaster ? 'bg-amber-500/15 text-amber-500' : 'bg-violet-500/[0.12] text-violet-500'
+      }`}
     >
       {isMaster ? '\u2605' : '\u25CB'} {role}
     </span>
@@ -169,26 +134,12 @@ function RoleBadge({ role }: { role: 'master' | 'worker' }) {
 function IndeterminateProgress() {
   return (
     <div
-      style={{
-        width: '100%',
-        height: 4,
-        borderRadius: 2,
-        background: C.border,
-        overflow: 'hidden',
-        position: 'relative',
-      }}
+      className="w-full h-1 rounded-sm overflow-hidden relative"
+      style={{ background: C.border }}
     >
       <div
-        className="shimmer-bar"
-        style={{
-          width: '40%',
-          height: '100%',
-          borderRadius: 2,
-          background: `linear-gradient(90deg, transparent, ${C.amber}, transparent)`,
-          position: 'absolute',
-          top: 0,
-          left: 0,
-        }}
+        className="shimmer-bar w-2/5 h-full rounded-sm absolute top-0 left-0"
+        style={{ background: `linear-gradient(90deg, transparent, ${C.amber}, transparent)` }}
       />
     </div>
   );
@@ -203,7 +154,7 @@ function ElapsedTimer({ startedAt }: { startedAt: number }) {
   }, [startedAt]);
 
   return (
-    <span style={{ fontSize: 11, color: C.textMuted, fontFamily: 'var(--font-mono)' }}>
+    <span className="text-[11px] font-[family-name:var(--font-mono)]" style={{ color: C.textMuted }}>
       {formatElapsedTimer(elapsed)}
     </span>
   );
@@ -234,27 +185,12 @@ function AgentSwitcher({
   const otherAgents = (Object.keys(AGENTS) as ToolName[]).filter((a) => a !== currentAgent);
 
   return (
-    <div ref={ref} style={{ position: 'relative', flex: 1 }}>
+    <div ref={ref} className="relative flex-1">
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        style={{
-          width: '100%',
-          padding: '6px 10px',
-          borderRadius: 8,
-          background: 'rgba(99,102,241,0.08)',
-          border: '1px solid rgba(99,102,241,0.2)',
-          color: C.accentText,
-          fontSize: 11,
-          fontWeight: 600,
-          fontFamily: 'Inter, sans-serif',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 5,
-          transition: 'all 150ms ease',
-        }}
+        className="w-full py-1.5 px-2.5 rounded-lg bg-indigo-500/[0.08] border border-indigo-500/20 text-[11px] font-semibold font-[Inter,sans-serif] cursor-pointer flex items-center justify-center gap-[5px] transition-all duration-150 ease-in-out"
+        style={{ color: C.accentText }}
         onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(99,102,241,0.15)'; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(99,102,241,0.08)'; }}
       >
@@ -264,18 +200,8 @@ function AgentSwitcher({
 
       {open && (
         <div
-          style={{
-            position: 'absolute',
-            bottom: 'calc(100% + 4px)',
-            left: 0,
-            right: 0,
-            background: C.panel,
-            border: `1px solid ${C.borderStrong}`,
-            borderRadius: 10,
-            overflow: 'hidden',
-            zIndex: 20,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-          }}
+          className="absolute bottom-[calc(100%+4px)] left-0 right-0 rounded-[10px] overflow-hidden z-20 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+          style={{ background: C.panel, border: `1px solid ${C.borderStrong}` }}
         >
           {otherAgents.map((agent) => {
             const info = AGENTS[agent];
@@ -288,39 +214,14 @@ function AgentSwitcher({
                   setOpen(false);
                   onSwitch(agent);
                 }}
-                style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  padding: '8px 10px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: `1px solid ${C.border}`,
-                  color: C.textPrimary,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  fontFamily: 'Inter, sans-serif',
-                  cursor: 'pointer',
-                  transition: 'background 150ms ease',
-                }}
+                className="w-full flex items-center gap-2 py-2 px-2.5 bg-transparent border-none text-[11px] font-medium font-[Inter,sans-serif] cursor-pointer transition-[background] duration-150 ease-in-out"
+                style={{ borderBottom: `1px solid ${C.border}`, color: C.textPrimary }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = C.surfaceHover; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               >
                 <div
-                  style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: 5,
-                    background: info.gradient,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 9,
-                    fontWeight: 700,
-                    color: '#fff',
-                    flexShrink: 0,
-                  }}
+                  className="w-[18px] h-[18px] rounded-[5px] flex items-center justify-center text-[9px] font-bold text-white shrink-0"
+                  style={{ background: info.gradient }}
                 >
                   {info.letter}
                 </div>
@@ -365,68 +266,39 @@ function TaskCard({
       onClick={onClick}
       draggable={!!onDragStart}
       onDragStart={(e) => onDragStart?.(e, task)}
-      className={`kanban-card-slide${isFailed ? ' failed-card-shake' : ''}`}
+      className={`kanban-card-slide${isFailed ? ' failed-card-shake' : ''} w-full text-left p-3.5 rounded-2xl cursor-pointer transition-all duration-150 ease-in-out flex flex-col gap-2.5 font-[Inter,sans-serif]`}
       style={{
-        width: '100%',
-        textAlign: 'left',
-        padding: 14,
-        borderRadius: 16,
         background: isFailed ? C.redBg : C.surface,
         border: `1.5px solid ${selected ? C.accent : isFailed ? '#ef4444' + '60' : isRunning ? C.amber + '60' : C.border}`,
-        cursor: 'pointer',
-        transition: 'all 150ms ease',
         opacity: task.status === 'blocked' ? 0.6 : 1,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        fontFamily: 'Inter, sans-serif',
       }}
     >
       {/* Title row with status indicator */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="flex items-center gap-2">
         {isRunning && <PulsingDot color={C.amber} />}
         {isDone && (
-          <span style={{ fontSize: 12, flexShrink: 0 }}>{'\u2713'}</span>
+          <span className="text-xs shrink-0">{'\u2713'}</span>
         )}
         {isFailed && (
-          <AlertTriangle size={14} color="#ef4444" style={{ flexShrink: 0 }} />
+          <AlertTriangle size={14} color="#ef4444" className="shrink-0" />
         )}
         <span
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: C.textPrimary,
-            lineHeight: '20px',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            flex: 1,
-          }}
+          className="text-[13px] font-semibold leading-5 overflow-hidden text-ellipsis whitespace-nowrap flex-1"
+          style={{ color: C.textPrimary }}
         >
           {task.title}
         </span>
       </div>
 
       {/* Agent row with role badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="flex items-center gap-2">
         <div
-          style={{
-            width: 20,
-            height: 20,
-            borderRadius: 6,
-            background: agent.gradient,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: 10,
-            fontWeight: 700,
-            color: '#fff',
-            flexShrink: 0,
-          }}
+          className="w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+          style={{ background: agent.gradient }}
         >
           {agent.letter}
         </div>
-        <span style={{ fontSize: 12, color: C.textSecondary }}>{AGENTS[task.agent].label}</span>
+        <span className="text-xs" style={{ color: C.textSecondary }}>{AGENTS[task.agent].label}</span>
         {task.role && <RoleBadge role={task.role} />}
       </div>
 
@@ -478,28 +350,12 @@ function TaskCard({
           )}
 
           {/* Inline action buttons */}
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div className="flex gap-1.5">
             {onRetry && (
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onRetry(task); }}
-                style={{
-                  flex: 1,
-                  padding: '6px 10px',
-                  borderRadius: 8,
-                  background: 'rgba(239,68,68,0.12)',
-                  border: '1px solid rgba(239,68,68,0.3)',
-                  color: '#f87171',
-                  fontSize: 11,
-                  fontWeight: 600,
-                  fontFamily: 'Inter, sans-serif',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 5,
-                  transition: 'all 150ms ease',
-                }}
+                className="flex-1 py-1.5 px-2.5 rounded-lg bg-red-500/[0.12] border border-red-500/30 text-red-400 text-[11px] font-semibold font-[Inter,sans-serif] cursor-pointer flex items-center justify-center gap-[5px] transition-all duration-150 ease-in-out"
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = 'rgba(239,68,68,0.2)';
                 }}
@@ -523,22 +379,7 @@ function TaskCard({
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onDelete(task); }}
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: 8,
-                  background: 'rgba(239,68,68,0.08)',
-                  border: '1px solid rgba(239,68,68,0.2)',
-                  color: '#f87171',
-                  fontSize: 11,
-                  fontWeight: 600,
-                  fontFamily: 'Inter, sans-serif',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 4,
-                  transition: 'all 150ms ease',
-                }}
+                className="py-1.5 px-2.5 rounded-lg bg-red-500/[0.08] border border-red-500/20 text-red-400 text-[11px] font-semibold font-[Inter,sans-serif] cursor-pointer flex items-center justify-center gap-1 transition-all duration-150 ease-in-out"
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = 'rgba(239,68,68,0.18)';
                 }}
@@ -555,11 +396,11 @@ function TaskCard({
 
       {/* Indeterminate progress bar + elapsed timer (running) */}
       {isRunning && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="flex flex-col gap-1.5">
           <IndeterminateProgress />
           {task.startedAt && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 10, color: C.textMuted }}>Running</span>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px]" style={{ color: C.textMuted }}>Running</span>
               <ElapsedTimer startedAt={task.startedAt} />
             </div>
           )}
@@ -569,21 +410,8 @@ function TaskCard({
       {/* Live output preview (running tasks only) */}
       {isRunning && task.lastOutputLine && (
         <div
-          style={{
-            fontSize: 10,
-            lineHeight: '15px',
-            fontFamily: 'var(--font-mono)',
-            color: C.textMuted,
-            padding: '6px 8px',
-            borderRadius: 8,
-            background: C.bg,
-            border: `1px solid ${C.border}`,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            maxHeight: 32,
-            opacity: 0.8,
-          }}
+          className="text-[10px] leading-[15px] font-[family-name:var(--font-mono)] py-1.5 px-2 rounded-lg overflow-hidden text-ellipsis whitespace-nowrap max-h-8 opacity-80"
+          style={{ color: C.textMuted, background: C.bg, border: `1px solid ${C.border}` }}
         >
           {task.lastOutputLine}
         </div>
@@ -592,18 +420,11 @@ function TaskCard({
       {/* Result summary (done cards) */}
       {isDone && truncatedResult && (
         <div
+          className="text-[11px] leading-4 py-2 px-2.5 rounded-[10px] whitespace-pre-wrap break-words max-h-16 overflow-hidden"
           style={{
-            fontSize: 11,
-            lineHeight: '16px',
             color: C.textSecondary,
-            padding: '8px 10px',
-            borderRadius: 10,
             background: C.panel,
             border: `1px solid ${C.border}`,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            maxHeight: 64,
-            overflow: 'hidden',
           }}
         >
           {truncatedResult}
@@ -612,7 +433,7 @@ function TaskCard({
 
       {/* Duration (done) */}
       {task.duration && (
-        <span style={{ fontSize: 11, color: C.textMuted }}>{task.duration}</span>
+        <span className="text-[11px]" style={{ color: C.textMuted }}>{task.duration}</span>
       )}
     </button>
   );
@@ -887,7 +708,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
 
   if (tasks.size === 0 && orchestrationPhase === 'idle') {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+      <div className="flex items-center justify-center h-full">
         <EmptyState
           icon={'\uD83D\uDCCB'}
           title="No tasks yet"
@@ -917,26 +738,13 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
   return (
     <>
     {ConfirmDialogElement}
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        fontFamily: 'Inter, sans-serif',
-      }}
-    >
+    <div className="flex flex-col h-full font-[Inter,sans-serif]">
       {/* Search & Filter bar */}
       <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 20px',
-          borderBottom: `1px solid ${C.border}`,
-          flexShrink: 0,
-        }}
+        className="flex items-center gap-2 py-2 px-5 shrink-0"
+        style={{ borderBottom: `1px solid ${C.border}` }}
       >
-        <div style={{ position: 'relative', flex: 1, maxWidth: 280 }}>
+        <div className="relative flex-1 max-w-[280px]">
           <input
             type="text"
             value={searchQuery}
@@ -1013,15 +821,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
       </div>
 
       {/* Kanban columns */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 16,
-          flex: 1,
-          minHeight: 0,
-          padding: 20,
-        }}
-      >
+      <div className="flex gap-4 flex-1 min-h-0 p-5">
         {COLUMNS.map((col) => {
           const items = filteredByColumn[col.key];
           const st = STATUS[col.statusKey];
@@ -1032,27 +832,16 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
               onDragOver={(e) => handleDragOver(e, col.key)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, col.key)}
+              className="flex-1 min-w-[220px] flex flex-col rounded-[20px] overflow-hidden transition-[border-color,background] duration-150"
               style={{
-                flex: 1,
-                minWidth: 220,
-                display: 'flex',
-                flexDirection: 'column',
-                borderRadius: 20,
                 border: `1px solid ${dropTarget === col.key ? C.accent : C.border}`,
                 background: dropTarget === col.key ? C.accentSoft : C.panel,
-                overflow: 'hidden',
-                transition: 'border-color 150ms, background 150ms',
               }}
             >
               {/* Column header */}
               <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  padding: '14px 16px',
-                  borderBottom: `1px solid ${C.border}`,
-                }}
+                className="flex items-center gap-2 py-3.5 px-4"
+                style={{ borderBottom: `1px solid ${C.border}` }}
               >
                 <StatusDot color={st.dot} />
                 <span style={{ fontSize: 13, fontWeight: 600, color: st.text }}>{col.label}</span>
@@ -1063,7 +852,7 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
 
               {/* Cards */}
               <ScrollArea style={{ flex: 1, padding: 12 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="flex flex-col gap-2.5">
                   {items.length === 0 ? (
                     <div
                       style={{
@@ -1105,51 +894,34 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
       </div>
 
       {/* Activity Log Panel */}
-      <div style={{ flexShrink: 0 }}>
+      <div className="shrink-0">
         {/* Toggle bar */}
         <button
           type="button"
           onClick={() => setLogPanelOpen((prev) => !prev)}
+          className="w-full flex items-center gap-2 py-1.5 px-5 cursor-pointer font-[Inter,sans-serif]"
           style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '6px 20px',
             background: C.panel,
             borderTop: `1px solid ${C.border}`,
             borderBottom: logPanelOpen ? `1px solid ${C.border}` : 'none',
-            cursor: 'pointer',
-            fontFamily: 'Inter, sans-serif',
           }}
         >
           <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: orchestrationPhase !== 'idle' ? C.amber : C.textMuted,
-              flexShrink: 0,
-            }}
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{ background: orchestrationPhase !== 'idle' ? C.amber : C.textMuted }}
           />
-          <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, letterSpacing: '0.02em' }}>
+          <span className="text-[11px] font-semibold tracking-[0.02em]" style={{ color: C.textSecondary }}>
             Activity Log
           </span>
           {orchestrationLogs.length > 0 && (
             <span
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                padding: '1px 6px',
-                borderRadius: 999,
-                background: C.surface,
-                color: C.textMuted,
-              }}
+              className="text-[10px] font-semibold px-1.5 py-px rounded-full"
+              style={{ background: C.surface, color: C.textMuted }}
             >
               {orchestrationLogs.length}
             </span>
           )}
-          <div style={{ flex: 1 }} />
+          <div className="flex-1" />
           {logPanelOpen ? (
             <ChevronDown size={14} style={{ color: C.textMuted }} />
           ) : (
@@ -1159,19 +931,11 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
 
         {/* Expandable log content */}
         {logPanelOpen && (
-          <div style={{ position: 'relative' }}>
+          <div className="relative">
             {/* Resize handle */}
             <div
               onMouseDown={handleResizeMouseDown}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 4,
-                cursor: 'ns-resize',
-                zIndex: 10,
-              }}
+              className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
             />
             <ScrollArea
               ref={logScrollRef}
@@ -1199,48 +963,22 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
                   return (
                     <div
                       key={log.id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: 8,
-                        padding: '3px 0',
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: 11,
-                        lineHeight: '18px',
-                      }}
+                      className="flex items-start gap-2 py-[3px] font-[family-name:var(--font-mono)] text-[11px] leading-[18px]"
                     >
-                      <span style={{ color: C.textMuted, flexShrink: 0, width: 56, fontSize: 10 }}>
+                      <span className="shrink-0 w-14 text-[10px]" style={{ color: C.textMuted }}>
                         {log.timestamp}
                       </span>
                       <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: dotColor,
-                          flexShrink: 0,
-                          marginTop: 6,
-                        }}
+                        className="w-1.5 h-1.5 rounded-full shrink-0 mt-1.5"
+                        style={{ background: dotColor }}
                       />
                       <span
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: 4,
-                          background: agentInfo.gradient,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: 8,
-                          fontWeight: 700,
-                          color: '#fff',
-                          flexShrink: 0,
-                          marginTop: 1,
-                        }}
+                        className="w-4 h-4 rounded inline-flex items-center justify-center text-[8px] font-bold text-white shrink-0 mt-px"
+                        style={{ background: agentInfo.gradient }}
                       >
                         {agentInfo.letter}
                       </span>
-                      <span style={{ color: LOG_COLOR[log.level] ?? C.textPrimary, wordBreak: 'break-word' }}>
+                      <span className="break-words" style={{ color: LOG_COLOR[log.level] ?? C.textPrimary }}>
                         {log.message}
                       </span>
                     </div>

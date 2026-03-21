@@ -253,86 +253,48 @@ export function TaskApprovalView() {
       role="dialog"
       aria-modal="true"
       aria-label="Review Sub-Tasks"
+      className="fixed inset-0 z-[90] flex items-start justify-center pt-[8vh] transition-[background,backdrop-filter] duration-200 ease-out"
       style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 90,
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        paddingTop: '8vh',
         background: visible ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0)',
         backdropFilter: visible ? 'blur(3px)' : 'blur(0px)',
         pointerEvents: visible ? 'auto' : 'none',
-        transition: 'background 200ms ease-out, backdrop-filter 200ms ease-out',
       }}
     >
       <div
+        className="w-[580px] max-h-[85vh] rounded-[20px] flex flex-col overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.7)] transition-[transform,opacity] duration-200 ease-out"
         style={{
-          width: 580,
-          maxHeight: '85vh',
-          borderRadius: 20,
           background: C.panel,
           border: `1px solid ${C.borderStrong}`,
-          boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
           transform: visible ? 'scale(1)' : 'scale(0.95)',
           opacity: visible ? 1 : 0,
-          transition: 'transform 200ms ease-out, opacity 200ms ease-out',
         }}
       >
         {/* Header with summary */}
-        <div style={{ padding: '20px 24px 16px', borderBottom: `1px solid ${C.border}` }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.textPrimary }}>
+        <div className="pt-5 px-6 pb-4" style={{ borderBottom: `1px solid ${C.border}` }}>
+          <div className="flex items-center justify-between">
+            <h2 className="m-0 text-base font-bold" style={{ color: C.textPrimary }}>
               Review Sub-Tasks
             </h2>
             {/* Auto-approve toggle */}
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                cursor: 'pointer',
-                userSelect: 'none',
-              }}
-            >
-              <span style={{ fontSize: 11, color: C.textMuted }}>Auto-approve</span>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <span className="text-[11px]" style={{ color: C.textMuted }}>Auto-approve</span>
               <button
                 type="button"
                 onClick={() => setAutoApprove(!autoApprove)}
-                style={{
-                  width: 32,
-                  height: 16,
-                  borderRadius: 8,
-                  background: autoApprove ? C.accent : C.borderStrong,
-                  border: 'none',
-                  padding: '0 2px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  transition: 'background 150ms ease',
-                }}
+                className="w-8 h-4 rounded-lg border-none px-0.5 cursor-pointer flex items-center transition-[background] duration-150 ease-in-out"
+                style={{ background: autoApprove ? C.accent : C.borderStrong }}
               >
                 <div
-                  style={{
-                    width: 12,
-                    height: 12,
-                    borderRadius: 6,
-                    background: '#fff',
-                    transition: 'margin-left 150ms ease',
-                    marginLeft: autoApprove ? 'auto' : '0',
-                  }}
+                  className="w-3 h-3 rounded-full bg-white transition-[margin-left] duration-150 ease-in-out"
+                  style={{ marginLeft: autoApprove ? 'auto' : '0' }}
                 />
               </button>
             </label>
           </div>
 
           {/* Summary bar */}
-          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 12, color: C.textSecondary }}>
+          <div className="mt-2.5 flex items-center gap-2.5">
+            <span className="text-xs" style={{ color: C.textSecondary }}>
               {activeCount} task{activeCount !== 1 ? 's' : ''}: {agentSummary}
             </span>
           </div>
@@ -340,14 +302,8 @@ export function TaskApprovalView() {
           {/* Agent distribution bar */}
           {activeCount > 0 && (
             <div
-              style={{
-                marginTop: 8,
-                height: 4,
-                borderRadius: 2,
-                overflow: 'hidden',
-                display: 'flex',
-                background: C.borderStrong,
-              }}
+              className="mt-2 h-1 rounded-sm overflow-hidden flex"
+              style={{ background: C.borderStrong }}
             >
               {Array.from(agentCounts.entries()).map(([agent, count]) => (
                 <div
@@ -363,13 +319,13 @@ export function TaskApprovalView() {
             </div>
           )}
 
-          <p style={{ margin: '8px 0 0', fontSize: 11, color: C.textMuted, lineHeight: '16px' }}>
+          <p className="mt-2 mb-0 text-[11px] leading-4" style={{ color: C.textMuted }}>
             Reorder, reassign agents, add or remove tasks before execution.
           </p>
         </div>
 
         {/* Task list */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 24px' }}>
+        <div className="flex-1 overflow-y-auto py-3 px-6">
           {displayTasks.map((task, idx) => {
             const agent = AGENTS[task.agent];
             const filePills = extractFilePills(task.description);
@@ -378,37 +334,25 @@ export function TaskApprovalView() {
             return (
               <div
                 key={task.id}
+                className="p-3 py-3 px-3.5 rounded-xl mb-2 transition-all duration-150 ease-in-out"
                 style={{
-                  padding: '12px 14px',
-                  borderRadius: 12,
                   background: task.removed ? 'rgba(248,113,113,0.06)' : C.surface,
                   border: `1px solid ${task.removed ? 'rgba(248,113,113,0.2)' : C.border}`,
-                  marginBottom: 8,
                   opacity: task.removed ? 0.45 : 1,
-                  transition: 'all 150ms ease',
                 }}
               >
                 {/* Top row: reorder + badge + description + controls */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="flex items-center gap-2.5">
                   {/* Reorder buttons */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flexShrink: 0 }}>
+                  <div className="flex flex-col gap-px shrink-0">
                     <button
                       type="button"
                       onClick={() => handleMoveUp(idx)}
                       disabled={idx === 0}
+                      className="w-[18px] h-[14px] rounded-[3px] bg-transparent border-none flex items-center justify-center p-0 transition-colors duration-100 ease-in-out"
                       style={{
-                        width: 18,
-                        height: 14,
-                        borderRadius: 3,
-                        background: 'transparent',
-                        border: 'none',
                         color: idx === 0 ? C.textMuted + '40' : C.textMuted,
                         cursor: idx === 0 ? 'default' : 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        padding: 0,
-                        transition: 'color 100ms ease',
                       }}
                       title="Move up"
                     >
@@ -418,19 +362,10 @@ export function TaskApprovalView() {
                       type="button"
                       onClick={() => handleMoveDown(idx)}
                       disabled={idx === displayTasks.length - 1}
+                      className="w-[18px] h-[14px] rounded-[3px] bg-transparent border-none flex items-center justify-center p-0 transition-colors duration-100 ease-in-out"
                       style={{
-                        width: 18,
-                        height: 14,
-                        borderRadius: 3,
-                        background: 'transparent',
-                        border: 'none',
                         color: idx === displayTasks.length - 1 ? C.textMuted + '40' : C.textMuted,
                         cursor: idx === displayTasks.length - 1 ? 'default' : 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        padding: 0,
-                        transition: 'color 100ms ease',
                       }}
                       title="Move down"
                     >
@@ -440,43 +375,26 @@ export function TaskApprovalView() {
 
                   {/* Agent badge with gradient */}
                   <div
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 8,
-                      background: agent.gradient,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 12,
-                      fontWeight: 700,
-                      color: '#fff',
-                      flexShrink: 0,
-                    }}
+                    className="w-[30px] h-[30px] rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0"
+                    style={{ background: agent.gradient }}
                   >
                     {agent.letter}
                   </div>
 
                   {/* Task content */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="flex-1 min-w-0">
                     {/* Task number */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                      <span style={{ fontSize: 10, fontWeight: 600, color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: C.textMuted }}>
                         Task {idx + 1} of {displayTasks.length}
                       </span>
                       {depIndex != null && (
                         <span
+                          className="text-[9px] font-semibold rounded px-[5px] py-px inline-flex items-center gap-[3px]"
                           style={{
-                            fontSize: 9,
-                            fontWeight: 600,
                             color: C.amber,
                             background: C.amberBg,
                             border: `1px solid ${C.amberBorder}`,
-                            borderRadius: 4,
-                            padding: '1px 5px',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 3,
                           }}
                         >
                           <GitBranch size={8} />
@@ -486,15 +404,10 @@ export function TaskApprovalView() {
                     </div>
                     {/* Description */}
                     <div
+                      className="text-xs leading-[18px] line-clamp-2"
                       style={{
-                        fontSize: 12,
                         color: task.removed ? C.textMuted : C.textPrimary,
-                        lineHeight: '18px',
                         textDecoration: task.removed ? 'line-through' : 'none',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
                       }}
                     >
                       {task.description}
@@ -584,21 +497,10 @@ export function TaskApprovalView() {
                   <button
                     type="button"
                     onClick={() => handleToggleRemove(idx)}
+                    className="w-7 h-7 rounded-lg border-none text-sm cursor-pointer flex items-center justify-center shrink-0 font-[Inter,sans-serif] transition-all duration-150 ease-in-out"
                     style={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: 8,
                       background: task.removed ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
-                      border: 'none',
                       color: task.removed ? C.green : C.red,
-                      fontSize: 14,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                      fontFamily: 'Inter, sans-serif',
-                      transition: 'all 150ms ease',
                     }}
                     title={task.removed ? 'Restore task' : 'Remove task'}
                   >
@@ -608,21 +510,15 @@ export function TaskApprovalView() {
 
                 {/* File pills (scope indicator) */}
                 {filePills.length > 0 && !task.removed && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8, paddingLeft: 58 }}>
+                  <div className="flex flex-wrap gap-1 mt-2 pl-[58px]">
                     {filePills.map(file => (
                       <span
                         key={file}
+                        className="inline-flex items-center gap-[3px] text-[10px] rounded px-1.5 py-px font-[family-name:var(--font-mono)]"
                         style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 3,
-                          fontSize: 10,
                           color: C.accentText,
                           background: C.accentSoft,
                           border: `1px solid ${C.accent}25`,
-                          borderRadius: 4,
-                          padding: '1px 6px',
-                          fontFamily: 'var(--font-mono)',
                         }}
                       >
                         <FileCode2 size={9} />
@@ -638,15 +534,10 @@ export function TaskApprovalView() {
           {/* Add Sub-Task section */}
           {showAddForm ? (
             <div
-              style={{
-                padding: '12px 14px',
-                borderRadius: 12,
-                background: C.surface,
-                border: `1px dashed ${C.accent}50`,
-                marginBottom: 8,
-              }}
+              className="p-3 py-3 px-3.5 rounded-xl mb-2"
+              style={{ background: C.surface, border: `1px dashed ${C.accent}50` }}
             >
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <div className="text-[11px] font-semibold mb-2 uppercase tracking-[0.04em]" style={{ color: C.textMuted }}>
                 New Sub-Task
               </div>
               <textarea
@@ -674,7 +565,7 @@ export function TaskApprovalView() {
                   if (e.key === 'Escape') setShowAddForm(false);
                 }}
               />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <div className="flex items-center gap-2 mt-2">
                 <select
                   value={newTaskAgent}
                   onChange={(e) => setNewTaskAgent(e.target.value as ToolName)}
@@ -694,22 +585,12 @@ export function TaskApprovalView() {
                     <option key={a} value={a}>{AGENTS[a].label}</option>
                   ))}
                 </select>
-                <div style={{ flex: 1 }} />
+                <div className="flex-1" />
                 <button
                   type="button"
                   onClick={() => { setShowAddForm(false); setNewTaskPrompt(''); }}
-                  style={{
-                    padding: '5px 14px',
-                    borderRadius: 8,
-                    background: 'transparent',
-                    border: `1px solid ${C.border}`,
-                    color: C.textMuted,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    fontFamily: 'Inter, sans-serif',
-                    cursor: 'pointer',
-                    transition: 'all 100ms ease',
-                  }}
+                  className="py-[5px] px-3.5 rounded-lg bg-transparent text-[11px] font-semibold font-[Inter,sans-serif] cursor-pointer transition-all duration-100 ease-in-out"
+                  style={{ border: `1px solid ${C.border}`, color: C.textMuted }}
                 >
                   Cancel
                 </button>
@@ -717,17 +598,11 @@ export function TaskApprovalView() {
                   type="button"
                   onClick={handleAddTask}
                   disabled={!newTaskPrompt.trim()}
+                  className="py-[5px] px-3.5 rounded-lg border-none text-[11px] font-semibold font-[Inter,sans-serif] transition-all duration-100 ease-in-out"
                   style={{
-                    padding: '5px 14px',
-                    borderRadius: 8,
                     background: newTaskPrompt.trim() ? C.accent : C.borderStrong,
-                    border: 'none',
                     color: newTaskPrompt.trim() ? '#fff' : C.textMuted,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    fontFamily: 'Inter, sans-serif',
                     cursor: newTaskPrompt.trim() ? 'pointer' : 'not-allowed',
-                    transition: 'all 100ms ease',
                   }}
                 >
                   Add
@@ -738,24 +613,8 @@ export function TaskApprovalView() {
             <button
               type="button"
               onClick={() => setShowAddForm(true)}
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                borderRadius: 12,
-                background: 'transparent',
-                border: `1px dashed ${C.borderStrong}`,
-                color: C.textMuted,
-                fontSize: 12,
-                fontWeight: 500,
-                fontFamily: 'Inter, sans-serif',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 6,
-                transition: 'all 150ms ease',
-                marginBottom: 8,
-              }}
+              className="w-full py-2.5 px-3.5 rounded-xl bg-transparent text-xs font-medium font-[Inter,sans-serif] cursor-pointer flex items-center justify-center gap-1.5 transition-all duration-150 ease-in-out mb-2"
+              style={{ border: `1px dashed ${C.borderStrong}`, color: C.textMuted }}
             >
               <Plus size={14} />
               Add Sub-Task
@@ -765,32 +624,20 @@ export function TaskApprovalView() {
 
         {/* Footer */}
         <div
-          style={{
-            padding: '16px 24px',
-            borderTop: `1px solid ${C.border}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
+          className="py-4 px-6 flex items-center justify-between"
+          style={{ borderTop: `1px solid ${C.border}` }}
         >
-          <span style={{ fontSize: 12, color: C.textMuted }}>
+          <span className="text-xs" style={{ color: C.textMuted }}>
             {activeCount} task{activeCount !== 1 ? 's' : ''} will execute
           </span>
           <button
             type="button"
             disabled={approving || activeCount === 0}
             onClick={handleApprove}
+            className="py-2.5 px-7 rounded-xl border-none text-white text-[13px] font-bold font-[Inter,sans-serif] transition-all duration-150 ease-in-out"
             style={{
-              padding: '10px 28px',
-              borderRadius: 12,
               background: approving || activeCount === 0 ? C.borderStrong : C.accent,
-              border: 'none',
-              color: '#fff',
-              fontSize: 13,
-              fontWeight: 700,
-              fontFamily: 'Inter, sans-serif',
               cursor: approving || activeCount === 0 ? 'not-allowed' : 'pointer',
-              transition: 'all 150ms ease',
             }}
           >
             {approving ? 'Approving...' : countdown !== null && countdown > 0 ? `Auto-starting in ${countdown}s...` : `Approve & Start (${activeCount})`}
