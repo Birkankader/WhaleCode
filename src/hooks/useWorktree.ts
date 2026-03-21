@@ -56,8 +56,8 @@ export function useWorktree(projectDir: string) {
   );
 
   const mergeWorktree = useCallback(
-    async (branchName: string) => {
-      if (!projectDir) return;
+    async (branchName: string): Promise<boolean> => {
+      if (!projectDir) return false;
       setLoading(true);
       setError(null);
       try {
@@ -65,11 +65,14 @@ export function useWorktree(projectDir: string) {
         if (result.status === 'ok') {
           setConflicts(null);
           await refreshWorktrees();
+          return true;
         } else {
           setError(result.error);
+          return false;
         }
       } catch (err) {
         setError('Failed to merge worktree');
+        return false;
       } finally {
         setLoading(false);
       }

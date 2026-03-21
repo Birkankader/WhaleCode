@@ -116,7 +116,11 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
     }
 }
 
-/// Build a single-shot command for decomposition/planning only (1 turn, no tool use).
+/// Build a single-shot command for decomposition/planning only.
+///
+/// This is truly planning-only with no tool access: `--allowedTools ""`
+/// disables all tools, and `--max-turns 1` caps execution to a single turn.
+/// No `--dangerously-skip-permissions` is needed since tools are disabled.
 pub fn build_single_shot_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
     ClaudeCommand {
         cmd: "claude".to_string(),
@@ -128,7 +132,8 @@ pub fn build_single_shot_command(prompt: &str, cwd: &str, api_key: &str) -> Clau
             "--verbose".to_string(),
             "--max-turns".to_string(),
             "1".to_string(),
-            "--dangerously-skip-permissions".to_string(),
+            "--allowedTools".to_string(),
+            "".to_string(),
         ],
         env: build_env(api_key),
         cwd: cwd.to_string(),

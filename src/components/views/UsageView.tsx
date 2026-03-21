@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { C } from '@/lib/theme';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AGENTS } from '@/lib/agents';
@@ -60,9 +60,10 @@ function timeUntilReset(resetsAt: string | null): string | null {
 
 function UsageProgressBar({ line }: { line: UsageLine }) {
   const used = line.used ?? 0;
-  const limit = line.limit ?? 100;
-  const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
-  const color = progressColor(used, limit);
+  const limit = line.limit ?? 0;
+  const isUnlimited = limit <= 0;
+  const pct = isUnlimited ? 0 : Math.min((used / limit) * 100, 100);
+  const color = isUnlimited ? C.green : progressColor(used, limit);
   const reset = timeUntilReset(line.resets_at);
 
   return (
@@ -71,17 +72,22 @@ function UsageProgressBar({ line }: { line: UsageLine }) {
         <span style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>{line.label}</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color }}>{formatValue(line)}</span>
-          {line.format_kind === 'percent' && (
+          {!isUnlimited && line.format_kind === 'percent' && (
             <span style={{ fontSize: 11, color: C.textMuted }}>/ {formatPercent(limit)}</span>
+          )}
+          {isUnlimited && (
+            <span style={{ fontSize: 11, color: C.textMuted }}>/ Unlimited</span>
           )}
         </div>
       </div>
-      <div style={{ width: '100%', height: 8, borderRadius: 4, background: C.border, overflow: 'hidden' }}>
-        <div style={{
-          width: `${pct}%`, height: '100%', borderRadius: 4,
-          background: color, transition: 'width 500ms ease',
-        }} />
-      </div>
+      {!isUnlimited && (
+        <div style={{ width: '100%', height: 8, borderRadius: 4, background: C.border, overflow: 'hidden' }}>
+          <div style={{
+            width: `${pct}%`, height: '100%', borderRadius: 4,
+            background: color, transition: 'width 500ms ease',
+          }} />
+        </div>
+      )}
       {reset && (
         <div style={{ fontSize: 10, color: C.textMuted, marginTop: 4, textAlign: 'right' }}>
           Resets in {reset}
@@ -177,22 +183,35 @@ function AgentUsageCard({ usage }: { usage: AgentUsage }) {
 export function UsageView() {
   const [usageData, setUsageData] = useState<AgentUsage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchUsage = useCallback(async () => {
     setLoading(true);
     try {
       const result = await commands.fetchAgentUsage();
       if (result.status === 'ok') {
+        setError(null);
         setUsageData(result.data);
       }
     } catch {
-      console.error('Failed to fetch usage');
+      setError('Failed to fetch usage data');
     } finally {
       setLoading(false);
       setLastFetch(new Date());
     }
   }, []);
+
+  const startInterval = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchUsage, 60_000);
+  }, [fetchUsage]);
+
+  const handleManualRefresh = useCallback(() => {
+    fetchUsage();
+    startInterval(); // Reset the auto-refresh timer
+  }, [fetchUsage, startInterval]);
 
   // Fetch on mount
   useEffect(() => {
@@ -201,9 +220,11 @@ export function UsageView() {
 
   // Auto-refresh every 60s
   useEffect(() => {
-    const interval = setInterval(fetchUsage, 60_000);
-    return () => clearInterval(interval);
-  }, [fetchUsage]);
+    startInterval();
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [startInterval]);
 
   return (
     <ScrollArea style={{ height: '100%' }}>
@@ -213,12 +234,12 @@ export function UsageView() {
             <h2 style={{ fontSize: 20, fontWeight: 700, color: C.textPrimary, margin: 0 }}>
               Usage
             </h2>
-            <p style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, margin: 0 }}>
+            <p style={{ fontSize: 13, color: C.textSecondary, margin: '4px 0 0 0' }}>
               Live rate limits and consumption from your AI agents.
             </p>
           </div>
           <button
-            onClick={fetchUsage}
+            onClick={handleManualRefresh}
             disabled={loading}
             style={{
               padding: '6px 14px', borderRadius: 8,
@@ -236,6 +257,28 @@ export function UsageView() {
         {lastFetch && (
           <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 16 }}>
             Last updated: {lastFetch.toLocaleTimeString()}
+          </div>
+        )}
+
+        {error && (
+          <div style={{
+            padding: '12px 16px', borderRadius: 12, marginBottom: 16,
+            background: C.redBg,
+            border: `1px solid ${C.border}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <span style={{ fontSize: 13, color: C.red }}>{error}</span>
+            <button
+              onClick={handleManualRefresh}
+              style={{
+                padding: '4px 12px', borderRadius: 8,
+                background: 'transparent', border: `1px solid ${C.red}`,
+                color: C.red, fontSize: 11, fontWeight: 600,
+                cursor: 'pointer', flexShrink: 0,
+              }}
+            >
+              Retry
+            </button>
           </div>
         )}
 

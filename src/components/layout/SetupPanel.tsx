@@ -334,6 +334,9 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
         </div>
         <button
           onClick={() => onChange(!value)}
+          role="switch"
+          aria-checked={value}
+          aria-label={label}
           style={{
             width: 40,
             height: 22,

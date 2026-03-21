@@ -114,22 +114,33 @@ async fn wait_for_turn_complete(
                 .ok_or_else(|| format!("Process {} not found", task_id))?;
             // Only clone if there are new lines to check
             if entry.output_lines.len() > lines_seen {
-                (entry.output_lines.clone(), entry.status.clone())
+                (entry.output_lines[lines_seen..].to_vec(), entry.status.clone())
             } else {
                 continue;
             }
         };
 
-        for line in current_lines.iter().skip(lines_seen) {
+        for line in &current_lines {
             if adapter.is_turn_complete(line) {
-                return Ok(current_lines);
+                // Return full output — re-read all lines from state
+                let s = state.lock();
+                if let Some(entry) = s.processes.get(task_id) {
+                    return Ok(entry.output_lines.clone());
+                }
+                return Ok(vec![]);
             }
         }
-        lines_seen = current_lines.len();
+        lines_seen += current_lines.len();
 
         match status {
             ProcessStatus::Failed(ref e) => return Err(format!("Process died: {}", e)),
-            ProcessStatus::Completed(_) => return Ok(current_lines),
+            ProcessStatus::Completed(_) => {
+                let s = state.lock();
+                if let Some(entry) = s.processes.get(task_id) {
+                    return Ok(entry.output_lines.clone());
+                }
+                return Ok(vec![]);
+            }
             _ => {}
         }
     }
@@ -210,7 +221,13 @@ fn parse_decomposition_from_output(
     // Strategy B: Extract text content from NDJSON message/result events
     // Claude returns decomposition JSON inside message content blocks or result text
     let mut extracted_texts: Vec<String> = Vec::new();
+    let mut extracted_bytes: usize = 0;
+    const MAX_EXTRACTED_BYTES: usize = 1_048_576; // 1MB safety limit
     for line in output_lines {
+        if extracted_bytes > MAX_EXTRACTED_BYTES {
+            log::warn!("[orchestrator] Strategy B: extracted text exceeded 1MB limit, stopping accumulation");
+            break;
+        }
         let trimmed = line.trim();
         if !trimmed.starts_with('{') { continue; }
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
@@ -222,19 +239,23 @@ fn parse_decomposition_from_output(
                         if let Some(arr) = content.as_array() {
                             for block in arr {
                                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    extracted_bytes += text.len();
                                     extracted_texts.push(text.to_string());
                                 }
                             }
                         } else if let Some(text) = content.as_str() {
+                            extracted_bytes += text.len();
                             extracted_texts.push(text.to_string());
                         }
                     }
                 }
                 "result" => {
                     if let Some(result) = parsed.get("result").and_then(|r| r.as_str()) {
+                        extracted_bytes += result.len();
                         extracted_texts.push(result.to_string());
                     }
                     if let Some(response) = parsed.get("response").and_then(|r| r.as_str()) {
+                        extracted_bytes += response.len();
                         extracted_texts.push(response.to_string());
                     }
                 }
@@ -276,7 +297,7 @@ fn parse_decomposition_from_output(
 /// - "codex cli", "codex-cli", "Codex", "openai" → "codex"
 /// - "<agent_name>", "agent_name", unknown → falls back to "claude"
 fn normalize_agent_name(name: &str) -> String {
-    let lower = name.to_lowercase().trim().to_string();
+    let lower = name.trim().to_lowercase();
 
     // Strip angle brackets (LLM placeholder artifacts like "<agent_name>")
     let cleaned = lower.trim_matches(|c| c == '<' || c == '>').trim().to_string();
@@ -292,7 +313,7 @@ fn normalize_agent_name(name: &str) -> String {
     }
 
     // If it's a placeholder or unknown, default to claude
-    debug!("[orchestrator] Unknown agent name '{}', defaulting to 'claude'", name);
+    log::warn!("[orchestrator] Unknown agent name '{}', defaulting to 'claude'", name);
     "claude".to_string()
 }
 
@@ -583,6 +604,17 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// UTF-8-safe string truncation without ellipsis. Available to sibling modules.
+pub(crate) fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => s[..idx].to_string(),
+        None => s.to_string(),
+    }
+}
+
 fn update_plan_phase(
     state: &AppState,
     plan_id: &str,
@@ -755,18 +787,20 @@ pub async fn dispatch_orchestrated_task(
     for line in &output_lines {
         if line.contains("authentication_failed") || line.contains("Not logged in") || line.contains("Please run /login") {
             let _ = kill_process(state_ref, &master_task_id).await;
-            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            // Note: tool slot already released after spawn (line ~746)
             return Err(format!("{} is not logged in. Please run '{} /login' in your terminal first.", config.master_agent, config.master_agent));
         }
-        if line.contains("Invalid API key") || line.contains("invalid_api_key") || line.contains("401") {
+        if line.contains("Invalid API key") || line.contains("invalid_api_key")
+            || line.contains("HTTP 401") || line.contains("status: 401")
+            || line.contains("\"401\"") || line.contains("status_code: 401") {
             let _ = kill_process(state_ref, &master_task_id).await;
-            process::manager::release_tool_slot(state_ref, &config.master_agent);
+            // Note: tool slot already released after spawn (line ~746)
             return Err(format!("{} API key is invalid. Check Settings to update it.", config.master_agent));
         }
     }
 
     // Extract and parse decomposition result (with retry on failure)
-    let decomposition = match parse_decomposition_from_output(&output_lines, adapter.as_ref()) {
+    let (decomposition, is_decomposition_fallback) = match parse_decomposition_from_output(&output_lines, adapter.as_ref()) {
         Some(result) => {
             emit_messenger(&app_handle, MessengerMessage::agent(
                 &plan.task_id,
@@ -779,7 +813,7 @@ pub async fn dispatch_orchestrated_task(
                 ),
                 MessageType::DecompositionResult,
             ));
-            result
+            (result, false)
         }
         None => {
             // --- Retry ONCE with a clarifying follow-up prompt ---
@@ -788,67 +822,9 @@ pub async fn dispatch_orchestrated_task(
                 "message": "First decomposition attempt was not valid JSON. Retrying with clarification..."
             }));
 
-            let retry_prompt = "Your previous response was not valid JSON. Return ONLY a JSON object with this exact format: {\"tasks\": [{\"agent\": \"claude\", \"prompt\": \"...\", \"description\": \"...\"}]}. No other text.";
-
-            let retry_result = if use_interactive {
-                // For interactive Claude: re-open stdin and send follow-up
-                // The master process may still be alive (interactive mode).
-                // Try to send the retry prompt via stdin. If stdin is closed,
-                // we spawn a fresh single-shot process instead.
-                let send_ok = process::manager::send_to_process(state_ref, &master_task_id, retry_prompt).is_ok();
-                if send_ok {
-                    // Wait for the retry response
-                    match timeout(
-                        master_timeout,
-                        wait_for_turn_complete(state_ref, &master_task_id, adapter.as_ref()),
-                    ).await {
-                        Ok(Ok(retry_lines)) => {
-                            parse_decomposition_from_output(&retry_lines, adapter.as_ref())
-                        }
-                        _ => None,
-                    }
-                } else {
-                    // stdin was closed (EOF sent) — spawn a fresh single-shot process
-                    let _ = kill_process(state_ref, &master_task_id).await;
-
-                    let combined_prompt = format!(
-                        "{}\n\n{}", decompose_prompt, retry_prompt
-                    );
-                    let retry_cmd = adapter.build_command(&combined_prompt, &project_dir, &api_key);
-                    if let Ok(retry_task_id) = process::manager::spawn_interactive(
-                        retry_cmd,
-                        &format!("Decomposition retry: {}", truncate(&prompt, 60)),
-                        &config.master_agent,
-                        on_event.clone(),
-                        state_ref,
-                    ).await {
-                        // Update master_task_id in plan for the new process
-                        plan.master_process_id = Some(retry_task_id.clone());
-                        {
-                            let mut inner = state_ref.lock();
-                            if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
-                                p.master_process_id = Some(retry_task_id.clone());
-                            }
-                        }
-
-                        match timeout(
-                            master_timeout,
-                            wait_for_turn_complete(state_ref, &retry_task_id, adapter.as_ref()),
-                        ).await {
-                            Ok(Ok(retry_lines)) => {
-                                parse_decomposition_from_output(&retry_lines, adapter.as_ref())
-                            }
-                            _ => {
-                                let _ = kill_process(state_ref, &retry_task_id).await;
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                }
-            } else {
-                // For single-shot Gemini/Codex: re-spawn with an explicit combined prompt
+            // Note: interactive retry removed — master uses single-shot mode
+            let retry_result = {
+                // Re-spawn with an explicit combined prompt
                 let _ = kill_process(state_ref, &master_task_id).await;
 
                 let combined_prompt = format!(
@@ -903,7 +879,7 @@ pub async fn dispatch_orchestrated_task(
                         ),
                         MessageType::DecompositionResult,
                     ));
-                    result
+                    (result, false)
                 }
                 None => {
                     debug!("[orchestrator] Decomposition retry also failed — falling back to single-task mode");
@@ -914,7 +890,7 @@ pub async fn dispatch_orchestrated_task(
                         tasks: vec![crate::router::orchestrator::SubTaskDef {
                             agent: config.master_agent.clone(),
                             prompt: prompt.clone(),
-                            description: if prompt.len() > 60 { format!("{}...", &prompt[..57]) } else { prompt.clone() },
+                            description: if prompt.len() > 60 { format!("{}...", truncate_str(&prompt, 57)) } else { prompt.clone() },
                             depends_on: vec![],
                         }],
                     };
@@ -927,7 +903,7 @@ pub async fn dispatch_orchestrated_task(
                     let current_master = plan.master_process_id.as_deref().unwrap_or(&master_task_id);
                     let _ = kill_process(state_ref, current_master).await;
 
-                    fallback_decomposition
+                    (fallback_decomposition, true)
                 }
             }
         }
@@ -939,6 +915,37 @@ pub async fn dispatch_orchestrated_task(
     // Store decomposition and enter approval phase
     plan.decomposition = Some(decomposition.clone());
     plan.phase = OrchestrationPhase::AwaitingApproval;
+
+    // Send task_assigned events so frontend can show the approval screen
+    for sub_def in &decomposition.tasks {
+        emit_orch(&on_event, "task_assigned", serde_json::json!({
+            "agent": sub_def.agent,
+            "description": sub_def.description,
+            "prompt": sub_def.prompt
+        }));
+    }
+
+    // Only auto-approve when this is a TRUE decomposition fallback (decomposition
+    // failed twice and we fell back to running the original prompt as-is).
+    // When the LLM genuinely returns 1 task, still show it for approval.
+    if is_decomposition_fallback {
+        // Skip approval — auto-approve the fallback single task
+        plan.phase = OrchestrationPhase::Executing;
+        {
+            let mut inner = state_ref.lock();
+            if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
+                p.decomposition = plan.decomposition.clone();
+                p.phase = OrchestrationPhase::Executing;
+            }
+        }
+        emit_orch(&on_event, "phase_changed", serde_json::json!({
+            "phase": "executing",
+            "detail": "Fallback single task — auto-executing",
+            "task_count": 1,
+            "wave_count": 1
+        }));
+    } else {
+    // Multi-task (or genuine single-task from LLM): require approval
     let mut approval_rx = {
         let mut inner = state_ref.lock();
         if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
@@ -951,38 +958,10 @@ pub async fn dispatch_orchestrated_task(
         rx
     };
 
-    // Send task_assigned events so frontend can show the approval screen
-    for sub_def in &decomposition.tasks {
-        emit_orch(&on_event, "task_assigned", serde_json::json!({
-            "agent": sub_def.agent,
-            "description": sub_def.description,
-            "prompt": sub_def.prompt
-        }));
-    }
-
-    // For single-task fallback, skip approval entirely and go straight to execution
-    let is_single_task_fallback = decomposition.tasks.len() == 1;
-    if is_single_task_fallback {
-        // Skip approval — auto-approve the single task
-        emit_orch(&on_event, "phase_changed", serde_json::json!({
-            "phase": "executing",
-            "detail": "Single task — auto-executing",
-            "task_count": 1,
-            "wave_count": 1
-        }));
-        plan.phase = OrchestrationPhase::Executing;
-        {
-            let mut inner = state_ref.lock();
-            if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
-                p.phase = OrchestrationPhase::Executing;
-            }
-            inner.approval_signals.remove(&plan.task_id);
-        }
-    } else {
     // Emit awaiting_approval event
     emit_orch(&on_event, "phase_changed", serde_json::json!({
         "phase": "awaiting_approval",
-        "detail": format!("{} sub-tasks ready for review", decomposition.tasks.len()),
+        "detail": format!("{} sub-task(s) ready for review", decomposition.tasks.len()),
         "task_count": decomposition.tasks.len()
     }));
 
@@ -1015,7 +994,7 @@ pub async fn dispatch_orchestrated_task(
         let mut inner = state_ref.lock();
         inner.approval_signals.remove(&plan.task_id);
     }
-    } // end of multi-task approval block
+    } // end of approval block
 
     // Re-read decomposition in case user modified it during approval
     let decomposition = {
@@ -1570,6 +1549,24 @@ async fn wait_for_worker_with_questions(
                     &question.content,
                 );
 
+                // Check if master process is still alive before attempting to relay.
+                // When decomposition uses single-shot mode (use_interactive=false),
+                // the master is killed before Phase 2 starts, so question routing
+                // to master won't work. Log the question and skip the relay.
+                let master_alive = {
+                    let s = state.lock();
+                    s.processes.contains_key(master_task_id)
+                };
+
+                if !master_alive {
+                    log::warn!(
+                        "[orchestrator] Worker '{}' asked a question but master process is dead (single-shot mode). \
+                         Question logged but cannot be relayed: {}",
+                        worker_agent, question.content
+                    );
+                    continue;
+                }
+
                 if let Err(e) = process::manager::send_to_process(state, master_task_id, &relay_prompt) {
                     on_event.send(OutputEvent::Stderr(format!(
                         "[orchestrator] Failed to relay question to master: {}", e
@@ -1766,10 +1763,21 @@ pub async fn clear_orchestration_context(
         .await
         .map_err(|e| format!("Failed to write context.md: {}", e))?;
 
-    // Kill ALL agent processes
+    // Kill only processes belonging to this orchestration plan (not ALL processes)
     let process_ids: Vec<String> = {
         let inner = state_ref.lock();
-        inner.processes.keys().cloned().collect()
+        let mut ids = Vec::new();
+        if let Some(plan) = inner.orchestration_plans.get(&plan_id) {
+            // Include the master process
+            if let Some(ref mid) = plan.master_process_id {
+                ids.push(mid.clone());
+            }
+            // Include all sub-task worker processes
+            for sub_task in &plan.sub_tasks {
+                ids.push(sub_task.id.clone());
+            }
+        }
+        ids
     };
 
     for pid in &process_ids {
@@ -2195,5 +2203,52 @@ Let me know if you need any changes!"#;
         let result = try_parse_decomposition(json).unwrap();
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].agent, "claude");
+    }
+
+    // === normalize_agent_name tests ===
+
+    #[test]
+    fn test_normalize_agent_name_standard_names() {
+        assert_eq!(normalize_agent_name("claude"), "claude");
+        assert_eq!(normalize_agent_name("gemini"), "gemini");
+        assert_eq!(normalize_agent_name("codex"), "codex");
+    }
+
+    #[test]
+    fn test_normalize_agent_name_variations() {
+        assert_eq!(normalize_agent_name("claude code"), "claude");
+        assert_eq!(normalize_agent_name("Claude Code"), "claude");
+        assert_eq!(normalize_agent_name("claude-code"), "claude");
+        assert_eq!(normalize_agent_name("claude_code"), "claude");
+        assert_eq!(normalize_agent_name("gemini cli"), "gemini");
+        assert_eq!(normalize_agent_name("gemini-cli"), "gemini");
+        assert_eq!(normalize_agent_name("Gemini"), "gemini");
+        assert_eq!(normalize_agent_name("codex cli"), "codex");
+        assert_eq!(normalize_agent_name("codex-cli"), "codex");
+        assert_eq!(normalize_agent_name("openai"), "codex");
+    }
+
+    #[test]
+    fn test_normalize_agent_name_placeholders() {
+        assert_eq!(normalize_agent_name("<agent_name>"), "claude");
+        assert_eq!(normalize_agent_name("<Agent>"), "claude");
+    }
+
+    #[test]
+    fn test_normalize_agent_name_unknown() {
+        // Unknown names fall back to claude with a warn log
+        assert_eq!(normalize_agent_name("gpt-4"), "claude");
+        assert_eq!(normalize_agent_name("cursor"), "claude");
+    }
+
+    #[test]
+    fn test_normalize_agent_name_empty() {
+        assert_eq!(normalize_agent_name(""), "claude");
+    }
+
+    #[test]
+    fn test_normalize_agent_name_whitespace() {
+        assert_eq!(normalize_agent_name("  claude  "), "claude");
+        assert_eq!(normalize_agent_name("\tgemini\n"), "gemini");
     }
 }

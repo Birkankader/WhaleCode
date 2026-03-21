@@ -2,6 +2,14 @@ import { create } from 'zustand';
 
 export type ToolName = 'claude' | 'gemini' | 'codex';
 
+export interface WorktreeReviewEntry {
+  dagId: string;
+  branchName: string;
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
 // Helper: immutably update a single task entry in the Map
 function updateTask(
   tasks: Map<string, TaskEntry>,
@@ -106,6 +114,9 @@ interface TaskState {
   clearOrchestrationLogs: () => void;
   orchestrationStartedAt: number | null;
   lastActivityAt: number | null;
+  // Worktree review entries (from @@orch::diffs_ready)
+  worktreeEntries: Map<string, WorktreeReviewEntry>;
+  setWorktreeEntries: (entries: Map<string, WorktreeReviewEntry>) => void;
   // Session management
   clearSession: () => void;
 }
@@ -210,6 +221,9 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   orchestrationStartedAt: null,
   lastActivityAt: null,
 
+  worktreeEntries: new Map(),
+  setWorktreeEntries: (entries) => set({ worktreeEntries: entries }),
+
   clearSession: () => {
     set({
       tasks: new Map(),
@@ -222,6 +236,7 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
       orchestrationPhase: 'idle',
       orchestrationStartedAt: null,
       lastActivityAt: null,
+      worktreeEntries: new Map(),
     });
   },
 }));

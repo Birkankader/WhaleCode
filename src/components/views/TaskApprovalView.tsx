@@ -212,6 +212,20 @@ export function TaskApprovalView() {
     }
   }, [activePlan, approving, displayTasks]);
 
+  // Dismiss on Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        // Cancel auto-approve countdown and close
+        setCountdown(null);
+        setVisible(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen]);
+
   if (!isOpen) {
     return null;
   }
@@ -235,6 +249,9 @@ export function TaskApprovalView() {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Review Sub-Tasks"
       style={{
         position: 'fixed',
         inset: 0,

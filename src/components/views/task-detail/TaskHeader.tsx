@@ -201,7 +201,7 @@ export function TaskIdentity({ display }: { display: TaskDisplayData }) {
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>
-              {AGENTS[display.agent].label}
+              {agentIcon.label}
             </span>
             {display.role && (
               <span

@@ -1,5 +1,11 @@
 import type { ToolName } from '@/stores/taskStore';
 
+export function asToolName(name: string): ToolName {
+  if (name === 'claude' || name === 'gemini' || name === 'codex') return name;
+  console.warn(`Unknown tool name "${name}", falling back to claude`);
+  return 'claude';
+}
+
 export const AGENTS: Record<ToolName, {
   label: string;
   letter: string;

@@ -1,6 +1,8 @@
 /// Usage data fetcher — queries real usage APIs for Claude, Gemini, and Codex.
 /// Based on openusage (github.com/robinebers/openusage) plugin logic.
 
+// TODO: Extract shared credential resolution to detection/credentials.rs
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -25,20 +27,20 @@ pub struct AgentUsage {
 
 /// Fetch usage for all agents that have valid credentials.
 pub async fn fetch_all_usage() -> Vec<AgentUsage> {
-    let mut results = Vec::new();
-
-    results.push(fetch_claude_usage().await);
-    results.push(fetch_codex_usage().await);
-    results.push(fetch_gemini_usage().await);
-
-    results
+    let client = reqwest::Client::new();
+    let (claude, codex, gemini) = tokio::join!(
+        fetch_claude_usage(&client),
+        fetch_codex_usage(&client),
+        fetch_gemini_usage(&client),
+    );
+    vec![claude, codex, gemini]
 }
 
 // ---------------------------------------------------------------------------
 // Claude Usage — api.anthropic.com/api/oauth/usage
 // ---------------------------------------------------------------------------
 
-async fn fetch_claude_usage() -> AgentUsage {
+async fn fetch_claude_usage(client: &reqwest::Client) -> AgentUsage {
     let token = match get_claude_token() {
         Some(t) => t,
         None => return AgentUsage {
@@ -47,12 +49,11 @@ async fn fetch_claude_usage() -> AgentUsage {
         },
     };
 
-    let client = reqwest::Client::new();
     let resp = match client.get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {}", token.access_token))
         .header("Accept", "application/json")
         .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", "claude-code/2.1.69")
+        .header("User-Agent", format!("WhaleCode/{}", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
@@ -192,7 +193,7 @@ fn get_claude_token() -> Option<ClaudeToken> {
 // Codex Usage — chatgpt.com/backend-api/wham/usage
 // ---------------------------------------------------------------------------
 
-async fn fetch_codex_usage() -> AgentUsage {
+async fn fetch_codex_usage(client: &reqwest::Client) -> AgentUsage {
     let token = match get_codex_token() {
         Some(t) => t,
         None => return AgentUsage {
@@ -201,7 +202,6 @@ async fn fetch_codex_usage() -> AgentUsage {
         },
     };
 
-    let client = reqwest::Client::new();
     let mut req = client.get("https://chatgpt.com/backend-api/wham/usage")
         .header("Authorization", format!("Bearer {}", token.access_token))
         .header("Accept", "application/json")
@@ -263,15 +263,15 @@ async fn fetch_codex_usage() -> AgentUsage {
         });
     }
 
-    // Credits
+    // Credits — report remaining as-is; we don't know the actual total/limit
     let credits = credits_balance.or_else(|| {
         body.pointer("/credits/balance").and_then(|v| v.as_f64())
     });
     if let Some(remaining) = credits {
         lines.push(UsageLine {
-            line_type: "progress".into(), label: "Credits".into(),
-            value: None, used: Some((1000.0 - remaining).max(0.0).min(1000.0)),
-            limit: Some(1000.0),
+            line_type: "badge".into(), label: "Credits remaining".into(),
+            value: Some(format!("{:.0}", remaining)), used: None,
+            limit: None,
             format_kind: Some("count".into()), resets_at: None,
         });
     }
@@ -313,7 +313,7 @@ fn get_codex_token() -> Option<CodexToken> {
 // Gemini Usage — cloudcode-pa.googleapis.com
 // ---------------------------------------------------------------------------
 
-async fn fetch_gemini_usage() -> AgentUsage {
+async fn fetch_gemini_usage(client: &reqwest::Client) -> AgentUsage {
     let token = match get_gemini_token() {
         Some(t) => t,
         None => return AgentUsage {
@@ -323,7 +323,6 @@ async fn fetch_gemini_usage() -> AgentUsage {
     };
 
     // Step 1: loadCodeAssist to discover project + tier
-    let client = reqwest::Client::new();
     let load_resp = client.post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/json")
@@ -410,11 +409,35 @@ async fn fetch_gemini_usage() -> AgentUsage {
     AgentUsage { agent: "gemini".into(), plan, lines, error: None }
 }
 
+/// Read the Gemini OAuth access token from ~/.gemini/oauth_creds.json.
+///
+/// LIMITATION: This reads the stored access_token but does not implement
+/// OAuth refresh. If the token has an `expiry` field in the past, we return
+/// None and log a warning. A full refresh flow would require the client_id,
+/// client_secret, and refresh_token dance with Google's OAuth2 endpoint.
 fn get_gemini_token() -> Option<String> {
     if let Ok(home) = std::env::var("HOME") {
         let path = std::path::Path::new(&home).join(".gemini").join("oauth_creds.json");
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                // Check for token expiry before returning
+                // The creds file may contain "expiry" (ISO 8601 string) or
+                // "expires_at" (unix timestamp) depending on the SDK version.
+                let is_expired = json.get("expiry")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|exp| exp < chrono::Utc::now())
+                    .or_else(|| {
+                        json.get("expires_at")
+                            .and_then(|v| v.as_i64())
+                            .map(|ts| ts < chrono::Utc::now().timestamp())
+                    });
+
+                if is_expired == Some(true) {
+                    eprintln!("[whalecode] Gemini OAuth token is expired; refresh not implemented");
+                    return None;
+                }
+
                 return json.get("access_token").and_then(|t| t.as_str())
                     .filter(|t| !t.is_empty()).map(String::from);
             }
@@ -472,5 +495,117 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capitalize_normal() {
+        assert_eq!(capitalize("hello"), "Hello");
+    }
+
+    #[test]
+    fn test_capitalize_already_upper() {
+        assert_eq!(capitalize("Hello"), "Hello");
+    }
+
+    #[test]
+    fn test_capitalize_empty() {
+        assert_eq!(capitalize(""), "");
+    }
+
+    #[test]
+    fn test_capitalize_single_char() {
+        assert_eq!(capitalize("a"), "A");
+    }
+
+    #[test]
+    fn test_deep_find_string_top_level() {
+        let json: serde_json::Value = serde_json::json!({
+            "name": "test",
+            "value": 42
+        });
+        assert_eq!(deep_find_string(&json, "name"), Some("test".to_string()));
+        assert_eq!(deep_find_string(&json, "missing"), None);
+    }
+
+    #[test]
+    fn test_deep_find_string_nested() {
+        let json: serde_json::Value = serde_json::json!({
+            "outer": {
+                "middle": {
+                    "deep_key": "found_it"
+                }
+            }
+        });
+        assert_eq!(deep_find_string(&json, "deep_key"), Some("found_it".to_string()));
+    }
+
+    #[test]
+    fn test_deep_find_string_in_array() {
+        let json: serde_json::Value = serde_json::json!({
+            "items": [
+                { "id": "first" },
+                { "id": "second", "target": "winner" }
+            ]
+        });
+        assert_eq!(deep_find_string(&json, "target"), Some("winner".to_string()));
+    }
+
+    #[test]
+    fn test_deep_find_string_non_string_value() {
+        let json: serde_json::Value = serde_json::json!({
+            "count": 42
+        });
+        // "count" exists but is not a string, should return None
+        assert_eq!(deep_find_string(&json, "count"), None);
+    }
+
+    #[test]
+    fn test_collect_quota_buckets_empty() {
+        let json: serde_json::Value = serde_json::json!({});
+        assert!(collect_quota_buckets(&json).is_empty());
+    }
+
+    #[test]
+    fn test_collect_quota_buckets_with_fraction() {
+        let json: serde_json::Value = serde_json::json!({
+            "quotas": [
+                {
+                    "remainingFraction": 0.75,
+                    "modelId": "gemini-pro",
+                    "resetTime": "2025-01-01T00:00:00Z"
+                },
+                {
+                    "remainingFraction": 0.5,
+                    "modelId": "gemini-flash",
+                    "resetTime": "2025-01-01T00:00:00Z"
+                }
+            ]
+        });
+        let buckets = collect_quota_buckets(&json);
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].1, "gemini-pro");
+        assert!((buckets[0].0 - 0.75).abs() < f64::EPSILON);
+        assert_eq!(buckets[1].1, "gemini-flash");
+        assert!((buckets[1].0 - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_collect_quota_buckets_nested() {
+        let json: serde_json::Value = serde_json::json!({
+            "data": {
+                "inner": {
+                    "remainingFraction": 0.3,
+                    "model_id": "deep-model"
+                }
+            }
+        });
+        let buckets = collect_quota_buckets(&json);
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].1, "deep-model");
     }
 }

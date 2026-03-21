@@ -6,6 +6,7 @@ import { useTaskStore, type ToolName, type OrchestratorConfig } from '@/stores/t
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 import { emitLocalProcessMessage } from '@/hooks/useProcess';
 import { humanizeError } from '@/lib/humanizeError';
+import { asToolName } from '@/lib/agents';
 
 export interface LaunchConfig {
   sessionName: string;
@@ -25,11 +26,11 @@ export interface LaunchDispatchPlan {
 export function buildLaunchDispatchPlan(config: Pick<LaunchConfig, 'master' | 'workers'>): LaunchDispatchPlan | null {
   if (!config.master) return null;
 
-  const masterToolName = config.master.cli as ToolName;
+  const masterToolName = asToolName(config.master.cli);
   const workerCounts = new Map<ToolName, number>();
 
   for (const worker of config.workers) {
-    const toolName = worker.agent.cli as ToolName;
+    const toolName = asToolName(worker.agent.cli);
     workerCounts.set(toolName, (workerCounts.get(toolName) ?? 0) + worker.count);
   }
 
@@ -119,9 +120,13 @@ export function useOrchestrationLaunch() {
         const taskState = useTaskStore.getState();
         const task = taskState.tasks.get(taskId);
         if (task) {
-          const newTasks = new Map(taskState.tasks);
-          newTasks.set(taskId, { ...task, role: 'master' });
-          useTaskStore.setState({ tasks: newTasks });
+          useTaskStore.setState((state) => {
+            const current = state.tasks.get(taskId);
+            if (!current) return state;
+            const newTasks = new Map(state.tasks);
+            newTasks.set(taskId, { ...current, role: 'master' });
+            return { tasks: newTasks };
+          });
         }
         setSelectedTaskId(taskId);
         return;

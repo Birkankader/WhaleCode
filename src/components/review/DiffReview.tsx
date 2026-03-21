@@ -8,7 +8,7 @@ interface DiffReviewProps {
   projectDir: string;
   branchName: string;
   taskId: string;
-  onClose: () => void;
+  onClose: (action: 'merged' | 'discarded') => void;
 }
 
 /** Status icon and color for a file diff entry. */
@@ -93,7 +93,7 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
       );
       if (!discardAll) return;
       await cleanupWorktrees();
-      onClose();
+      onClose('discarded');
       return;
     }
 
@@ -106,7 +106,7 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
     setMerging(true);
     try {
       await selectiveMerge(branchName, Array.from(acceptedFiles));
-      onClose();
+      onClose('merged');
     } finally {
       setMerging(false);
     }
@@ -122,7 +122,7 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
     setMerging(true);
     try {
       await cleanupWorktrees();
-      onClose();
+      onClose('discarded');
     } finally {
       setMerging(false);
     }

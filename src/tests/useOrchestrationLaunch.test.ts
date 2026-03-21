@@ -63,4 +63,26 @@ describe('buildLaunchDispatchPlan', () => {
       { toolName: 'gemini', subAgentCount: 1, isMaster: true },
     ]);
   });
+
+  it('returns null when config.master is null', () => {
+    const plan = buildLaunchDispatchPlan(makeConfig({ master: null }));
+    expect(plan).toBeNull();
+  });
+
+  it('treats worker with count: 0 as single mode (no effective workers)', () => {
+    const plan = buildLaunchDispatchPlan(
+      makeConfig({
+        workers: [
+          {
+            agent: { cli: 'claude', name: 'Claude Code' },
+            count: 0,
+          },
+        ],
+      }),
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.mode).toBe('single');
+    expect(plan?.totalWorkerCount).toBe(0);
+  });
 });
