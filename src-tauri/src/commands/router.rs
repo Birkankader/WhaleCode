@@ -192,7 +192,7 @@ pub async fn dispatch_task(
         if let Some(entry) = inner.processes.get_mut(&resolved_task_id) {
             entry.tool_name = tool_name;
             let truncated = if prompt.len() > 120 {
-                format!("{}...", crate::commands::orchestrator::truncate_str(&prompt, 120))
+                format!("{}...", crate::utils::truncate_str(&prompt, 120))
             } else {
                 prompt
             };

@@ -337,10 +337,10 @@ async fn fetch_gemini_usage(client: &reqwest::Client) -> AgentUsage {
     let (project_id, plan) = match load_resp {
         Ok(r) if r.status().is_success() => {
             let body: serde_json::Value = r.json().await.unwrap_or_default();
-            let project = deep_find_string(&body, "cloudaicompanionProject");
-            let tier = deep_find_string(&body, "tier")
-                .or_else(|| deep_find_string(&body, "userTier"))
-                .or_else(|| deep_find_string(&body, "subscriptionTier"));
+            let project = deep_find_string(&body, "cloudaicompanionProject", 0);
+            let tier = deep_find_string(&body, "tier", 0)
+                .or_else(|| deep_find_string(&body, "userTier", 0))
+                .or_else(|| deep_find_string(&body, "subscriptionTier", 0));
             let plan = tier.map(|t| match t.as_str() {
                 "standard-tier" => "Paid".to_string(),
                 "legacy-tier" => "Legacy".to_string(),
@@ -373,7 +373,7 @@ async fn fetch_gemini_usage(client: &reqwest::Client) -> AgentUsage {
     if let Ok(r) = quota_resp {
         if r.status().is_success() {
             if let Ok(body) = r.json::<serde_json::Value>().await {
-                let buckets = collect_quota_buckets(&body);
+                let buckets = collect_quota_buckets(&body, 0);
                 // Group by model family
                 let mut pro_worst: Option<(f64, Option<String>)> = None;
                 let mut flash_worst: Option<(f64, Option<String>)> = None;
@@ -447,7 +447,8 @@ fn get_gemini_token() -> Option<String> {
 }
 
 /// Recursively walk JSON to find objects with remainingFraction.
-fn collect_quota_buckets(val: &serde_json::Value) -> Vec<(f64, String, Option<String>)> {
+fn collect_quota_buckets(val: &serde_json::Value, depth: u32) -> Vec<(f64, String, Option<String>)> {
+    if depth > 32 { return Vec::new(); }
     let mut buckets = Vec::new();
     match val {
         serde_json::Value::Object(map) => {
@@ -458,10 +459,10 @@ fn collect_quota_buckets(val: &serde_json::Value) -> Vec<(f64, String, Option<St
                     .and_then(|r| r.as_str().map(String::from).or(r.as_f64().map(|n| n.to_string())));
                 buckets.push((remaining, model, reset));
             }
-            for (_, v) in map { buckets.extend(collect_quota_buckets(v)); }
+            for (_, v) in map { buckets.extend(collect_quota_buckets(v, depth + 1)); }
         }
         serde_json::Value::Array(arr) => {
-            for v in arr { buckets.extend(collect_quota_buckets(v)); }
+            for v in arr { buckets.extend(collect_quota_buckets(v, depth + 1)); }
         }
         _ => {}
     }
@@ -469,20 +470,21 @@ fn collect_quota_buckets(val: &serde_json::Value) -> Vec<(f64, String, Option<St
 }
 
 /// Deep search for a string value by key name.
-fn deep_find_string(val: &serde_json::Value, key: &str) -> Option<String> {
+fn deep_find_string(val: &serde_json::Value, key: &str, depth: u32) -> Option<String> {
+    if depth > 32 { return None; }
     match val {
         serde_json::Value::Object(map) => {
             if let Some(v) = map.get(key).and_then(|v| v.as_str()) {
                 return Some(v.to_string());
             }
             for (_, v) in map {
-                if let Some(found) = deep_find_string(v, key) { return Some(found); }
+                if let Some(found) = deep_find_string(v, key, depth + 1) { return Some(found); }
             }
             None
         }
         serde_json::Value::Array(arr) => {
             for v in arr {
-                if let Some(found) = deep_find_string(v, key) { return Some(found); }
+                if let Some(found) = deep_find_string(v, key, depth + 1) { return Some(found); }
             }
             None
         }
@@ -528,8 +530,8 @@ mod tests {
             "name": "test",
             "value": 42
         });
-        assert_eq!(deep_find_string(&json, "name"), Some("test".to_string()));
-        assert_eq!(deep_find_string(&json, "missing"), None);
+        assert_eq!(deep_find_string(&json, "name", 0), Some("test".to_string()));
+        assert_eq!(deep_find_string(&json, "missing", 0), None);
     }
 
     #[test]
@@ -541,7 +543,7 @@ mod tests {
                 }
             }
         });
-        assert_eq!(deep_find_string(&json, "deep_key"), Some("found_it".to_string()));
+        assert_eq!(deep_find_string(&json, "deep_key", 0), Some("found_it".to_string()));
     }
 
     #[test]
@@ -552,7 +554,7 @@ mod tests {
                 { "id": "second", "target": "winner" }
             ]
         });
-        assert_eq!(deep_find_string(&json, "target"), Some("winner".to_string()));
+        assert_eq!(deep_find_string(&json, "target", 0), Some("winner".to_string()));
     }
 
     #[test]
@@ -561,13 +563,13 @@ mod tests {
             "count": 42
         });
         // "count" exists but is not a string, should return None
-        assert_eq!(deep_find_string(&json, "count"), None);
+        assert_eq!(deep_find_string(&json, "count", 0), None);
     }
 
     #[test]
     fn test_collect_quota_buckets_empty() {
         let json: serde_json::Value = serde_json::json!({});
-        assert!(collect_quota_buckets(&json).is_empty());
+        assert!(collect_quota_buckets(&json, 0).is_empty());
     }
 
     #[test]
@@ -586,7 +588,7 @@ mod tests {
                 }
             ]
         });
-        let buckets = collect_quota_buckets(&json);
+        let buckets = collect_quota_buckets(&json, 0);
         assert_eq!(buckets.len(), 2);
         assert_eq!(buckets[0].1, "gemini-pro");
         assert!((buckets[0].0 - 0.75).abs() < f64::EPSILON);
@@ -604,7 +606,7 @@ mod tests {
                 }
             }
         });
-        let buckets = collect_quota_buckets(&json);
+        let buckets = collect_quota_buckets(&json, 0);
         assert_eq!(buckets.len(), 1);
         assert_eq!(buckets[0].1, "deep-model");
     }

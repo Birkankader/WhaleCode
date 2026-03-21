@@ -14,6 +14,7 @@ mod state;
 mod git;
 mod fs_explorer;
 mod error;
+mod utils;
 
 use commands::{
     cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,

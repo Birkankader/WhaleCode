@@ -604,16 +604,8 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// UTF-8-safe string truncation without ellipsis. Available to sibling modules.
-pub(crate) fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    match s.char_indices().nth(max) {
-        Some((idx, _)) => s[..idx].to_string(),
-        None => s.to_string(),
-    }
-}
+// Re-export from utils for backward compatibility
+pub(crate) use crate::utils::truncate_str;
 
 fn update_plan_phase(
     state: &AppState,
@@ -637,6 +629,34 @@ fn get_process_output_summary(task_id: &str, state: &AppState) -> String {
     } else {
         String::new()
     }
+}
+
+/// Detect authentication or API key errors from agent output lines.
+fn detect_auth_error(output_lines: &[String], agent_name: &str) -> Option<String> {
+    for line in output_lines {
+        if line.contains("authentication_failed")
+            || line.contains("Not logged in")
+            || line.contains("Please run /login")
+        {
+            return Some(format!(
+                "{} is not logged in. Please run '{} /login' in your terminal first.",
+                agent_name, agent_name
+            ));
+        }
+        if line.contains("Invalid API key")
+            || line.contains("invalid_api_key")
+            || line.contains("HTTP 401")
+            || line.contains("status: 401")
+            || line.contains("\"401\"")
+            || line.contains("status_code: 401")
+        {
+            return Some(format!(
+                "{} API key is invalid. Check Settings to update it.",
+                agent_name
+            ));
+        }
+    }
+    None
 }
 
 // ===========================================================================
@@ -784,19 +804,9 @@ pub async fn dispatch_orchestrated_task(
     };
 
     // Check for authentication errors before attempting to parse
-    for line in &output_lines {
-        if line.contains("authentication_failed") || line.contains("Not logged in") || line.contains("Please run /login") {
-            let _ = kill_process(state_ref, &master_task_id).await;
-            // Note: tool slot already released after spawn (line ~746)
-            return Err(format!("{} is not logged in. Please run '{} /login' in your terminal first.", config.master_agent, config.master_agent));
-        }
-        if line.contains("Invalid API key") || line.contains("invalid_api_key")
-            || line.contains("HTTP 401") || line.contains("status: 401")
-            || line.contains("\"401\"") || line.contains("status_code: 401") {
-            let _ = kill_process(state_ref, &master_task_id).await;
-            // Note: tool slot already released after spawn (line ~746)
-            return Err(format!("{} API key is invalid. Check Settings to update it.", config.master_agent));
-        }
+    if let Some(auth_error) = detect_auth_error(&output_lines, &config.master_agent) {
+        let _ = kill_process(state_ref, &master_task_id).await;
+        return Err(auth_error);
     }
 
     // Extract and parse decomposition result (with retry on failure)
@@ -921,7 +931,8 @@ pub async fn dispatch_orchestrated_task(
         emit_orch(&on_event, "task_assigned", serde_json::json!({
             "agent": sub_def.agent,
             "description": sub_def.description,
-            "prompt": sub_def.prompt
+            "prompt": sub_def.prompt,
+            "depends_on": sub_def.depends_on
         }));
     }
 
@@ -970,6 +981,7 @@ pub async fn dispatch_orchestrated_task(
         // Wait for signal from approve_orchestration command
         if approval_rx.changed().await.is_err() {
             // Sender dropped — plan was removed
+            state_ref.lock().approval_signals.remove(&plan.task_id);
             let _ = kill_process(state_ref, &master_task_id).await;
             return Err("Orchestration cancelled during approval".to_string());
         }
@@ -982,6 +994,7 @@ pub async fn dispatch_orchestrated_task(
         match phase {
             Some(OrchestrationPhase::Executing) => break,
             Some(OrchestrationPhase::Failed) | None => {
+                state_ref.lock().approval_signals.remove(&plan.task_id);
                 let _ = kill_process(state_ref, &master_task_id).await;
                 return Err("Orchestration cancelled during approval".to_string());
             }
@@ -1601,9 +1614,17 @@ async fn wait_for_worker_with_questions(
                                 });
                             }
 
-                            // Wait for the user to answer (phase changes back to Executing)
+                            // Wait for the user to answer (watch-channel based, no polling)
+                            let mut q_rx = {
+                                let mut inner = state.lock();
+                                let (tx, rx) = tokio::sync::watch::channel(false);
+                                inner.question_signals.insert(plan_id.to_string(), tx);
+                                rx
+                            };
                             loop {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                if q_rx.changed().await.is_err() {
+                                    return -1; // Signal dropped
+                                }
                                 let phase = {
                                     let inner = state.lock();
                                     inner.orchestration_plans.get(plan_id)
@@ -1613,9 +1634,11 @@ async fn wait_for_worker_with_questions(
                                     Some(OrchestrationPhase::Executing) => break,
                                     Some(OrchestrationPhase::Failed) => return -1,
                                     None => return -1,
-                                    _ => {} // Keep waiting
+                                    _ => {}
                                 }
                             }
+                            // Clean up question signal
+                            state.lock().question_signals.remove(plan_id);
                         } else {
                             // Master answered directly — send answer to worker's stdin
                             emit_orch(on_event, "question_answered", serde_json::json!({
@@ -1837,6 +1860,14 @@ pub async fn answer_user_question(
 
     // Update phase back to Executing
     update_plan_phase(state_ref, &plan_id, OrchestrationPhase::Executing)?;
+
+    // Signal question watcher to wake up
+    {
+        let inner = state_ref.lock();
+        if let Some(tx) = inner.question_signals.get(&plan_id) {
+            let _ = tx.send(true);
+        }
+    }
 
     Ok(())
 }

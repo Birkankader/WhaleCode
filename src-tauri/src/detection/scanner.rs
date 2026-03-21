@@ -10,19 +10,18 @@ const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 /// blocking the async runtime.
 fn is_installed(name: &str) -> bool {
     let name = name.to_string();
-    let handle = std::thread::spawn(move || {
-        std::process::Command::new("which")
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("which")
             .arg(&name)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .map(|s| s.success())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        let _ = tx.send(result);
     });
-    match handle.join() {
-        Ok(result) => result,
-        Err(_) => false,
-    }
+    rx.recv_timeout(SUBPROCESS_TIMEOUT).unwrap_or(false)
 }
 
 /// Get the version string from a CLI tool's `--version` output.
