@@ -120,11 +120,13 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
           // Find the highest utilization line (Session or Weekly)
           const progressLines = usage.lines.filter(l => l.line_type === 'progress' && l.used != null);
           if (progressLines.length > 0) {
-            // Use the highest usage as the displayed percentage
+            // Use the highest usage — show REMAINING capacity (100 - used)
             const highest = progressLines.reduce((max, l) => (l.used ?? 0) > (max.used ?? 0) ? l : max);
+            const used = Math.round(highest.used ?? 0);
+            const remaining = Math.max(0, 100 - used);
             usageMap.set(usage.agent, {
-              percent: Math.round(highest.used ?? 0),
-              label: `${highest.label}: ${Math.round(highest.used ?? 0)}%`,
+              percent: remaining,
+              label: `${remaining}% left`,
             });
           }
         }
@@ -621,13 +623,13 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
                             width: `${agent.usagePercent}%`,
                             height: '100%',
                             borderRadius: 2,
-                            background: agent.usagePercent >= 90 ? C.red : agent.usagePercent >= 70 ? C.amber : C.green,
+                            background: agent.usagePercent <= 10 ? C.red : agent.usagePercent <= 30 ? C.amber : C.green,
                           }}
                         />
                       </div>
                       <span style={{
                         fontSize: 10,
-                        color: agent.usagePercent >= 90 ? C.red : agent.usagePercent >= 70 ? C.amber : C.textMuted,
+                        color: agent.usagePercent <= 10 ? C.red : agent.usagePercent <= 30 ? C.amber : C.textMuted,
                         fontFamily: 'var(--font-mono)',
                       }}>
                         {agent.usageLabel ?? `${agent.usagePercent}%`}
