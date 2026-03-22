@@ -15,6 +15,7 @@ export type OrchEvent =
   | { type: 'task_retrying'; dag_id: string; attempt: number; max_retries: number }
   | { type: 'task_fallback'; dag_id: string; from_agent: string; to_agent: string }
   | { type: 'rate_limited'; dag_id: string; wait_seconds: number }
+  | { type: 'rate_limit_action_needed'; agent: string; remaining_tasks: Array<{ dag_id: string; description: string; prompt: string }>; available_agents: string[]; plan_id: string; resets_at?: string }
   | { type: 'master_timeout'; timeout_minutes: number }
   | { type: 'worker_timeout'; timeout_minutes: number }
   | { type: 'review_timeout'; timeout_minutes: number }
@@ -197,6 +198,25 @@ export function handleOrchEvent(
 
     case 'rate_limited': {
       log('warn', `Rate limited on ${ev.dag_id} — waiting ${ev.wait_seconds}s`);
+      break;
+    }
+
+    case 'rate_limit_action_needed': {
+      const agent = asToolName(ev.agent);
+      log('error', `${ev.agent} rate limit reached! ${ev.remaining_tasks.length} tasks remaining.`);
+      store.setRateLimitAlert({
+        agent,
+        remainingTasks: ev.remaining_tasks.map(t => ({ dagId: t.dag_id, description: t.description, prompt: t.prompt })),
+        availableAgents: ev.available_agents.map(a => asToolName(a)),
+        planId: ev.plan_id,
+        resetsAt: ev.resets_at,
+      });
+      emitOrchestrationNotification(
+        'warning',
+        `${ev.agent} Rate Limit Reached`,
+        `${ev.remaining_tasks.length} tasks need reassignment`,
+        { label: 'Review' },
+      );
       break;
     }
 

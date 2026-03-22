@@ -77,6 +77,14 @@ export interface PendingQuestion {
   planId: string;
 }
 
+export interface RateLimitAlert {
+  agent: ToolName;
+  remainingTasks: Array<{ dagId: string; description: string; prompt: string }>;
+  availableAgents: ToolName[];
+  planId: string;
+  resetsAt?: string;
+}
+
 export type OrchestrationLogLevel = 'info' | 'success' | 'warn' | 'cmd' | 'error';
 
 export interface OrchestrationLogEntry {
@@ -104,6 +112,8 @@ interface TaskState {
   setActivePlan: (plan: { task_id: string; master_agent: string; master_process_id: string | null } | null) => void;
   pendingQuestion: PendingQuestion | null;
   setPendingQuestion: (q: PendingQuestion | null) => void;
+  rateLimitAlert: RateLimitAlert | null;
+  setRateLimitAlert: (alert: RateLimitAlert | null) => void;
   updateAgentContext: (toolName: ToolName, info: AgentContextInfo) => void;
   orchestrationPhase: OrchestrationPhase;
   setOrchestrationPhase: (phase: OrchestrationPhase) => void;
@@ -131,6 +141,8 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
 
   pendingQuestion: null,
   setPendingQuestion: (q) => set({ pendingQuestion: q }),
+  rateLimitAlert: null,
+  setRateLimitAlert: (alert) => set({ rateLimitAlert: alert }),
 
   addTask: (entry) => {
     set((state) => {
@@ -231,6 +243,7 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
       agentContexts: new Map(),
       activePlan: null,
       pendingQuestion: null,
+      rateLimitAlert: null,
       decomposedTasks: [],
       orchestrationLogs: [],
       orchestrationPhase: 'idle',

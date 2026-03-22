@@ -6,6 +6,7 @@ import { QuestionBanner } from './QuestionBanner';
 import { useUIStore } from '@/stores/uiStore';
 import { useTaskStore } from '@/stores/taskStore';
 import { SetupPanel } from './SetupPanel';
+import { RateLimitDialog } from '@/components/orchestration/RateLimitDialog';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { useOrchestrationLaunch } from '@/hooks/useOrchestrationLaunch';
 import { StagePipeline } from '@/components/orchestration/StagePipeline';
@@ -151,6 +152,7 @@ export function AppShell({ children }: AppShellProps) {
 
         {/* Setup overlay */}
         {showSetup && <SetupPanel onLaunch={handleLaunch} />}
+        <RateLimitDialog />
       </div>
 
 

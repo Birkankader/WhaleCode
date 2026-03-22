@@ -1363,7 +1363,51 @@ pub async fn dispatch_orchestrated_task(
                     }
                 }
 
-                // No fallback available
+                // No fallback available — check if this was a rate limit
+                {
+                    let state_guard = state_ref.lock();
+                    if let Some(entry) = state_guard.processes.get(&current_task_id) {
+                        let rl_adapter = get_adapter(&current_agent).ok();
+                        let is_rate_limited = rl_adapter.map(|a| {
+                            entry.output_lines.iter().any(|line| a.detect_rate_limit(line).is_some())
+                        }).unwrap_or(false);
+
+                        if is_rate_limited {
+                            // Collect remaining tasks in this wave that haven't been processed yet
+                            let current_dag_idx = wave_ids.iter().position(|id| id == dag_id).unwrap_or(0);
+                            let remaining: Vec<serde_json::Value> = wave_ids[current_dag_idx + 1..]
+                                .iter()
+                                .filter_map(|remaining_dag_id| {
+                                    dag_id_to_idx.get(remaining_dag_id.as_str()).map(|&idx| {
+                                        let (_, _, sub_prompt) = &task_channels[idx];
+                                        let desc = &decomposition.tasks[idx].description;
+                                        serde_json::json!({
+                                            "dag_id": remaining_dag_id,
+                                            "description": desc,
+                                            "prompt": sub_prompt
+                                        })
+                                    })
+                                })
+                                .collect();
+
+                            if !remaining.is_empty() {
+                                let all_agents: Vec<&str> = decomposition.tasks.iter()
+                                    .map(|t| t.agent.as_str())
+                                    .collect::<std::collections::HashSet<&str>>()
+                                    .into_iter()
+                                    .collect();
+
+                                drop(state_guard); // release lock before emit
+                                emit_orch(&on_event, "rate_limit_action_needed", serde_json::json!({
+                                    "agent": current_agent,
+                                    "remaining_tasks": remaining,
+                                    "available_agents": all_agents,
+                                    "plan_id": plan.task_id
+                                }));
+                            }
+                        }
+                    }
+                }
                 break;
             }
 
