@@ -33,6 +33,10 @@ function statusInfo(status: TaskEntry['status']) {
       return { dot: C.red, label: 'Failed', bg: C.redBg };
     case 'blocked':
       return { dot: C.red, label: 'Blocked', bg: C.redBg };
+    case 'waiting':
+    case 'pending':
+    case 'routing':
+      return { dot: C.textMuted, label: 'In Queue', bg: C.surface };
     default:
       return { dot: C.textMuted, label: 'Queued', bg: C.surface };
   }

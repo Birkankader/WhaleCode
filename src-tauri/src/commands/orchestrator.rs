@@ -1208,10 +1208,13 @@ pub async fn dispatch_orchestrated_task(
                             // Give up after ~5 minutes of waiting
                             break result;
                         }
+                        if dispatch_attempts == 1 {
+                            // First time — notify frontend to show "queued" status
+                            emit_orch(&on_event, "info", serde_json::json!({
+                                "message": format!("{}: waiting for {} to finish current task", dag_id, agent)
+                            }));
+                        }
                         eprintln!("[orch] agent {} busy, waiting 5s before retry (attempt {})", agent, dispatch_attempts);
-                        emit_orch(&on_event, "info", serde_json::json!({
-                            "message": format!("Waiting for {} to finish current task...", agent)
-                        }));
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         continue;
                     }
@@ -1222,7 +1225,10 @@ pub async fn dispatch_orchestrated_task(
             match dispatch_result {
                 Ok(task_id) => {
                     worker_task_ids.push((task_id.clone(), agent.clone()));
-                    wave_task_ids.push((task_id, agent.clone(), dag_id.clone()));
+                    wave_task_ids.push((task_id.clone(), agent.clone(), dag_id.clone()));
+                    emit_orch(&on_event, "worker_started", serde_json::json!({
+                        "dag_id": dag_id, "process_id": task_id
+                    }));
                 }
                 Err(e) => {
                     let error_detail = format!("Failed to dispatch task '{}' to {}: {}", dag_id, agent, e);

@@ -60,10 +60,11 @@ export function handleOrchEvent(
         log('info', `${ev.task_count} sub-tasks ready for approval`);
       } else if (phase === 'executing') {
         store.setOrchestrationPhase('executing');
-        // Move pending worker tasks to running
+        // Move pending worker tasks to 'waiting' (queued) — they'll transition
+        // to 'running' when their worker_started event arrives from the backend
         for (const [id, task] of store.tasks) {
           if (task.status === 'pending' && task.role === 'worker') {
-            store.updateTaskStatus(id, 'running');
+            store.updateTaskStatus(id, 'waiting');
           }
         }
         log('cmd', `Phase 2: Executing ${ev.task_count ?? ''} sub-tasks in ${ev.wave_count ?? ''} wave(s)`);
@@ -257,7 +258,10 @@ export function handleOrchEvent(
     }
 
     case 'worker_started': {
-      // Future use: track worker process IDs
+      const frontendId = dagToFrontendId.get(ev.dag_id);
+      if (frontendId) {
+        store.updateTaskStatus(frontendId, 'running');
+      }
       break;
     }
 
