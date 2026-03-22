@@ -22,7 +22,12 @@ export function AppShell({ children }: AppShellProps) {
   const setActiveView = useUIStore((s) => s.setActiveView);
   const showSetup = useUIStore((s) => s.showSetup);
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
-  const tasks = useTaskStore((s) => s.tasks);
+  const doneTasks = useTaskStore((s) => {
+    let count = 0;
+    for (const t of s.tasks.values()) if (t.status === 'completed') count++;
+    return count;
+  });
+  const totalTasks = useTaskStore((s) => s.tasks.size);
   const pendingQuestion = useTaskStore((s) => s.pendingQuestion);
   const activePlan = useTaskStore((s) => s.activePlan);
   const showQuickTask = useUIStore((s) => s.showQuickTask);
@@ -86,9 +91,7 @@ export function AppShell({ children }: AppShellProps) {
 
   useHotkeys(hotkeys);
 
-  // Derived state
-  const doneTasks = Array.from(tasks.values()).filter((t) => t.status === 'completed').length;
-  const totalTasks = tasks.size;
+  // Derived state already computed via selectors above
 
   return (
     <div

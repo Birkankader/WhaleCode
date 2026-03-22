@@ -15,9 +15,13 @@ const TOOL_LABEL: Record<ToolName, string> = {
 };
 
 function latestTaskForTool(tasks: TaskEntry[], toolName: ToolName): TaskEntry | undefined {
-  return tasks
-    .filter((task) => task.toolName === toolName)
-    .sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0))[0];
+  let latest: TaskEntry | undefined;
+  for (const t of tasks) {
+    if (t.toolName === toolName && (!latest || (t.startedAt ?? 0) > (latest.startedAt ?? 0))) {
+      latest = t;
+    }
+  }
+  return latest;
 }
 
 export function StatusPanel({ className }: { className?: string }) {
@@ -25,9 +29,12 @@ export function StatusPanel({ className }: { className?: string }) {
 
   const { tasks, total, completed, failed, active, progress } = useMemo(() => {
     const entries = Array.from(taskMap.values());
-    const completedCount = entries.filter((task) => task.status === 'completed').length;
-    const failedCount = entries.filter((task) => task.status === 'failed').length;
-    const activeCount = entries.filter((task) => ['running', 'pending', 'waiting', 'routing'].includes(task.status)).length;
+    let completedCount = 0, failedCount = 0, activeCount = 0;
+    for (const task of entries) {
+      if (task.status === 'completed') completedCount++;
+      else if (task.status === 'failed') failedCount++;
+      else if (task.status === 'running' || task.status === 'pending' || task.status === 'waiting' || task.status === 'routing') activeCount++;
+    }
     const totalCount = entries.length;
 
     return {

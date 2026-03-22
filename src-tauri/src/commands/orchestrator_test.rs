@@ -10,7 +10,7 @@ mod tests {
     use crate::context::store::ContextStore;
     use crate::router::orchestrator::{
         AgentConfig, DecompositionResult, Orchestrator, OrchestratorConfig,
-        OrchestrationPhase, WorkerResult,
+        OrchestrationPhase, SubTaskDef, WorkerResult,
     };
     use rusqlite::Connection;
 
@@ -502,5 +502,56 @@ mod tests {
             "orchestration_history table should exist after migration, got: {:?}",
             tables
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // SubTaskDef.id deserialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn subtaskdef_with_id_field_deserializes_correctly() {
+        let json = r#"{"id":"t1","agent":"claude","prompt":"do stuff","description":"things","depends_on":[]}"#;
+        let def: SubTaskDef = serde_json::from_str(json).unwrap();
+        assert_eq!(def.id, Some("t1".to_string()));
+        assert_eq!(def.agent, "claude");
+    }
+
+    #[test]
+    fn subtaskdef_without_id_field_defaults_to_none() {
+        let json = r#"{"agent":"claude","prompt":"do stuff","description":"things"}"#;
+        let def: SubTaskDef = serde_json::from_str(json).unwrap();
+        assert_eq!(def.id, None);
+        assert!(def.depends_on.is_empty());
+    }
+
+    #[test]
+    fn decomposition_result_preserves_llm_ids() {
+        let json = r#"{"tasks":[
+            {"id":"t1","agent":"claude","prompt":"schema design","description":"Design DB schema","depends_on":[]},
+            {"id":"t2","agent":"gemini","prompt":"build api","description":"REST API","depends_on":["t1"]},
+            {"id":"t3","agent":"codex","prompt":"build ui","description":"Frontend","depends_on":["t1"]},
+            {"id":"t4","agent":"claude","prompt":"integration","description":"Wire up","depends_on":["t2","t3"]}
+        ]}"#;
+        let result: DecompositionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.tasks.len(), 4);
+        assert_eq!(result.tasks[0].id, Some("t1".to_string()));
+        assert_eq!(result.tasks[1].id, Some("t2".to_string()));
+        assert_eq!(result.tasks[2].id, Some("t3".to_string()));
+        assert_eq!(result.tasks[3].id, Some("t4".to_string()));
+        // depends_on references are preserved as-is
+        assert_eq!(result.tasks[3].depends_on, vec!["t2", "t3"]);
+    }
+
+    #[test]
+    fn decomposition_result_mixed_ids_all_become_none_safe() {
+        // When only SOME tasks have ids, the DAG builder falls back to index-based.
+        // Here we just verify serde handles the mixed case correctly.
+        let json = r#"{"tasks":[
+            {"id":"t1","agent":"claude","prompt":"a","description":"A","depends_on":[]},
+            {"agent":"gemini","prompt":"b","description":"B","depends_on":[]}
+        ]}"#;
+        let result: DecompositionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.tasks[0].id, Some("t1".to_string()));
+        assert_eq!(result.tasks[1].id, None);
     }
 }

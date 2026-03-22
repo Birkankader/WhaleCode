@@ -53,6 +53,11 @@ const MIGRATIONS: &[M] = &[
         CREATE INDEX IF NOT EXISTS idx_orch_history_task ON orchestration_history(task_id);
         CREATE INDEX IF NOT EXISTS idx_orch_history_created ON orchestration_history(created_at);",
     ),
+    // Composite indexes for common query patterns
+    M::up(
+        "CREATE INDEX IF NOT EXISTS idx_events_project_created ON context_events(project_dir, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_task_outcomes_type_agent ON task_outcomes(task_type, agent);",
+    ),
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite_migration::Error> {

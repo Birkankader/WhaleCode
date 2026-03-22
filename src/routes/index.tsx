@@ -1,21 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Toaster } from 'sonner';
 import { AppShell } from '../components/layout/AppShell';
 import { WorkingView } from '../components/views/WorkingView';
-import { UsageView } from '../components/views/UsageView';
-import { CodeReviewView } from '../components/views/CodeReviewView';
-import { DoneView } from '../components/views/DoneView';
-import { TaskDetail } from '../components/views/TaskDetail';
-import { ApiKeySettings } from '../components/settings/ApiKeySettings';
-import { GitView } from '../components/views/GitView';
-import { CodeView } from '../components/views/CodeView';
-import { TaskApprovalView } from '../components/views/TaskApprovalView';
 import { ErrorBoundary } from '../components/shared/ErrorBoundary';
 import { initMessengerListener, cleanupMessengerListener } from '../stores/messengerStore';
 import { useUIStore } from '../stores/uiStore';
+
+// Lazy-loaded views — only parsed when the user navigates to them
+const UsageView = lazy(() => import('../components/views/UsageView').then(m => ({ default: m.UsageView })));
+const CodeReviewView = lazy(() => import('../components/views/CodeReviewView').then(m => ({ default: m.CodeReviewView })));
+const DoneView = lazy(() => import('../components/views/DoneView').then(m => ({ default: m.DoneView })));
+const TaskDetail = lazy(() => import('../components/views/TaskDetail').then(m => ({ default: m.TaskDetail })));
+const ApiKeySettings = lazy(() => import('../components/settings/ApiKeySettings').then(m => ({ default: m.ApiKeySettings })));
+const GitView = lazy(() => import('../components/views/GitView').then(m => ({ default: m.GitView })));
+const CodeView = lazy(() => import('../components/views/CodeView').then(m => ({ default: m.CodeView })));
+const TaskApprovalView = lazy(() => import('../components/views/TaskApprovalView').then(m => ({ default: m.TaskApprovalView })));
+const TerminalBottomPanel = lazy(() => import('../components/terminal/TerminalBottomPanel').then(m => ({ default: m.TerminalBottomPanel })));
 import { useTaskStore } from '../stores/taskStore';
 import { commands } from '../bindings';
-import { TerminalBottomPanel } from '../components/terminal/TerminalBottomPanel';
+
+const TOAST_STYLE = { background: '#13131f', border: '1px solid #252538', color: '#e2e8f0', fontSize: 12 } as const;
 
 export function App() {
   const activeView = useUIStore((s) => s.activeView);
@@ -80,10 +84,12 @@ export function App() {
     <>
       <Toaster
         position="bottom-right"
-        toastOptions={{ style: { background: '#13131f', border: '1px solid #252538', color: '#e2e8f0', fontSize: 12 } }}
+        toastOptions={{ style: TOAST_STYLE }}
         theme="dark"
       />
-      <TaskApprovalView />
+      <Suspense fallback={null}>
+        <TaskApprovalView />
+      </Suspense>
       <AppShell>
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="flex flex-1 overflow-hidden min-h-0">
@@ -95,48 +101,50 @@ export function App() {
               )}
               {activeView === 'usage' && (
                 <ErrorBoundary fallbackLabel="Usage view failed to load">
-                  <UsageView />
+                  <Suspense fallback={null}><UsageView /></Suspense>
                 </ErrorBoundary>
               )}
               {activeView === 'review' && (
                 <ErrorBoundary fallbackLabel="Review failed to load">
-                  <CodeReviewView onDone={() => setActiveView('done')} />
+                  <Suspense fallback={null}><CodeReviewView onDone={() => setActiveView('done')} /></Suspense>
                 </ErrorBoundary>
               )}
               {activeView === 'done' && (
                 <ErrorBoundary fallbackLabel="Done view failed to load">
-                  <DoneView onNew={() => { setShowSetup(true); setActiveView('kanban'); }} />
+                  <Suspense fallback={null}><DoneView onNew={() => { setShowSetup(true); setActiveView('kanban'); }} /></Suspense>
                 </ErrorBoundary>
               )}
               {activeView === 'settings' && (
                 <ErrorBoundary fallbackLabel="Settings failed to load">
-                  <ApiKeySettings />
+                  <Suspense fallback={null}><ApiKeySettings /></Suspense>
                 </ErrorBoundary>
               )}
               {activeView === 'git' && (
                 <ErrorBoundary fallbackLabel="Git view failed to load">
-                  <GitView />
+                  <Suspense fallback={null}><GitView /></Suspense>
                 </ErrorBoundary>
               )}
               {activeView === 'code' && (
                 <ErrorBoundary fallbackLabel="Code view failed to load">
-                  <CodeView />
+                  <Suspense fallback={null}><CodeView /></Suspense>
                 </ErrorBoundary>
               )}
             </div>
 
             {isWorkingView && selectedTaskId && (
               <ErrorBoundary fallbackLabel="Task detail failed to load">
-                <TaskDetail taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} />
+                <Suspense fallback={null}><TaskDetail taskId={selectedTaskId} onClose={() => setSelectedTaskId(null)} /></Suspense>
               </ErrorBoundary>
             )}
           </div>
 
-          <TerminalBottomPanel
-            open={terminalOpen}
-            onToggle={() => setTerminalOpen(!terminalOpen)}
-            devMode={developerMode}
-          />
+          <Suspense fallback={null}>
+            <TerminalBottomPanel
+              open={terminalOpen}
+              onToggle={() => setTerminalOpen(!terminalOpen)}
+              devMode={developerMode}
+            />
+          </Suspense>
         </div>
       </AppShell>
     </>

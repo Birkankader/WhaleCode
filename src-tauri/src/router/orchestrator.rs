@@ -66,6 +66,8 @@ pub struct DecompositionResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SubTaskDef {
+    #[serde(default)]
+    pub id: Option<String>,
     pub agent: String,
     pub prompt: String,
     pub description: String,

@@ -37,6 +37,7 @@ impl ContextStore {
         let mut conn = Connection::open(db_path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "busy_timeout", "5000")?;
         run_migrations(&mut conn)
             .map_err(|e| rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),

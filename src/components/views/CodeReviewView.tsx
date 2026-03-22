@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -119,10 +119,15 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
   const icon = AGENTS[masterAgent];
 
   // Derive stats from tasks
-  const taskArray = Array.from(tasks.values());
-  const tasksDone = taskArray.filter(t => t.status === 'completed').length;
-  const warnings = taskArray.filter(t => t.status === 'failed').length;
-  const totalTasks = taskArray.length;
+  const { taskArray, tasksDone, warnings, totalTasks } = useMemo(() => {
+    const arr = Array.from(tasks.values());
+    let done = 0, failed = 0;
+    for (const t of arr) {
+      if (t.status === 'completed') done++;
+      else if (t.status === 'failed') failed++;
+    }
+    return { taskArray: arr, tasksDone: done, warnings: failed, totalTasks: arr.length };
+  }, [tasks]);
 
   // Extract review text from orchestration logs
   const reviewLogs = orchestrationLogs.filter(

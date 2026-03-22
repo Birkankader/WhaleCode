@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T02",
+  "unitId": "M001/S03/T02",
+  "timestamp": 1774044958843,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "! grep -q 'subTaskQueue.shift' src/hooks/orchestration/handleOrchEvent.ts",
+      "exitCode": 0,
+      "durationMs": 4,
+      "verdict": "pass"
+    },
+    {
+      "command": "grep -q 'dagToFrontendId.get' src/hooks/orchestration/handleOrchEvent.ts",
+      "exitCode": 0,
+      "durationMs": 3,
+      "verdict": "pass"
+    }
+  ]
+}

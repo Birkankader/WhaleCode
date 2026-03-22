@@ -73,21 +73,22 @@ export function useTaskDispatch() {
           useTaskStore.getState().updateTaskStatus(tempId, 'waiting');
 
           // Wait for dependency to complete (with 5-minute timeout)
+          let unsub: (() => void) | undefined;
           const completed = await Promise.race([
             new Promise<boolean>((resolve) => {
-              const unsub = useProcessStore.subscribe((state) => {
+              unsub = useProcessStore.subscribe((state) => {
                 const dep = state.processes.get(dependsOn);
                 if (!dep || dep.status === 'completed') {
-                  unsub();
                   resolve(true);
                 } else if (dep.status === 'failed') {
-                  unsub();
                   resolve(false);
                 }
               });
             }),
             new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300_000)),
           ]);
+          // Always unsubscribe after race resolves — prevents leak on timeout
+          unsub?.();
 
           if (!completed) {
             useTaskStore.getState().updateTaskStatus(tempId, 'failed');

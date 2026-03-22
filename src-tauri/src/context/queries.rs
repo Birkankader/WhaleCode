@@ -66,26 +66,29 @@ pub fn get_recent_file_changes(
 }
 
 /// Get recent events with their associated file paths for a project.
+/// Uses a single JOIN query instead of N+1 queries.
 pub fn get_recent_events(
     conn: &Connection,
     project_dir: &str,
     limit: u32,
 ) -> Result<Vec<(ContextEvent, Vec<String>)>, rusqlite::Error> {
-    let mut event_stmt = conn.prepare(
-        "SELECT id, task_id, tool_name, event_type, prompt, summary, project_dir, metadata, duration_ms, cost_usd, created_at
-         FROM context_events
-         WHERE project_dir = ?1
-         ORDER BY created_at DESC
+    let mut stmt = conn.prepare(
+        "SELECT ce.id, ce.task_id, ce.tool_name, ce.event_type, ce.prompt, ce.summary,
+                ce.project_dir, ce.metadata, ce.duration_ms, ce.cost_usd, ce.created_at,
+                fc.file_path
+         FROM context_events ce
+         LEFT JOIN file_changes fc ON fc.event_id = ce.id
+         WHERE ce.project_dir = ?1
+         ORDER BY ce.created_at DESC, ce.id DESC
          LIMIT ?2",
     )?;
 
-    let mut file_stmt = conn.prepare(
-        "SELECT file_path FROM file_changes WHERE event_id = ?1",
-    )?;
-
-    let events = event_stmt.query_map(params![project_dir, limit], |row| {
+    // We may get multiple rows per event (one per file_path), but limited events.
+    // Collect and group by event id.
+    let rows = stmt.query_map(params![project_dir, limit * 20], |row| {
         let duration_ms_i64: Option<i64> = row.get(8)?;
-        Ok(ContextEvent {
+        let file_path: Option<String> = row.get(11)?;
+        Ok((ContextEvent {
             id: row.get(0)?,
             task_id: row.get(1)?,
             tool_name: row.get(2)?,
@@ -97,17 +100,29 @@ pub fn get_recent_events(
             duration_ms: duration_ms_i64.map(|v| v as u64),
             cost_usd: row.get(9)?,
             created_at: row.get(10)?,
-        })
+        }, file_path))
     })?;
 
-    let mut result = Vec::new();
-    for event_result in events {
-        let event = event_result?;
-        let file_paths: Vec<String> = file_stmt
-            .query_map(params![event.id], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        result.push((event, file_paths));
+    let mut result: Vec<(ContextEvent, Vec<String>)> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+    for row_result in rows {
+        let (event, file_path) = row_result?;
+        if seen_ids.contains(&event.id) {
+            // Append file_path to existing entry
+            if let Some(fp) = file_path {
+                if let Some(entry) = result.iter_mut().find(|(e, _)| e.id == event.id) {
+                    entry.1.push(fp);
+                }
+            }
+        } else {
+            seen_ids.insert(event.id);
+            if seen_ids.len() > limit as usize {
+                break; // We've collected enough unique events
+            }
+            let files = file_path.into_iter().collect();
+            result.push((event, files));
+        }
     }
 
     Ok(result)

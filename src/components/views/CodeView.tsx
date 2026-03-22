@@ -11,7 +11,16 @@ import type { FileContent } from '@/bindings';
 type Highlighter = {
   codeToHtml: (code: string, opts: { lang: string; theme: string }) => string;
   getLoadedLanguages: () => string[];
+  loadLanguage: (...langs: string[]) => Promise<void>;
 };
+
+// Core languages loaded eagerly — others loaded on demand
+const CORE_LANGS = ['typescript', 'javascript', 'rust', 'json', 'bash', 'markdown'] as const;
+const EXTRA_LANGS = [
+  'python', 'yaml', 'toml', 'html', 'css', 'sql', 'go',
+  'java', 'c', 'cpp', 'ruby', 'swift', 'kotlin', 'vue',
+  'svelte', 'graphql', 'dockerfile', 'scss',
+] as const;
 
 let shikiHighlighterPromise: Promise<Highlighter> | null = null;
 
@@ -20,16 +29,27 @@ async function getHighlighter(): Promise<Highlighter> {
     shikiHighlighterPromise = import('shiki').then(({ createHighlighter }) =>
       createHighlighter({
         themes: ['github-dark-default'],
-        langs: [
-          'typescript', 'javascript', 'rust', 'python', 'json', 'yaml',
-          'toml', 'html', 'css', 'markdown', 'bash', 'sql', 'go',
-          'java', 'c', 'cpp', 'ruby', 'swift', 'kotlin', 'vue',
-          'svelte', 'graphql', 'dockerfile', 'scss',
-        ],
+        langs: [...CORE_LANGS],
       })
     ) as Promise<Highlighter>;
   }
   return shikiHighlighterPromise;
+}
+
+/** Load a language on demand if not already loaded */
+async function ensureLanguage(highlighter: Highlighter, lang: string): Promise<string> {
+  const loaded = highlighter.getLoadedLanguages();
+  if (loaded.includes(lang)) return lang;
+  // Check if it's a known language we can load
+  if ((EXTRA_LANGS as readonly string[]).includes(lang)) {
+    try {
+      await highlighter.loadLanguage(lang as never);
+      return lang;
+    } catch {
+      return 'text';
+    }
+  }
+  return 'text';
 }
 
 /* ── File icon helper ─────────────────────────────────── */
@@ -155,11 +175,10 @@ function CodePanel({
 
     let cancelled = false;
 
-    getHighlighter().then((highlighter) => {
+    getHighlighter().then(async (highlighter) => {
       if (cancelled) return;
       try {
-        const langs = highlighter.getLoadedLanguages();
-        const lang = langs.includes(fileContent.language) ? fileContent.language : 'text';
+        const lang = await ensureLanguage(highlighter, fileContent.language);
         const html = highlighter.codeToHtml(fileContent.content, {
           lang,
           theme: 'github-dark-default',

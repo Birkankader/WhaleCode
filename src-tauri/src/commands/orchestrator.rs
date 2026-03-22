@@ -624,8 +624,9 @@ fn get_process_output_summary(task_id: &str, state: &AppState) -> String {
     let inner = state.lock();
     if let Some(entry) = inner.processes.get(task_id) {
         let lines = &entry.output_lines;
-        let last_20: Vec<&str> = lines.iter().rev().take(20).map(|s: &String| s.as_str()).collect();
-        last_20.into_iter().rev().collect::<Vec<_>>().join("\n")
+        // Take last 40 lines to capture more error context
+        let start = lines.len().saturating_sub(40);
+        lines[start..].join("\n")
     } else {
         String::new()
     }
@@ -713,7 +714,8 @@ pub async fn dispatch_orchestrated_task(
 
     // === Phase 1: Decompose (master agent) ===
     emit_orch(&on_event, "phase_changed", serde_json::json!({
-        "phase": "decomposing", "detail": "Spawning master agent"
+        "phase": "decomposing", "detail": "Spawning master agent",
+        "plan_id": plan.task_id, "master_agent": config.master_agent
     }));
 
     let adapter = get_adapter(&config.master_agent)?;
@@ -747,7 +749,8 @@ pub async fn dispatch_orchestrated_task(
     process::manager::acquire_tool_slot(state_ref, &config.master_agent)?;
 
     emit_orch(&on_event, "phase_changed", serde_json::json!({
-        "phase": "decomposing", "detail": "Decomposing task via master agent"
+        "phase": "decomposing", "detail": "Decomposing task via master agent",
+        "plan_id": plan.task_id, "master_agent": config.master_agent
     }));
 
     // Phase 1 ALWAYS uses single-shot mode (-p flag) for decomposition.
@@ -792,12 +795,18 @@ pub async fn dispatch_orchestrated_task(
         Ok(Ok(lines)) => lines,
         Ok(Err(e)) => {
             let _ = kill_process(state_ref, &master_task_id).await;
+            emit_orch(&on_event, "decomposition_failed", serde_json::json!({
+                "error": format!("Master agent process error: {}", e)
+            }));
             return Err(e);
         }
         Err(_) => {
             let _ = kill_process(state_ref, &master_task_id).await;
             emit_orch(&on_event, "master_timeout", serde_json::json!({
                 "timeout_minutes": app_config.master_timeout_minutes
+            }));
+            emit_orch(&on_event, "decomposition_failed", serde_json::json!({
+                "error": "Master agent timed out during task decomposition"
             }));
             return Err("Master agent timed out".to_string());
         }
@@ -806,6 +815,9 @@ pub async fn dispatch_orchestrated_task(
     // Check for authentication errors before attempting to parse
     if let Some(auth_error) = detect_auth_error(&output_lines, &config.master_agent) {
         let _ = kill_process(state_ref, &master_task_id).await;
+        emit_orch(&on_event, "decomposition_failed", serde_json::json!({
+            "error": auth_error.clone()
+        }));
         return Err(auth_error);
     }
 
@@ -894,10 +906,15 @@ pub async fn dispatch_orchestrated_task(
                 None => {
                     debug!("[orchestrator] Decomposition retry also failed — falling back to single-task mode");
 
+                    emit_orch(&on_event, "decomposition_failed", serde_json::json!({
+                        "error": "Could not parse decomposition from agent output. Falling back to running the original prompt as a single task."
+                    }));
+
                     // Instead of failing completely, create a single task with the original prompt
                     // assigned to the master agent. This handles simple/conversational prompts gracefully.
                     let fallback_decomposition = DecompositionResult {
                         tasks: vec![crate::router::orchestrator::SubTaskDef {
+                            id: None,
                             agent: config.master_agent.clone(),
                             prompt: prompt.clone(),
                             description: if prompt.len() > 60 { format!("{}...", truncate_str(&prompt, 57)) } else { prompt.clone() },
@@ -932,7 +949,8 @@ pub async fn dispatch_orchestrated_task(
             "agent": sub_def.agent,
             "description": sub_def.description,
             "prompt": sub_def.prompt,
-            "depends_on": sub_def.depends_on
+            "depends_on": sub_def.depends_on,
+            "dag_id": sub_def.id.as_deref().unwrap_or("")
         }));
     }
 
@@ -1048,10 +1066,17 @@ pub async fn dispatch_orchestrated_task(
         task_channels.push((sub_task_id, sub_def.agent.clone(), sub_def.prompt.clone()));
     }
 
-    // Build DAG from decomposition tasks
+    // Build DAG from decomposition tasks.
+    // Use LLM-provided IDs when ALL tasks have them; fall back to index-based
+    // "t1, t2..." when any task is missing an ID (avoids partial-ID chaos).
+    let all_have_ids = decomposition.tasks.iter().all(|def| def.id.is_some());
     let dag_nodes: Vec<DagNode> = decomposition.tasks.iter().enumerate().map(|(i, def)| {
         DagNode {
-            id: format!("t{}", i + 1),
+            id: if all_have_ids {
+                def.id.clone().unwrap_or_else(|| format!("t{}", i + 1))
+            } else {
+                format!("t{}", i + 1)
+            },
             depends_on: def.depends_on.clone(),
         }
     }).collect();
@@ -1127,13 +1152,23 @@ pub async fn dispatch_orchestrated_task(
                     wave_task_ids.push((task_id, agent.clone(), dag_id.clone()));
                 }
                 Err(e) => {
+                    let error_detail = format!("Failed to dispatch task '{}' to {}: {}", dag_id, agent, e);
+                    debug!("[orchestrator] {}", error_detail);
                     emit_messenger(&app_handle, MessengerMessage::system(
                         &plan.task_id,
-                        format!("Failed to dispatch to {}: {}", agent, e),
+                        error_detail.clone(),
                         MessageType::TaskFailed,
                     ));
                     emit_orch(&on_event, "dispatch_error", serde_json::json!({
-                        "dag_id": dag_id, "error": e.to_string()
+                        "dag_id": dag_id, "agent": agent, "error": e.to_string()
+                    }));
+                    // Also emit as task_failed so the frontend can show the error on the task card
+                    emit_orch(&on_event, "task_failed", serde_json::json!({
+                        "dag_id": dag_id,
+                        "exit_code": -1,
+                        "summary": format!("Dispatch failed: {}", e),
+                        "agent": agent,
+                        "failure_reason": e.to_string()
                     }));
                     failed_dag_ids.insert(dag_id.clone());
                 }
@@ -1322,13 +1357,14 @@ pub async fn dispatch_orchestrated_task(
             }
 
             let msg_type = if last_exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
+            let summary_len = if last_exit_code == 0 { 200 } else { 500 }; // Show more detail on failure
             emit_messenger(&app_handle, MessengerMessage::agent(
                 &plan.task_id,
                 &current_agent,
                 format!("{} (exit {}): {}",
                     if last_exit_code == 0 { "Completed" } else { "Failed" },
                     last_exit_code,
-                    truncate(&last_output_summary, 200),
+                    truncate(&last_output_summary, summary_len),
                 ),
                 msg_type,
             ));
@@ -1336,7 +1372,9 @@ pub async fn dispatch_orchestrated_task(
                 serde_json::json!({
                     "dag_id": dag_id,
                     "exit_code": last_exit_code,
-                    "summary": truncate(&last_output_summary, 200)
+                    "summary": truncate(&last_output_summary, 500),
+                    "agent": current_agent,
+                    "failure_reason": failure_reason.as_deref().unwrap_or("")
                 })
             );
         }
@@ -1540,7 +1578,7 @@ async fn wait_for_worker_with_questions(
             match s.processes.get(worker_task_id) {
                 Some(entry) => {
                     if entry.output_lines.len() > lines_seen {
-                        (entry.output_lines.clone(), entry.status.clone())
+                        (entry.output_lines[lines_seen..].to_vec(), entry.status.clone())
                     } else {
                         continue;
                     }
@@ -1550,7 +1588,7 @@ async fn wait_for_worker_with_questions(
         };
 
         // Check new lines for questions
-        for line in current_lines.iter().skip(lines_seen) {
+        for line in current_lines.iter() {
             if let Some(question) = worker_adapter.detect_question(line) {
                 // Route question to master
                 emit_orch(on_event, "question", serde_json::json!({
@@ -1659,7 +1697,7 @@ async fn wait_for_worker_with_questions(
                 }
             }
         }
-        lines_seen = current_lines.len();
+        lines_seen += current_lines.len();
 
         // Check if worker is done
         match status {

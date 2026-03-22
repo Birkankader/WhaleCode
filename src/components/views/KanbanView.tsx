@@ -491,20 +491,8 @@ export function KanbanView({ selectedTask, setSelectedTask }: KanbanViewProps) {
     document.addEventListener('mouseup', handleMouseUp);
   }, [logPanelHeight]);
 
-  // Force re-render every second for elapsed timers (only when running tasks exist)
-  const hasRunningTasks = useMemo(() => {
-    for (const [, task] of tasks) {
-      if (task.status === 'running') return true;
-    }
-    return false;
-  }, [tasks]);
-
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!hasRunningTasks) return;
-    const interval = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(interval);
-  }, [hasRunningTasks]);
+  // ElapsedTimer components handle their own 1-second re-renders individually.
+  // No top-level setTick needed — this avoids re-rendering the entire view every second.
 
   // Retry: confirm, then dispatch a new task, then remove the old failed one
   const handleRetry = useCallback(async (failedTask: MappedTask) => {

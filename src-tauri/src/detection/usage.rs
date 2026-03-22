@@ -26,7 +26,11 @@ pub struct AgentUsage {
 
 /// Fetch usage for all agents that have valid credentials.
 pub async fn fetch_all_usage() -> Vec<AgentUsage> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let (claude, codex, gemini) = tokio::join!(
         fetch_claude_usage(&client),
         fetch_codex_usage(&client),

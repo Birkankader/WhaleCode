@@ -8,7 +8,7 @@ export type OrchEvent =
   | { type: 'phase_changed'; phase: string; detail?: string; task_count?: number; wave_count?: number; plan_id?: string; master_agent?: string }
   | { type: 'task_assigned'; agent: string; description: string; prompt?: string; dag_id?: string }
   | { type: 'task_completed'; dag_id?: string; summary?: string; exit_code?: number }
-  | { type: 'task_failed'; dag_id?: string; summary?: string; exit_code?: number }
+  | { type: 'task_failed'; dag_id?: string; summary?: string; exit_code?: number; agent?: string; failure_reason?: string }
   | { type: 'decomposition_failed'; error: string }
   | { type: 'wave_progress'; current: number; total: number }
   | { type: 'task_skipped'; dag_id: string; reason: string }
@@ -113,10 +113,20 @@ export function handleOrchEvent(
         if (queueIdx !== -1) subTaskQueue.splice(queueIdx, 1);
       }
       const summary = ev.summary || '';
-      log(
-        ev.type === 'task_completed' ? 'success' : 'error',
-        `${ev.type === 'task_completed' ? 'Completed' : 'Failed'} (exit ${ev.exit_code}): ${summary.slice(0, 200)}`,
-      );
+      // Store failure detail on the task for inspection in TaskDetail
+      if (ev.type === 'task_failed' && targetId && summary) {
+        store.updateTaskResult(targetId, summary.slice(0, 500));
+      }
+      if (ev.type === 'task_failed') {
+        // Log detailed failure info — agent, exit code, failure reason, and full summary
+        const agent = (ev as { agent?: string }).agent || 'unknown';
+        const reason = (ev as { failure_reason?: string }).failure_reason || '';
+        log('error', `[${agent}] Failed (exit ${ev.exit_code})`);
+        if (reason) log('error', `Failure reason: ${reason}`);
+        if (summary) log('error', `Output:\n${summary.slice(0, 500)}`);
+      } else {
+        log('success', `Completed (exit ${ev.exit_code}): ${summary.slice(0, 200)}`);
+      }
       // Emit notification for task completion/failure
       emitOrchestrationNotification(
         ev.type === 'task_completed' ? 'success' : 'error',

@@ -9,7 +9,12 @@ export function StatusBar() {
   const developerMode = useUIStore((s) => s.developerMode);
   const storedSessionName = useUIStore((s) => s.sessionName);
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
-  const tasks = useTaskStore((s) => s.tasks);
+  const doneTasks = useTaskStore((s) => {
+    let count = 0;
+    for (const t of s.tasks.values()) if (t.status === 'completed') count++;
+    return count;
+  });
+  const totalTasks = useTaskStore((s) => s.tasks.size);
   const activePlan = useTaskStore((s) => s.activePlan);
 
   const isOrchestrating = orchestrationPhase !== 'idle';
@@ -49,8 +54,6 @@ export function StatusBar() {
   }, [isOrchestrating, secondsAgo]);
 
   const sessionName = storedSessionName || (activePlan ? 'Active Session' : 'No Session');
-  const doneTasks = Array.from(tasks.values()).filter((t) => t.status === 'completed').length;
-  const totalTasks = tasks.size;
 
   return (
     <div role="status" aria-live="polite" className="flex items-center gap-4 px-4 border-t border-wc-border bg-[#07070f] text-[11px] h-[26px] shrink-0">

@@ -44,6 +44,16 @@ function formatElapsed(ms: number): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+/** Leaf component that manages its own 1s timer — avoids re-rendering parent. */
+function ElapsedTimer({ startedAt }: { startedAt: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, []);
+  return <>{formatElapsed(Date.now() - startedAt)}</>;
+}
+
 /* ── Main Component ────────────────────────────────────── */
 
 export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps) {
@@ -56,20 +66,7 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
   // Search
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Force re-render every second for elapsed timers (only when running tasks exist)
-  const hasRunningTasks = useMemo(() => {
-    for (const [, task] of tasks) {
-      if (task.status === 'running') return true;
-    }
-    return false;
-  }, [tasks]);
-
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!hasRunningTasks) return;
-    const interval = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(interval);
-  }, [hasRunningTasks]);
+  // No top-level setTick — ElapsedTimer handles per-task re-renders individually.
 
   // Build task list
   const taskList = useMemo(() => {
@@ -87,9 +84,15 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
     return result;
   }, [tasks, searchQuery]);
 
-  const runningCount = taskList.filter(t => t.status === 'running' || t.status === 'retrying').length;
-  const completedCount = taskList.filter(t => t.status === 'completed').length;
-  const failedCount = taskList.filter(t => t.status === 'failed').length;
+  const { runningCount, completedCount, failedCount } = useMemo(() => {
+    let running = 0, completed = 0, failed = 0;
+    for (const t of taskList) {
+      if (t.status === 'running' || t.status === 'retrying') running++;
+      else if (t.status === 'completed') completed++;
+      else if (t.status === 'failed') failed++;
+    }
+    return { runningCount: running, completedCount: completed, failedCount: failed };
+  }, [taskList]);
 
   // Retry handler
   const handleRetry = useCallback(async (task: TaskEntry) => {
@@ -181,7 +184,6 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
               const isFailed = task.status === 'failed';
               const isDone = task.status === 'completed';
               const isSelected = selectedTask === task.taskId;
-              const elapsed = task.startedAt ? Date.now() - task.startedAt : 0;
               const agent = AGENTS[task.toolName];
 
               return (
@@ -261,7 +263,7 @@ export function WorkingView({ selectedTask, setSelectedTask }: WorkingViewProps)
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                     {task.startedAt && (
                       <span style={{ fontSize: 10, color: C.textMuted, fontFamily: 'var(--font-mono)' }}>
-                        {formatElapsed(elapsed)}
+                        <ElapsedTimer startedAt={task.startedAt} />
                       </span>
                     )}
 

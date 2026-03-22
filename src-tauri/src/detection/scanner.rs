@@ -47,9 +47,11 @@ fn get_version(name: &str) -> Option<String> {
 
 /// Scan for all supported agents.
 pub async fn detect_all_agents() -> Vec<DetectedAgent> {
-    let claude = detect_claude().await;
-    let gemini = detect_gemini().await;
-    let codex = detect_codex().await;
+    let (claude, gemini, codex) = tokio::join!(
+        detect_claude(),
+        detect_gemini(),
+        detect_codex(),
+    );
     vec![claude, gemini, codex]
 }
 
@@ -67,7 +69,9 @@ async fn detect_claude() -> DetectedAgent {
     let auth_status = if !installed {
         AuthStatus::NotInstalled
     } else {
-        check_claude_auth()
+        tokio::task::spawn_blocking(check_claude_auth)
+            .await
+            .unwrap_or(AuthStatus::NeedsAuth)
     };
     DetectedAgent {
         tool_name: "claude".to_string(),
@@ -100,7 +104,9 @@ async fn detect_gemini() -> DetectedAgent {
     let auth_status = if !installed {
         AuthStatus::NotInstalled
     } else {
-        check_gemini_auth()
+        tokio::task::spawn_blocking(check_gemini_auth)
+            .await
+            .unwrap_or(AuthStatus::NeedsAuth)
     };
     DetectedAgent {
         tool_name: "gemini".to_string(),
@@ -136,7 +142,9 @@ async fn detect_codex() -> DetectedAgent {
     let auth_status = if !installed {
         AuthStatus::NotInstalled
     } else {
-        check_codex_auth()
+        tokio::task::spawn_blocking(check_codex_auth)
+            .await
+            .unwrap_or(AuthStatus::NeedsAuth)
     };
     DetectedAgent {
         tool_name: "codex".to_string(),

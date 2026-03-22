@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { ChevronDown, ChevronUp, Terminal } from 'lucide-react';
 import { C, LOG_COLOR } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
@@ -48,7 +48,7 @@ export function TerminalBottomPanel({ open, onToggle }: TerminalBottomPanelProps
   }, [height]);
 
   const logCount = orchestrationLogs.length;
-  const errorCount = orchestrationLogs.filter(l => l.level === 'error').length;
+  const errorCount = useMemo(() => orchestrationLogs.filter(l => l.level === 'error').length, [orchestrationLogs]);
   const visibleLogs = orchestrationLogs.slice(-200);
 
   return (
@@ -111,7 +111,7 @@ export function TerminalBottomPanel({ open, onToggle }: TerminalBottomPanelProps
       </button>
 
       {/* Panel content */}
-      <div style={{ height: open ? height : 0, overflow: 'hidden', transition: 'height 200ms cubic-bezier(0.4, 0, 0.2, 1)', display: 'flex', flexDirection: 'column', background: '#07070f' }}>
+      <div style={{ height: open ? height : 0, overflow: 'hidden', transition: 'height 200ms cubic-bezier(0.4, 0, 0.2, 1)', display: 'flex', flexDirection: 'column', background: '#07070f', willChange: open ? 'height' : 'auto' }}>
           {/* Resize handle */}
           <div
             onMouseDown={handleResizeStart}
