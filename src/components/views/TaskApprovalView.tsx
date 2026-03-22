@@ -35,7 +35,6 @@ export function TaskApprovalView() {
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
   const autoApprove = useUIStore((s) => s.autoApprove);
   const setAutoApprove = useUIStore((s) => s.setAutoApprove);
-  const developerMode = useUIStore((s) => s.developerMode);
   const [approving, setApproving] = useState(false);
   const [visible, setVisible] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -64,10 +63,23 @@ export function TaskApprovalView() {
   const [editedTasks, setEditedTasks] = useState<EditableTask[] | null>(null);
   const displayTasks = editedTasks ?? workerTasks;
 
-  // Sync when workerTasks change (initial load)
-  if (editedTasks === null && workerTasks.length > 0) {
-    setEditedTasks([...workerTasks]);
-  }
+  // Sync editedTasks when new worker tasks arrive during approval phase.
+  // Without this, only the first task_assigned event populates the list.
+  useEffect(() => {
+    if (orchestrationPhase === 'awaiting_approval' && workerTasks.length > 0) {
+      setEditedTasks(prev => {
+        // If no edits yet, or if new tasks arrived that aren't in the edit list
+        if (!prev || prev.length < workerTasks.length) {
+          // Preserve any user edits on existing tasks, append new ones
+          const existingIds = new Set(prev?.map(t => t.id) ?? []);
+          const preserved = prev ?? [];
+          const newTasks = workerTasks.filter(t => !existingIds.has(t.id));
+          return [...preserved, ...newTasks];
+        }
+        return prev;
+      });
+    }
+  }, [orchestrationPhase, workerTasks]);
 
   // Animate modal entry
   const isOpen = orchestrationPhase === 'awaiting_approval' && displayTasks.length > 0;
@@ -402,20 +414,29 @@ export function TaskApprovalView() {
                         </span>
                       )}
                     </div>
-                    {/* Description */}
-                    <div
-                      className="text-xs leading-[18px] line-clamp-2"
+                    {/* Description — editable */}
+                    <input
+                      type="text"
+                      value={task.description}
+                      onChange={(e) => {
+                        setCountdown(null);
+                        setEditedTasks(prev => {
+                          if (!prev) return prev;
+                          const next = [...prev];
+                          next[idx] = { ...next[idx], description: e.target.value };
+                          return next;
+                        });
+                      }}
+                      className="text-xs leading-[18px] w-full bg-transparent border-none outline-none p-0"
                       style={{
                         color: task.removed ? C.textMuted : C.textPrimary,
                         textDecoration: task.removed ? 'line-through' : 'none',
                       }}
-                    >
-                      {task.description}
-                    </div>
+                      disabled={task.removed}
+                    />
 
                     {/* Full prompt — visible below description */}
                     {!task.removed && task.prompt !== task.description && (
-                      developerMode ? (
                         <textarea
                           value={task.prompt}
                           onChange={(e) => {
@@ -445,27 +466,6 @@ export function TaskApprovalView() {
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.border; }}
                         />
-                      ) : (
-                        <div
-                          style={{
-                            marginTop: 6,
-                            padding: '6px 10px',
-                            borderRadius: 8,
-                            background: C.panel,
-                            border: `1px solid ${C.border}`,
-                            fontSize: 11,
-                            lineHeight: '16px',
-                            color: C.textSecondary,
-                            fontFamily: 'var(--font-mono)',
-                            maxHeight: 80,
-                            overflow: 'auto',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {task.prompt}
-                        </div>
-                      )
                     )}
                   </div>
 
