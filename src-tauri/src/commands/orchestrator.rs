@@ -940,6 +940,24 @@ pub async fn dispatch_orchestrated_task(
     let master_task_id = plan.master_process_id.clone().unwrap_or(master_task_id);
 
     // Store decomposition and enter approval phase
+    // Validate agent assignments: if LLM assigned an agent that's not in the config,
+    // reassign to the master agent. This prevents failures when e.g. Gemini assigns to Claude
+    // but Claude isn't configured.
+    let valid_agents: std::collections::HashSet<&str> = config.agents.iter()
+        .map(|a| a.tool_name.as_str())
+        .collect();
+    let mut decomposition = decomposition; // make mutable
+    for task in &mut decomposition.tasks {
+        if !valid_agents.contains(task.agent.as_str()) {
+            eprintln!("[orch] LLM assigned agent '{}' not in config {:?}, reassigning to master '{}'",
+                task.agent, valid_agents, config.master_agent);
+            emit_orch(&on_event, "info", serde_json::json!({
+                "message": format!("Agent '{}' not available, reassigned to '{}'", task.agent, config.master_agent)
+            }));
+            task.agent = config.master_agent.clone();
+        }
+    }
+
     plan.decomposition = Some(decomposition.clone());
     plan.phase = OrchestrationPhase::AwaitingApproval;
 
@@ -1144,6 +1162,7 @@ pub async fn dispatch_orchestrated_task(
                 continue;
             }
 
+            eprintln!("[orch] dispatching dag_id={} to agent={} prompt_len={}", dag_id, agent, sub_prompt.len());
             let dispatch_result = super::router::dispatch_task(
                 sub_prompt.clone(),
                 project_dir.clone(),

@@ -1,3 +1,4 @@
+use log::debug;
 use tauri::ipc::Channel;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -94,7 +95,12 @@ async fn spawn_with_env_core(
         });
     }
 
-    let mut child = command.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
+    eprintln!("[spawn] cmd={} args={:?} cwd={}", cmd, args, cwd);
+    let mut child = command.spawn().map_err(|e| {
+        let err = format!("Failed to spawn process '{}': {} (cwd: {})", cmd, e, cwd);
+        eprintln!("[spawn] {}", err);
+        err
+    })?;
 
     let initial_bytes = initial_stdin.map(|b| b.to_vec());
     let stdin_tx = if let Some(mut stdin) = child.stdin.take() {
@@ -221,6 +227,9 @@ async fn spawn_with_env_core(
         // Update process status in state
         { let mut inner = waiter_state.lock();
             if let Some(entry) = inner.processes.get_mut(&waiter_task_id) {
+                let last_lines: Vec<String> = entry.output_lines.iter().rev().take(5).cloned().collect();
+                eprintln!("[process] {} exited with code {} | tool={} | last_output: {:?}",
+                    waiter_task_id, exit_code, entry.tool_name, last_lines);
                 extract_usage_from_output(entry);
                 match &status {
                     Ok(s) if s.success() => {

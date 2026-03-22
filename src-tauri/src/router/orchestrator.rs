@@ -129,7 +129,8 @@ impl Orchestrator {
              INSTRUCTIONS:\n\
              - You MUST return ONLY a JSON object. No greetings, no explanations, no markdown.\n\
              - If the request is simple, conversational, or a single task, return it as ONE task.\n\
-             - If it's complex, decompose it into multiple sub-tasks.\n\n\
+             - If it's complex, decompose it into multiple sub-tasks.\n\
+             - CRITICAL: You may ONLY use agents from the list above. Do NOT use any other agent names.\n\n\
              Return format (strict JSON, no code fences):\n\
              {{\"tasks\": [{{\"id\": \"t1\", \"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt for the agent>\", \"description\": \"<short description>\", \"depends_on\": []}}]}}\n\n\
              Rules:\n\
