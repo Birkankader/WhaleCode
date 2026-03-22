@@ -1185,15 +1185,39 @@ pub async fn dispatch_orchestrated_task(
             }
 
             eprintln!("[orch] dispatching dag_id={} to agent={} prompt_len={}", dag_id, agent, sub_prompt.len());
-            let dispatch_result = super::router::dispatch_task(
-                sub_prompt.clone(),
-                project_dir.clone(),
-                agent.clone(),
-                Some(sub_id.clone()),
-                on_event.clone(),
-                state.clone(),
-                context_store.clone(),
-            ).await;
+
+            // If this agent is busy (running another task in the same wave),
+            // wait for it to finish before dispatching. This handles the case where
+            // all tasks in a wave are assigned to the same agent.
+            let mut dispatch_attempts = 0u32;
+            let dispatch_result = loop {
+                let result = super::router::dispatch_task(
+                    sub_prompt.clone(),
+                    project_dir.clone(),
+                    agent.clone(),
+                    Some(sub_id.clone()),
+                    on_event.clone(),
+                    state.clone(),
+                    context_store.clone(),
+                ).await;
+
+                match &result {
+                    Err(e) if e.contains("already running") || e.contains("already being dispatched") => {
+                        dispatch_attempts += 1;
+                        if dispatch_attempts > 60 {
+                            // Give up after ~5 minutes of waiting
+                            break result;
+                        }
+                        eprintln!("[orch] agent {} busy, waiting 5s before retry (attempt {})", agent, dispatch_attempts);
+                        emit_orch(&on_event, "info", serde_json::json!({
+                            "message": format!("Waiting for {} to finish current task...", agent)
+                        }));
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                    _ => break result,
+                }
+            };
 
             match dispatch_result {
                 Ok(task_id) => {
