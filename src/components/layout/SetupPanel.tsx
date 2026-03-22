@@ -18,6 +18,8 @@ interface DetectedAgent {
   version: string | null;
   model: string | null;
   cli: string;
+  usagePercent: number | null; // 0-100, null if unknown
+  usageLabel: string | null;   // e.g. "Session: 45%"
 }
 
 // ---------------------------------------------------------------------------
@@ -25,10 +27,10 @@ interface DetectedAgent {
 // ---------------------------------------------------------------------------
 
 const DISCOVERED_AGENTS: DetectedAgent[] = [
-  { id: 'claude-opus', name: 'Claude Opus 4', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-opus-4-5' },
-  { id: 'claude-haiku', name: 'Claude Haiku 3.5', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-haiku-3-5' },
-  { id: 'gemini', name: 'Gemini 2.5 Pro', cli: 'gemini', icon: '\u{1F535}', auth: true, version: 'v0.9.1', model: 'gemini-2.5-pro' },
-  { id: 'codex', name: 'Codex CLI', cli: 'codex', icon: '\u{2B1B}', auth: false, version: 'v0.1.2504', model: null },
+  { id: 'claude-opus', name: 'Claude Opus 4', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-opus-4-5', usagePercent: null, usageLabel: null },
+  { id: 'claude-haiku', name: 'Claude Haiku 3.5', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-haiku-3-5', usagePercent: null, usageLabel: null },
+  { id: 'gemini', name: 'Gemini 2.5 Pro', cli: 'gemini', icon: '\u{1F535}', auth: true, version: 'v0.9.1', model: 'gemini-2.5-pro', usagePercent: null, usageLabel: null },
+  { id: 'codex', name: 'Codex CLI', cli: 'codex', icon: '\u{2B1B}', auth: false, version: 'v0.1.2504', model: null, usagePercent: null, usageLabel: null },
 ];
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,8 @@ function mapBackendAgent(a: BackendDetectedAgent): DetectedAgent {
     version: a.version,
     model: null,
     cli: a.tool_name,
+    usagePercent: null,
+    usageLabel: null,
   };
 }
 
@@ -102,12 +106,41 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
     let cancelled = false;
     setAgentsLoading(true);
 
-    commands.detectAgents().then((result) => {
+    // Fetch agents and usage in parallel
+    Promise.all([
+      commands.detectAgents(),
+      commands.fetchAgentUsage(),
+    ]).then(([agentResult, usageResult]) => {
       if (cancelled) return;
-      if (result.status === 'ok' && result.data.length > 0) {
-        setAgents(result.data.map(mapBackendAgent));
+
+      // Map usage data by agent name
+      const usageMap = new Map<string, { percent: number; label: string }>();
+      if (usageResult.status === 'ok') {
+        for (const usage of usageResult.data) {
+          // Find the highest utilization line (Session or Weekly)
+          const progressLines = usage.lines.filter(l => l.line_type === 'progress' && l.used != null);
+          if (progressLines.length > 0) {
+            // Use the highest usage as the displayed percentage
+            const highest = progressLines.reduce((max, l) => (l.used ?? 0) > (max.used ?? 0) ? l : max);
+            usageMap.set(usage.agent, {
+              percent: Math.round(highest.used ?? 0),
+              label: `${highest.label}: ${Math.round(highest.used ?? 0)}%`,
+            });
+          }
+        }
+      }
+
+      if (agentResult.status === 'ok' && agentResult.data.length > 0) {
+        setAgents(agentResult.data.map(a => {
+          const mapped = mapBackendAgent(a);
+          const usage = usageMap.get(a.tool_name);
+          if (usage) {
+            mapped.usagePercent = usage.percent;
+            mapped.usageLabel = usage.label;
+          }
+          return mapped;
+        }));
       } else {
-        // Fallback to mock data
         setAgents(DISCOVERED_AGENTS);
       }
       setAgentsLoading(false);
@@ -564,6 +597,43 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
                   >
                     {agent.auth ? 'Authenticated' : 'No Auth'}
                   </div>
+                  {/* Usage indicator */}
+                  {agent.auth && agent.usagePercent !== null && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 40,
+                          height: 4,
+                          borderRadius: 2,
+                          background: C.surface,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${agent.usagePercent}%`,
+                            height: '100%',
+                            borderRadius: 2,
+                            background: agent.usagePercent >= 90 ? C.red : agent.usagePercent >= 70 ? C.amber : C.green,
+                          }}
+                        />
+                      </div>
+                      <span style={{
+                        fontSize: 10,
+                        color: agent.usagePercent >= 90 ? C.red : agent.usagePercent >= 70 ? C.amber : C.textMuted,
+                        fontFamily: 'var(--font-mono)',
+                      }}>
+                        {agent.usageLabel ?? `${agent.usagePercent}%`}
+                      </span>
+                    </div>
+                  )}
                 </button>
               );
             })}
