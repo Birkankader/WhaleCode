@@ -944,13 +944,21 @@ pub async fn dispatch_orchestrated_task(
     plan.phase = OrchestrationPhase::AwaitingApproval;
 
     // Send task_assigned events so frontend can show the approval screen
-    for sub_def in &decomposition.tasks {
+    // Check if all tasks have LLM-provided IDs (same logic as DAG construction)
+    let all_have_ids = decomposition.tasks.iter().all(|def| def.id.is_some());
+
+    for (i, sub_def) in decomposition.tasks.iter().enumerate() {
+        let dag_id = if all_have_ids {
+            sub_def.id.clone().unwrap_or_else(|| format!("t{}", i + 1))
+        } else {
+            format!("t{}", i + 1)
+        };
         emit_orch(&on_event, "task_assigned", serde_json::json!({
             "agent": sub_def.agent,
             "description": sub_def.description,
             "prompt": sub_def.prompt,
             "depends_on": sub_def.depends_on,
-            "dag_id": sub_def.id.as_deref().unwrap_or("")
+            "dag_id": dag_id
         }));
     }
 
@@ -1382,12 +1390,20 @@ pub async fn dispatch_orchestrated_task(
 
     // If ALL tasks failed or were skipped, fail the orchestration
     if !plan.worker_results.iter().any(|r| r.exit_code == 0) && !plan.worker_results.is_empty() {
+        let failure_summary = plan.worker_results.iter()
+            .filter(|r| r.exit_code != 0)
+            .map(|r| format!("[{}] exit {}: {}", r.agent, r.exit_code, truncate(&r.output_summary, 100)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let _ = kill_process(state_ref, &master_task_id).await;
         update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Failed)?;
         plan.phase = OrchestrationPhase::Failed;
+        emit_orch(&on_event, "decomposition_failed", serde_json::json!({
+            "error": format!("All worker tasks failed:\n{}", failure_summary)
+        }));
         emit_messenger(&app_handle, MessengerMessage::system(
             &plan.task_id,
-            "All worker tasks failed".to_string(),
+            format!("All worker tasks failed:\n{}", failure_summary),
             MessageType::TaskFailed,
         ));
         // Schedule plan cleanup after configured delay
