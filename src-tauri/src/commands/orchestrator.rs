@@ -93,7 +93,14 @@ async fn wait_for_turn_complete(
         // Wait for either new lines or process completion
         tokio::select! {
             res = line_rx.changed() => {
-                if res.is_err() { break; }
+                if res.is_err() {
+                    // Streams closed — wait briefly for process to finish
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        completion_rx.changed(),
+                    ).await;
+                    break;
+                }
             }
             res = completion_rx.changed() => {
                 if res.is_err() || *completion_rx.borrow() {
@@ -1621,7 +1628,20 @@ async fn wait_for_worker_with_questions(
         tokio::select! {
             res = line_rx.changed() => {
                 if res.is_err() {
-                    eprintln!("[worker-wait] line_rx closed for {}", worker_task_id);
+                    // line_rx channel closed — stdout/stderr streams ended.
+                    // Process may still be running (child.wait hasn't resolved yet).
+                    // Wait briefly for completion_rx to fire before falling through.
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        completion_rx.changed(),
+                    ).await {
+                        Ok(Ok(())) | Ok(Err(_)) => {
+                            // Process completed — check status below
+                        }
+                        Err(_) => {
+                            eprintln!("[worker-wait] {} timed out waiting for completion after line_rx closed", worker_task_id);
+                        }
+                    }
                     break;
                 }
             }
