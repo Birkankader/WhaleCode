@@ -330,14 +330,32 @@ impl ToolAdapter for GeminiAdapter {
     }
 
     fn extract_result(&self, output_lines: &[String]) -> Option<String> {
+        // First try: get response from Result event
         for line in output_lines.iter().rev() {
             if let Some(event) = parse_stream_line(line) {
                 if let GeminiStreamEvent::Result { response, .. } = event {
-                    return response;
+                    if let Some(ref r) = response {
+                        if !r.trim().is_empty() {
+                            return Some(r.clone());
+                        }
+                    }
                 }
             }
         }
-        None
+        // Fallback: concatenate assistant message contents
+        let mut parts = Vec::new();
+        for line in output_lines {
+            if let Some(GeminiStreamEvent::Message { role, content, .. }) = parse_stream_line(line) {
+                if role.as_deref() == Some("assistant") {
+                    if let Some(text) = content {
+                        if !text.trim().is_empty() {
+                            parts.push(text);
+                        }
+                    }
+                }
+            }
+        }
+        if parts.is_empty() { None } else { Some(parts.join("")) }
     }
 
     fn is_turn_complete(&self, line: &str) -> bool {

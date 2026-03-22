@@ -1609,7 +1609,10 @@ async fn wait_for_worker_with_questions(
         let s = state.lock();
         match s.processes.get(worker_task_id) {
             Some(entry) => (entry.line_count_rx.clone(), entry.completion_rx.clone()),
-            None => return -1,
+            None => {
+                eprintln!("[worker-wait] process {} not found at start", worker_task_id);
+                return -1;
+            }
         }
     };
 
@@ -1617,7 +1620,10 @@ async fn wait_for_worker_with_questions(
         // Wait for either new lines or process completion
         tokio::select! {
             res = line_rx.changed() => {
-                if res.is_err() { break; }
+                if res.is_err() {
+                    eprintln!("[worker-wait] line_rx closed for {}", worker_task_id);
+                    break;
+                }
             }
             res = completion_rx.changed() => {
                 if res.is_err() || *completion_rx.borrow() {
@@ -1625,10 +1631,23 @@ async fn wait_for_worker_with_questions(
                     let s = state.lock();
                     return match s.processes.get(worker_task_id) {
                         Some(entry) => match &entry.status {
-                            ProcessStatus::Completed(code) => *code,
-                            _ => -1,
+                            ProcessStatus::Completed(code) => {
+                                eprintln!("[worker-wait] {} completed with code {}", worker_task_id, code);
+                                *code
+                            },
+                            ProcessStatus::Failed(e) => {
+                                eprintln!("[worker-wait] {} failed: {}", worker_task_id, e);
+                                -1
+                            },
+                            other => {
+                                eprintln!("[worker-wait] {} unexpected status: {:?}", worker_task_id, other);
+                                -1
+                            },
                         },
-                        None => -1,
+                        None => {
+                            eprintln!("[worker-wait] {} not found after completion_rx", worker_task_id);
+                            -1
+                        },
                     };
                 }
             }
@@ -1772,10 +1791,23 @@ async fn wait_for_worker_with_questions(
     let s = state.lock();
     match s.processes.get(worker_task_id) {
         Some(entry) => match &entry.status {
-            ProcessStatus::Completed(code) => *code,
-            _ => -1,
+            ProcessStatus::Completed(code) => {
+                eprintln!("[worker-wait] {} final-check completed with code {}", worker_task_id, code);
+                *code
+            },
+            ProcessStatus::Failed(e) => {
+                eprintln!("[worker-wait] {} final-check failed: {}", worker_task_id, e);
+                -1
+            },
+            other => {
+                eprintln!("[worker-wait] {} final-check unexpected status: {:?}", worker_task_id, other);
+                -1
+            },
         },
-        None => -1,
+        None => {
+            eprintln!("[worker-wait] {} final-check not found in processes", worker_task_id);
+            -1
+        },
     }
 }
 
