@@ -48,6 +48,10 @@ export function App() {
           const newTasks = new Map(taskState.tasks);
           let changed = false;
           for (const [id, task] of newTasks) {
+            // Skip orchestration tasks — their lifecycle is managed by handleOrchEvent,
+            // not by process heartbeat. The master process gets killed after decomposition
+            // but the task should stay 'running' until the orchestration completes.
+            if (task.role === 'master' || task.role === 'worker') continue;
             if ((task.status === 'running' || task.status === 'retrying') && !backendRunning.has(id)) {
               // Frontend thinks it's running, backend says it's not → mark failed
               newTasks.set(id, { ...task, status: 'failed' });

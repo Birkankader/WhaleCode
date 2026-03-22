@@ -1398,15 +1398,20 @@ pub async fn dispatch_orchestrated_task(
                 failed_dag_ids.insert(dag_id.clone());
             }
 
+            // Extract human-readable response from worker output
+            let worker_adapter = get_adapter(&current_agent)?;
+            let output_lines: Vec<String> = last_output_summary.lines().map(|s| s.to_string()).collect();
+            let readable_summary = worker_adapter.extract_result(&output_lines)
+                .unwrap_or_else(|| truncate(&last_output_summary, 500).to_string());
+
             let msg_type = if last_exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
-            let summary_len = if last_exit_code == 0 { 200 } else { 500 }; // Show more detail on failure
             emit_messenger(&app_handle, MessengerMessage::agent(
                 &plan.task_id,
                 &current_agent,
                 format!("{} (exit {}): {}",
                     if last_exit_code == 0 { "Completed" } else { "Failed" },
                     last_exit_code,
-                    truncate(&last_output_summary, summary_len),
+                    truncate(&readable_summary, 500),
                 ),
                 msg_type,
             ));
@@ -1414,7 +1419,7 @@ pub async fn dispatch_orchestrated_task(
                 serde_json::json!({
                     "dag_id": dag_id,
                     "exit_code": last_exit_code,
-                    "summary": truncate(&last_output_summary, 500),
+                    "summary": truncate(&readable_summary, 500),
                     "agent": current_agent,
                     "failure_reason": failure_reason.as_deref().unwrap_or("")
                 })
@@ -1524,6 +1529,9 @@ pub async fn dispatch_orchestrated_task(
         Ok(lines) => {
             let review_text = adapter.extract_result(&lines)
                 .unwrap_or_else(|| lines.join("\n"));
+            emit_orch(&on_event, "info", serde_json::json!({
+                "message": format!("Review:\n{}", truncate(&review_text, 500))
+            }));
             emit_messenger(&app_handle, MessengerMessage::agent(
                 &plan.task_id,
                 &config.master_agent,
