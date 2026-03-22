@@ -137,7 +137,7 @@ export function handleOrchEvent(
         if (reason) log('error', `Failure reason: ${reason}`);
         if (summary) log('error', `Output:\n${summary.slice(0, 500)}`);
       } else {
-        log('success', `Completed (exit ${ev.exit_code}): ${summary.slice(0, 200)}`);
+        log('success', `Completed (exit ${ev.exit_code}): ${summary}`);
       }
       // Emit notification for task completion/failure
       emitOrchestrationNotification(

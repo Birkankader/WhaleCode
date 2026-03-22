@@ -1448,7 +1448,7 @@ pub async fn dispatch_orchestrated_task(
                 format!("{} (exit {}): {}",
                     if last_exit_code == 0 { "Completed" } else { "Failed" },
                     last_exit_code,
-                    truncate(&readable_summary, 500),
+                    truncate(&readable_summary, 2000),
                 ),
                 msg_type,
             ));
@@ -1456,7 +1456,7 @@ pub async fn dispatch_orchestrated_task(
                 serde_json::json!({
                     "dag_id": dag_id,
                     "exit_code": last_exit_code,
-                    "summary": truncate(&readable_summary, 500),
+                    "summary": truncate(&readable_summary, 2000),
                     "agent": current_agent,
                     "failure_reason": failure_reason.as_deref().unwrap_or("")
                 })
@@ -1567,12 +1567,12 @@ pub async fn dispatch_orchestrated_task(
             let review_text = adapter.extract_result(&lines)
                 .unwrap_or_else(|| lines.join("\n"));
             emit_orch(&on_event, "info", serde_json::json!({
-                "message": format!("Review:\n{}", truncate(&review_text, 500))
+                "message": format!("Review:\n{}", truncate(&review_text, 2000))
             }));
             emit_messenger(&app_handle, MessengerMessage::agent(
                 &plan.task_id,
                 &config.master_agent,
-                format!("Review complete:\n{}", truncate(&review_text, 500)),
+                format!("Review complete:\n{}", truncate(&review_text, 2000)),
                 MessageType::ReviewResult,
             ));
         }

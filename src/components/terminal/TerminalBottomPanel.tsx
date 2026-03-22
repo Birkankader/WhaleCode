@@ -156,6 +156,11 @@ export function TerminalBottomPanel({ open, onToggle }: TerminalBottomPanelProps
                   <span style={{
                     color: LOG_COLOR[log.level] ?? C.textSecondary,
                     wordBreak: 'break-word',
+                    whiteSpace: 'pre-wrap',
+                    maxHeight: 200,
+                    overflow: 'auto',
+                    display: 'block',
+                    flex: 1,
                   }}>
                     {log.message}
                   </span>
