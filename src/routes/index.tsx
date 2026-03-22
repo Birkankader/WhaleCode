@@ -65,10 +65,10 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-navigate to review when orchestration completes
+  // Auto-navigate to review only when orchestration fully completes (not during reviewing)
   const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
   useEffect(() => {
-    if (orchestrationPhase === 'reviewing' || orchestrationPhase === 'completed') {
+    if (orchestrationPhase === 'completed') {
       setActiveView('review');
     }
   }, [orchestrationPhase, setActiveView]);
