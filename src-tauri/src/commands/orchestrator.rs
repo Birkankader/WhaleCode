@@ -1165,7 +1165,17 @@ pub async fn dispatch_orchestrated_task(
 
         let mut wave_task_ids: Vec<(String, String, String)> = Vec::new(); // (process_task_id, agent, dag_id)
 
-        // Dispatch tasks in this wave
+        // Dispatch and execute tasks in this wave.
+        // When all tasks share the same agent, they run sequentially (dispatch → wait → next).
+        // When tasks use different agents, they could potentially run in parallel,
+        // but for simplicity and reliability we process them sequentially.
+        let retry_config = RetryConfig::default();
+        let available_agents: Vec<&str> = decomposition.tasks.iter()
+            .map(|t| t.agent.as_str())
+            .collect::<std::collections::HashSet<&str>>()
+            .into_iter()
+            .collect();
+
         for dag_id in wave_ids {
             // Check if any dependency failed — skip this task if so
             let idx = match dag_id_to_idx.get(dag_id) {
@@ -1186,49 +1196,24 @@ pub async fn dispatch_orchestrated_task(
 
             eprintln!("[orch] dispatching dag_id={} to agent={} prompt_len={}", dag_id, agent, sub_prompt.len());
 
-            // If this agent is busy (running another task in the same wave),
-            // wait for it to finish before dispatching. This handles the case where
-            // all tasks in a wave are assigned to the same agent.
-            let mut dispatch_attempts = 0u32;
-            let dispatch_result = loop {
-                let result = super::router::dispatch_task(
-                    sub_prompt.clone(),
-                    project_dir.clone(),
-                    agent.clone(),
-                    Some(sub_id.clone()),
-                    on_event.clone(),
-                    state.clone(),
-                    context_store.clone(),
-                ).await;
+            // Dispatch this task
+            let dispatch_result = super::router::dispatch_task(
+                sub_prompt.clone(),
+                project_dir.clone(),
+                agent.clone(),
+                Some(sub_id.clone()),
+                on_event.clone(),
+                state.clone(),
+                context_store.clone(),
+            ).await;
 
-                match &result {
-                    Err(e) if e.contains("already running") || e.contains("already being dispatched") => {
-                        dispatch_attempts += 1;
-                        if dispatch_attempts > 60 {
-                            // Give up after ~5 minutes of waiting
-                            break result;
-                        }
-                        if dispatch_attempts == 1 {
-                            // First time — notify frontend to show "queued" status
-                            emit_orch(&on_event, "info", serde_json::json!({
-                                "message": format!("{}: waiting for {} to finish current task", dag_id, agent)
-                            }));
-                        }
-                        eprintln!("[orch] agent {} busy, waiting 5s before retry (attempt {})", agent, dispatch_attempts);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        continue;
-                    }
-                    _ => break result,
-                }
-            };
-
-            match dispatch_result {
-                Ok(task_id) => {
-                    worker_task_ids.push((task_id.clone(), agent.clone()));
-                    wave_task_ids.push((task_id.clone(), agent.clone(), dag_id.clone()));
+            let (task_id, current_agent) = match dispatch_result {
+                Ok(tid) => {
+                    worker_task_ids.push((tid.clone(), agent.clone()));
                     emit_orch(&on_event, "worker_started", serde_json::json!({
-                        "dag_id": dag_id, "process_id": task_id
+                        "dag_id": dag_id, "process_id": tid
                     }));
+                    (tid, agent.clone())
                 }
                 Err(e) => {
                     let error_detail = format!("Failed to dispatch task '{}' to {}: {}", dag_id, agent, e);
@@ -1241,7 +1226,6 @@ pub async fn dispatch_orchestrated_task(
                     emit_orch(&on_event, "dispatch_error", serde_json::json!({
                         "dag_id": dag_id, "agent": agent, "error": e.to_string()
                     }));
-                    // Also emit as task_failed so the frontend can show the error on the task card
                     emit_orch(&on_event, "task_failed", serde_json::json!({
                         "dag_id": dag_id,
                         "exit_code": -1,
@@ -1250,21 +1234,13 @@ pub async fn dispatch_orchestrated_task(
                         "failure_reason": e.to_string()
                     }));
                     failed_dag_ids.insert(dag_id.clone());
+                    continue;
                 }
-            }
-        }
+            };
 
-        // Wait for all tasks in this wave to complete (with retry/fallback)
-        let retry_config = RetryConfig::default();
-        let available_agents: Vec<&str> = decomposition.tasks.iter()
-            .map(|t| t.agent.as_str())
-            .collect::<std::collections::HashSet<&str>>()
-            .into_iter()
-            .collect();
-
-        for (task_id, agent, dag_id) in &wave_task_ids {
-            let mut current_task_id = task_id.clone();
-            let mut current_agent = agent.clone();
+            // Wait for this task to complete (with retry/fallback)
+            let mut current_task_id = task_id;
+            let mut current_agent = current_agent;
             let original_agent = agent.clone();
             let mut attempt = 0u32;
             let mut last_exit_code;
@@ -1302,7 +1278,6 @@ pub async fn dispatch_orchestrated_task(
                 last_output_summary = get_process_output_summary(&current_task_id, state_ref);
 
                 if exit_code == 0 {
-                    // Success!
                     break;
                 }
 
@@ -1320,11 +1295,10 @@ pub async fn dispatch_orchestrated_task(
                 };
 
                 if was_rate_limited {
-                    let rate_limit_delay = 30_000u64; // 30 seconds
                     emit_orch(&on_event, "rate_limited", serde_json::json!({
                         "dag_id": dag_id, "wait_seconds": 30
                     }));
-                    tokio::time::sleep(Duration::from_millis(rate_limit_delay)).await;
+                    tokio::time::sleep(Duration::from_millis(30_000)).await;
                 }
 
                 // Try retry with same agent
@@ -1335,15 +1309,7 @@ pub async fn dispatch_orchestrated_task(
                         "dag_id": dag_id, "attempt": attempt,
                         "max_retries": retry_config.max_retries, "delay_ms": delay
                     }));
-
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-
-                    // Re-dispatch same task to same agent
-                    let idx = match dag_id_to_idx.get(dag_id.as_str()) {
-                        Some(&i) => i,
-                        None => break,
-                    };
-                    let (sub_id, _, sub_prompt) = &task_channels[idx];
 
                     match super::router::dispatch_task(
                         sub_prompt.clone(),
@@ -1373,13 +1339,7 @@ pub async fn dispatch_orchestrated_task(
                         "dag_id": dag_id, "from_agent": current_agent, "to_agent": &fallback
                     }));
                     current_agent = fallback;
-                    attempt = 0; // Reset attempt counter for new agent
-
-                    let idx = match dag_id_to_idx.get(dag_id.as_str()) {
-                        Some(&i) => i,
-                        None => break,
-                    };
-                    let (sub_id, _, sub_prompt) = &task_channels[idx];
+                    attempt = 0;
 
                     match super::router::dispatch_task(
                         sub_prompt.clone(),
@@ -1407,28 +1367,39 @@ pub async fn dispatch_orchestrated_task(
                 break;
             }
 
-            let final_agent_changed = current_agent != original_agent;
-            let worker_result = WorkerResult {
-                task_id: current_task_id.clone(),
+            // Record worker result
+            plan.worker_results.push(WorkerResult {
+                task_id: dag_id.clone(),
                 agent: current_agent.clone(),
                 exit_code: last_exit_code,
-                output_summary: last_output_summary.clone(),
+                output_summary: truncate(&last_output_summary, 500).to_string(),
                 retry_count: attempt,
-                original_agent: if final_agent_changed { Some(original_agent.clone()) } else { None },
-                failure_reason: if last_exit_code != 0 { failure_reason.clone() } else { None },
-            };
-            plan.worker_results.push(worker_result);
+                original_agent: if current_agent != *agent { Some(original_agent) } else { None },
+                failure_reason: failure_reason.clone(),
+            });
 
-            // Record task outcome for historical performance tracking
-            if let Some(&idx) = dag_id_to_idx.get(dag_id.as_str()) {
-                let (_, _, ref sub_prompt) = task_channels[idx];
-                let task_type = infer_task_type(sub_prompt);
-                let _ = context_store.record_task_outcome(
-                    &current_agent,
-                    &task_type,
-                    last_exit_code == 0,
-                    0, // duration approximation not yet implemented
-                );
+            // Update plan in state
+            {
+                let mut inner = state_ref.lock();
+                if let Some(p) = inner.orchestration_plans.get_mut(&plan.task_id) {
+                    p.worker_results = plan.worker_results.clone();
+                }
+            }
+
+            // Context store — record task outcome
+            {
+                let store = context_store.inner().clone();
+                let agent_name = current_agent.clone();
+                let task_type = "orchestration_worker".to_string();
+                let success = last_exit_code == 0;
+                tokio::task::spawn_blocking(move || {
+                    let _ = store.record_task_outcome(
+                        &agent_name,
+                        &task_type,
+                        success,
+                        0,
+                    );
+                });
             }
 
             if last_exit_code != 0 {
@@ -1439,7 +1410,7 @@ pub async fn dispatch_orchestrated_task(
             let worker_adapter = get_adapter(&current_agent)?;
             let output_lines: Vec<String> = last_output_summary.lines().map(|s| s.to_string()).collect();
             let readable_summary = worker_adapter.extract_result(&output_lines)
-                .unwrap_or_else(|| truncate(&last_output_summary, 500).to_string());
+                .unwrap_or_else(|| truncate(&last_output_summary, 2000).to_string());
 
             let msg_type = if last_exit_code == 0 { MessageType::TaskCompleted } else { MessageType::TaskFailed };
             emit_messenger(&app_handle, MessengerMessage::agent(
