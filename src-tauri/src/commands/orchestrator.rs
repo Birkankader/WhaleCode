@@ -956,6 +956,21 @@ pub async fn dispatch_orchestrated_task(
             }));
             task.agent = config.master_agent.clone();
         }
+        // Fix placeholder prompts: if LLM returned template text instead of real content,
+        // substitute with the original user prompt
+        if task.prompt.contains("<detailed prompt") || task.prompt.contains("<agent_name>")
+            || task.prompt == "..." || task.prompt.trim().is_empty()
+        {
+            eprintln!("[orch] LLM returned placeholder prompt '{}', replacing with original", task.prompt);
+            task.prompt = prompt.clone();
+        }
+        if task.description.contains("<short description") || task.description.trim().is_empty() {
+            task.description = if prompt.len() > 60 {
+                format!("{}...", &prompt[..57])
+            } else {
+                prompt.clone()
+            };
+        }
     }
 
     plan.decomposition = Some(decomposition.clone());
@@ -1539,6 +1554,9 @@ pub async fn dispatch_orchestrated_task(
 
     plan.phase = OrchestrationPhase::Completed;
     update_plan_phase(state_ref, &plan.task_id, OrchestrationPhase::Completed)?;
+    emit_orch(&on_event, "phase_changed", serde_json::json!({
+        "phase": "completed", "detail": "Orchestration completed"
+    }));
     emit_messenger(&app_handle, MessengerMessage::system(
         &plan.task_id,
         "Orchestration completed".to_string(),

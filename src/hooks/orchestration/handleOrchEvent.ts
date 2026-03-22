@@ -70,6 +70,17 @@ export function handleOrchEvent(
       } else if (phase === 'reviewing') {
         store.setOrchestrationPhase('reviewing');
         log('cmd', `Phase 3: ${ev.detail || 'Reviewing'}`);
+      } else if (phase === 'completed') {
+        store.setOrchestrationPhase('completed');
+        // Mark master task as completed
+        const currentTasks = useTaskStore.getState().tasks;
+        for (const [id, t] of currentTasks) {
+          if (t.role === 'master' && t.status !== 'completed') {
+            store.updateTaskStatus(id, 'completed');
+            break;
+          }
+        }
+        log('success', 'Orchestration completed');
       }
       break;
     }
