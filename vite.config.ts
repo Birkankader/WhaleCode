@@ -9,7 +9,14 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, './src') },
   },
   clearScreen: false,
-  server: { port: 1420, strictPort: true },
+  server: {
+    port: 1420,
+    strictPort: true,
+    watch: {
+      // Ignore agent/tool artifacts that trigger unwanted HMR reloads
+      ignored: ['**/.bg-shell/**', '**/.whalecode-worktrees/**', '**/src-tauri/target/**'],
+    },
+  },
   test: {
     globals: true,
     environment: 'jsdom',

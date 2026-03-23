@@ -91,7 +91,7 @@ export function OutputConsole({ processId, channelRef, onOutput }: OutputConsole
       channelRef(channel);
     }
 
-    commands.startStream(channel).catch(() => {});
+    commands.startStream(channel).catch((err) => console.warn('startStream failed:', err));
   }, [instance, processId, channelRef, onOutput, writeEvent]);
 
   // Process mode: register for output via global event routing

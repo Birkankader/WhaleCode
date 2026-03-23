@@ -42,3 +42,20 @@ pub fn resume_process(
 ) -> Result<(), String> {
     process::manager::resume(&task_id, state)
 }
+
+/// Returns a list of currently running process task IDs.
+/// Frontend uses this to reconcile its task state with backend reality.
+#[tauri::command]
+#[specta::specta]
+pub fn get_running_processes(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let inner = state.lock();
+    let running: Vec<String> = inner
+        .processes
+        .iter()
+        .filter(|(_, entry)| matches!(entry.status, crate::state::ProcessStatus::Running))
+        .map(|(id, _)| id.clone())
+        .collect();
+    Ok(running)
+}

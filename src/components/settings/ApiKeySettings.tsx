@@ -75,7 +75,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       } else {
         setClaudeHasKey(false);
       }
-    } catch {
+    } catch { // IPC may fail during init — default to "no key"
       setClaudeHasKey(false);
     }
   }, []);
@@ -88,7 +88,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       } else {
         setGeminiHasKey(false);
       }
-    } catch {
+    } catch { // IPC may fail during init — default to "no key"
       setGeminiHasKey(false);
     }
   }, []);
@@ -101,7 +101,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
       } else {
         setCodexHasKey(false);
       }
-    } catch {
+    } catch { // IPC may fail during init — default to "no key"
       setCodexHasKey(false);
     }
   }, []);
@@ -283,10 +283,60 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
             storeKey="codeReview"
           />
           <ToggleSetting
+            label="Auto Approve"
+            description="Automatically approve decomposed sub-tasks without manual review"
+            storeKey="autoApprove"
+          />
+          <ToggleSetting
             label="Developer Mode"
             description="Enable direct terminal access to running agents"
             storeKey="developerMode"
           />
+        </div>
+      </div>
+
+      {/* Orchestration Config */}
+      <div className="mt-6 pt-4 border-t border-white/5">
+        <h3 className="text-sm font-medium text-zinc-300 mb-3">Orchestration</h3>
+        <div className="space-y-3">
+          <ConfigField
+            label="Master Timeout"
+            description="Max time for master agent decomposition (minutes)"
+            configKey="master_timeout_minutes"
+            suffix="min"
+          />
+          <ConfigField
+            label="Worker Timeout"
+            description="Max time for each worker task (minutes)"
+            configKey="worker_timeout_minutes"
+            suffix="min"
+          />
+          <ConfigField
+            label="Max Retries"
+            description="Number of retries before falling back to another agent"
+            configKey="max_worker_retries"
+            suffix="retries"
+          />
+        </div>
+      </div>
+
+      {/* Keyboard Shortcuts reference */}
+      <div className="mt-6 pt-4 border-t border-white/5">
+        <h3 className="text-sm font-medium text-zinc-300 mb-3">Keyboard Shortcuts</h3>
+        <div className="space-y-1.5">
+          {[
+            ['⌘P', 'Command Palette'],
+            ['⌘K', 'Quick Task'],
+            ['⌘1-4', 'Switch View'],
+            ['Esc', 'Close Panel'],
+          ].map(([key, label]) => (
+            <div key={key} className="flex items-center justify-between py-1">
+              <span className="text-xs text-zinc-500">{label}</span>
+              <kbd className="text-[10px] font-mono text-zinc-400 bg-zinc-800 px-1.5 py-0.5 rounded border border-white/10">
+                {key}
+              </kbd>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -296,7 +346,7 @@ export function ApiKeySettings({ onClose }: { onClose?: () => void }) {
 function ToggleSetting({ label, description, storeKey }: {
   label: string;
   description: string;
-  storeKey: 'autoMerge' | 'codeReview' | 'developerMode';
+  storeKey: 'autoMerge' | 'codeReview' | 'developerMode' | 'autoApprove';
 }) {
   const value = useUIStore((s) => s[storeKey]);
   const setter = useUIStore((s) => {
@@ -305,6 +355,8 @@ function ToggleSetting({ label, description, storeKey }: {
         return s.setAutoMerge;
       case 'codeReview':
         return s.setCodeReview;
+      case 'autoApprove':
+        return s.setAutoApprove;
       default:
         return s.setDeveloperMode;
     }
@@ -331,5 +383,63 @@ function ToggleSetting({ label, description, storeKey }: {
         />
       </button>
     </label>
+  );
+}
+
+function ConfigField({ label, description, configKey, suffix }: {
+  label: string;
+  description: string;
+  configKey: keyof import('@/bindings').AppConfig;
+  suffix: string;
+}) {
+  const [value, setValue] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  // Load current value from backend on mount
+  useEffect(() => {
+    commands.getConfig().then((result) => {
+      if (result.status === 'ok') {
+        setValue(String(result.data[configKey]));
+        setLoaded(true);
+      }
+    }).catch((e) => { console.warn('Failed to load config:', e); });
+  }, [configKey]);
+
+  // Save on blur or Enter
+  const save = useCallback(async () => {
+    const num = parseInt(value, 10);
+    if (isNaN(num) || num < 1) return;
+    setSaving(true);
+    try {
+      const current = await commands.getConfig();
+      if (current.status === 'ok') {
+        const updated = { ...current.data, [configKey]: num };
+        await commands.setConfig(updated);
+      }
+    } catch (e) { console.warn('Failed to save config:', e); }
+    finally { setSaving(false); }
+  }, [value, configKey]);
+
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-medium text-zinc-300">{label}</p>
+        <p className="text-[10px] text-zinc-600">{description}</p>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <input
+          type="number"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => { if (e.key === 'Enter') save(); }}
+          min="1"
+          disabled={!loaded || saving}
+          className="w-14 h-7 text-xs text-center text-zinc-200 bg-zinc-800 border border-white/10 rounded-md outline-none focus:border-violet-500/50 disabled:opacity-50"
+        />
+        <span className="text-[10px] text-zinc-600">{suffix}</span>
+      </div>
+    </div>
   );
 }

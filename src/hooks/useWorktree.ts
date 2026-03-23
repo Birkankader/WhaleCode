@@ -56,8 +56,8 @@ export function useWorktree(projectDir: string) {
   );
 
   const mergeWorktree = useCallback(
-    async (branchName: string) => {
-      if (!projectDir) return;
+    async (branchName: string): Promise<boolean> => {
+      if (!projectDir) return false;
       setLoading(true);
       setError(null);
       try {
@@ -65,11 +65,14 @@ export function useWorktree(projectDir: string) {
         if (result.status === 'ok') {
           setConflicts(null);
           await refreshWorktrees();
+          return true;
         } else {
           setError(result.error);
+          return false;
         }
       } catch (err) {
         setError('Failed to merge worktree');
+        return false;
       } finally {
         setLoading(false);
       }
@@ -102,8 +105,8 @@ export function useWorktree(projectDir: string) {
   );
 
   const selectiveMerge = useCallback(
-    async (branchName: string, acceptedFiles: string[]) => {
-      if (!projectDir) return;
+    async (branchName: string, acceptedFiles: string[]): Promise<boolean> => {
+      if (!projectDir) return false;
       setLoading(true);
       setError(null);
       try {
@@ -112,11 +115,14 @@ export function useWorktree(projectDir: string) {
           setConflicts(null);
           setDiffReport(null);
           await refreshWorktrees();
+          return true;
         } else {
           setError(result.error);
+          return false;
         }
       } catch (err) {
         setError('Failed to merge selected files');
+        return false;
       } finally {
         setLoading(false);
       }
@@ -141,6 +147,30 @@ export function useWorktree(projectDir: string) {
       setLoading(false);
     }
   }, [projectDir, refreshWorktrees]);
+
+  const removeWorktree = useCallback(
+    async (branchName: string): Promise<boolean> => {
+      if (!projectDir) return false;
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await commands.removeSingleWorktree(projectDir, branchName);
+        if (result.status === 'ok') {
+          await refreshWorktrees();
+          return true;
+        } else {
+          setError(result.error);
+          return false;
+        }
+      } catch (err) {
+        setError('Failed to remove worktree');
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [projectDir, refreshWorktrees],
+  );
 
   // Refresh worktree list on mount and when projectDir changes
   useEffect(() => {
@@ -180,5 +210,6 @@ export function useWorktree(projectDir: string) {
     getWorktreeDiff,
     selectiveMerge,
     cleanupWorktrees,
+    removeWorktree,
   };
 }

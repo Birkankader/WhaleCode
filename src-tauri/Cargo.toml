@@ -1,22 +1,23 @@
 [package]
 name = "whalecode"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Multi-agent AI coding orchestrator — run Claude, Gemini, and Codex simultaneously"
+authors = ["WhaleCode Team"]
 edition = "2021"
 
 [lib]
 name = "whalecode_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "=2.5.6", features = [] }
 
 [dependencies]
-tauri = { version = "=2.10.3", features = ["macos-private-api"] }
+tauri = { version = "=2.10.3", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 specta-typescript = "=0.0.9"
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
@@ -27,11 +28,21 @@ tokio = { version = "1", features = ["io-util", "time", "process", "macros", "rt
 keyring = { version = "3", features = ["apple-native"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 rusqlite_migration = "2.4"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 git2 = { version = "0.20", features = ["vendored-libgit2"] }
 ignore = "0.4"
 tauri-plugin-dialog = "2.6.0"
 thiserror = "1"
+parking_lot = "0.12"
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 1

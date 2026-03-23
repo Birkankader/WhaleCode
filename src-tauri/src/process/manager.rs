@@ -1,3 +1,4 @@
+use log::debug;
 use tauri::ipc::Channel;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -53,7 +54,9 @@ pub async fn spawn_with_env(
 /// Core implementation for spawning a subprocess with env vars and pgid isolation.
 /// Accepts `&AppState` directly so it can be called from both Tauri commands
 /// (via `spawn_with_env`) and orchestration code (via `spawn_interactive`).
-async fn spawn_with_env_core(
+/// Also used by `dispatch_task_inner` for spawned Tokio tasks where `tauri::State`
+/// lifetimes are not available.
+pub async fn spawn_with_env_core(
     cmd: &str,
     args: &[String],
     cwd: &str,
@@ -94,7 +97,12 @@ async fn spawn_with_env_core(
         });
     }
 
-    let mut child = command.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
+    eprintln!("[spawn] cmd={} args={:?} cwd={}", cmd, args, cwd);
+    let mut child = command.spawn().map_err(|e| {
+        let err = format!("Failed to spawn process '{}': {} (cwd: {})", cmd, e, cwd);
+        eprintln!("[spawn] {}", err);
+        err
+    })?;
 
     let initial_bytes = initial_stdin.map(|b| b.to_vec());
     let stdin_tx = if let Some(mut stdin) = child.stdin.take() {
@@ -133,7 +141,7 @@ async fn spawn_with_env_core(
 
     // Register in state
     {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
+        let mut inner = state.lock();
         inner.processes.insert(
             task_id.clone(),
             ProcessEntry {
@@ -171,17 +179,26 @@ async fn spawn_with_env_core(
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 stdout_channel.send(OutputEvent::Stdout(line.clone())).ok();
-                // Store output line for review phase summaries
-                if let Ok(mut inner) = state_for_output.lock() {
+                // Store output line for review phase summaries.
+                // Lock scope is kept minimal: push + conditional truncate + read count.
+                let count = {
+                    let mut inner = state_for_output.lock();
                     if let Some(entry) = inner.processes.get_mut(&task_id_for_output) {
                         entry.output_lines.push(line);
-                        // Keep only last 50 lines
-                        if entry.output_lines.len() > 50 {
-                            entry.output_lines.drain(0..entry.output_lines.len() - 50);
+                        let len = entry.output_lines.len();
+                        if len > 600 {
+                            // Drop oldest lines. drain(..N) shifts remaining elements
+                            // which is O(500) — acceptable at 600-line intervals.
+                            entry.output_lines.drain(..len - 500);
                         }
-                        // Signal new line count to watchers
-                        line_count_tx.send(entry.output_lines.len()).ok();
+                        Some(entry.output_lines.len())
+                    } else {
+                        None
                     }
+                };
+                // Signal new line count outside the mutex lock
+                if let Some(c) = count {
+                    line_count_tx.send(c).ok();
                 }
             }
         });
@@ -210,8 +227,11 @@ async fn spawn_with_env_core(
         };
 
         // Update process status in state
-        if let Ok(mut inner) = waiter_state.lock() {
+        { let mut inner = waiter_state.lock();
             if let Some(entry) = inner.processes.get_mut(&waiter_task_id) {
+                let last_lines: Vec<String> = entry.output_lines.iter().rev().take(5).cloned().collect();
+                eprintln!("[process] {} exited with code {} | tool={} | last_output: {:?}",
+                    waiter_task_id, exit_code, entry.tool_name, last_lines);
                 extract_usage_from_output(entry);
                 match &status {
                     Ok(s) if s.success() => {
@@ -228,7 +248,7 @@ async fn spawn_with_env_core(
                 entry.stdin_tx = None;
                 // Keep output_lines — they may still be read by
                 // wait_for_turn_complete or parse_decomposition_from_output
-                // after process exit. Buffer is already capped at 50 lines.
+                // after process exit. Buffer is already capped at 500 lines.
             }
         }
 
@@ -320,7 +340,7 @@ pub fn send_to_process(
     task_id: &str,
     message: &str,
 ) -> Result<(), String> {
-    let state_guard = state.lock().map_err(|e| e.to_string())?;
+    let state_guard = state.lock();
     let entry = state_guard
         .processes
         .get(task_id)
@@ -337,7 +357,7 @@ pub fn send_to_process(
 /// Close a process's stdin, signaling EOF. This causes CLIs that read until EOF
 /// (like Claude Code in non-TTY mode) to start processing their input.
 pub fn close_stdin(state: &AppState, task_id: &str) -> Result<(), String> {
-    let mut state_guard = state.lock().map_err(|e| e.to_string())?;
+    let mut state_guard = state.lock();
     let entry = state_guard
         .processes
         .get_mut(task_id)
@@ -362,7 +382,7 @@ pub async fn cancel(task_id: &str, state: tauri::State<'_, AppState>) -> Result<
 /// Idempotent: returns Ok(()) if the process was already removed or never existed.
 pub async fn kill_and_remove(task_id: &str, state: &AppState) -> Result<(), String> {
     let pgid = {
-        let inner = state.lock().map_err(|e| e.to_string())?;
+        let inner = state.lock();
         match inner.processes.get(task_id) {
             Some(entry) => match entry.status {
                 // Already dead — just remove below
@@ -379,7 +399,7 @@ pub async fn kill_and_remove(task_id: &str, state: &AppState) -> Result<(), Stri
 
     // Remove from state entirely (don't just mark Failed — that leaks memory)
     {
-        let mut inner = state.lock().map_err(|e| e.to_string())?;
+        let mut inner = state.lock();
         inner.processes.remove(task_id);
     }
 
@@ -388,7 +408,7 @@ pub async fn kill_and_remove(task_id: &str, state: &AppState) -> Result<(), Stri
 
 /// Pause a running process by sending SIGSTOP to its process group.
 pub fn pause(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut inner = state.lock().map_err(|e| e.to_string())?;
+    let mut inner = state.lock();
     let entry = inner
         .processes
         .get_mut(task_id)
@@ -402,7 +422,7 @@ pub fn pause(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), Str
 
 /// Resume a paused process by sending SIGCONT to its process group.
 pub fn resume(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut inner = state.lock().map_err(|e| e.to_string())?;
+    let mut inner = state.lock();
     let entry = inner
         .processes
         .get_mut(task_id)
@@ -414,25 +434,22 @@ pub fn resume(task_id: &str, state: tauri::State<'_, AppState>) -> Result<(), St
     Ok(())
 }
 
-/// Atomically check that no running process exists for `tool_name` and reserve the slot.
-/// Returns `Err` if the tool already has a running process or is being dispatched.
-pub fn acquire_tool_slot(state: &AppState, tool_name: &str) -> Result<(), String> {
-    let mut inner = state.lock().map_err(|e| e.to_string())?;
-    for (_id, proc) in inner.processes.iter() {
-        if proc.tool_name == tool_name && matches!(proc.status, ProcessStatus::Running) {
-            return Err(format!("{} is already running a task", tool_name));
-        }
-    }
-    if !inner.reserved_tools.insert(tool_name.to_string()) {
-        return Err(format!("{} is already being dispatched", tool_name));
+/// Atomically reserve a dispatch slot by `dispatch_id`.
+/// Returns `Err` if this exact dispatch_id is already reserved (TOCTOU guard).
+/// Does NOT check for running processes by agent name — multiple workers of
+/// the same agent type are explicitly allowed to run concurrently.
+pub fn acquire_dispatch_slot(state: &AppState, dispatch_id: &str) -> Result<(), String> {
+    let mut inner = state.lock();
+    if !inner.reserved_dispatches.insert(dispatch_id.to_string()) {
+        return Err(format!("{} is already being dispatched", dispatch_id));
     }
     Ok(())
 }
 
-/// Release a tool slot reservation. Idempotent.
-pub fn release_tool_slot(state: &AppState, tool_name: &str) {
-    if let Ok(mut inner) = state.lock() {
-        inner.reserved_tools.remove(tool_name);
+/// Release a dispatch slot reservation. Idempotent.
+pub fn release_dispatch_slot(state: &AppState, dispatch_id: &str) {
+    { let mut inner = state.lock();
+        inner.reserved_dispatches.remove(dispatch_id);
     }
 }
 
@@ -451,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_send_to_process_missing_process() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc; use parking_lot::Mutex;
         let state: AppState = Arc::new(Mutex::new(Default::default()));
         let result = send_to_process(&state, "nonexistent", "hello");
         assert!(result.is_err());
@@ -459,31 +476,34 @@ mod tests {
     }
 
     #[test]
-    fn test_acquire_tool_slot_success() {
-        use std::sync::{Arc, Mutex};
+    fn test_acquire_dispatch_slot_success() {
+        use std::sync::Arc; use parking_lot::Mutex;
         let state: AppState = Arc::new(Mutex::new(Default::default()));
-        assert!(acquire_tool_slot(&state, "claude").is_ok());
-        assert!(state.lock().unwrap().reserved_tools.contains("claude"));
+        assert!(acquire_dispatch_slot(&state, "dispatch-001").is_ok());
+        assert!(state.lock().reserved_dispatches.contains("dispatch-001"));
     }
 
     #[test]
-    fn test_acquire_tool_slot_already_reserved() {
-        use std::sync::{Arc, Mutex};
+    fn test_acquire_dispatch_slot_already_reserved() {
+        use std::sync::Arc; use parking_lot::Mutex;
         let state: AppState = Arc::new(Mutex::new(Default::default()));
-        acquire_tool_slot(&state, "claude").unwrap();
-        let err = acquire_tool_slot(&state, "claude");
+        acquire_dispatch_slot(&state, "dispatch-001").unwrap();
+        let err = acquire_dispatch_slot(&state, "dispatch-001");
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("already being dispatched"));
     }
 
     #[test]
-    fn test_acquire_tool_slot_running_process() {
-        use std::sync::{Arc, Mutex};
+    fn test_acquire_dispatch_slot_no_running_process_block() {
+        // Verify that a running process with the same tool_name does NOT block
+        // a new dispatch with a different dispatch_id. This is the key behavior
+        // change: per-dispatch-id, not per-agent-name.
+        use std::sync::Arc; use parking_lot::Mutex;
         let state: AppState = Arc::new(Mutex::new(Default::default()));
         let (_tx, rx) = tokio::sync::watch::channel(false);
         let (_ltx, lrx) = tokio::sync::watch::channel(0usize);
         {
-            let mut inner = state.lock().unwrap();
+            let mut inner = state.lock();
             inner.processes.insert("t1".to_string(), ProcessEntry {
                 pgid: 1, status: ProcessStatus::Running,
                 tool_name: "claude".to_string(), task_description: "test".to_string(),
@@ -492,19 +512,32 @@ mod tests {
                 input_tokens: None, output_tokens: None, total_tokens: None, cost_usd: None,
             });
         }
-        let err = acquire_tool_slot(&state, "claude");
-        assert!(err.is_err());
-        assert!(err.unwrap_err().contains("already running"));
+        // A different dispatch_id should succeed even though "claude" is running
+        assert!(acquire_dispatch_slot(&state, "dispatch-002").is_ok());
     }
 
     #[test]
-    fn test_release_tool_slot() {
-        use std::sync::{Arc, Mutex};
+    fn test_release_dispatch_slot() {
+        use std::sync::Arc; use parking_lot::Mutex;
         let state: AppState = Arc::new(Mutex::new(Default::default()));
-        acquire_tool_slot(&state, "claude").unwrap();
-        release_tool_slot(&state, "claude");
-        assert!(!state.lock().unwrap().reserved_tools.contains("claude"));
+        acquire_dispatch_slot(&state, "dispatch-001").unwrap();
+        release_dispatch_slot(&state, "dispatch-001");
+        assert!(!state.lock().reserved_dispatches.contains("dispatch-001"));
         // Can re-acquire
-        assert!(acquire_tool_slot(&state, "claude").is_ok());
+        assert!(acquire_dispatch_slot(&state, "dispatch-001").is_ok());
+    }
+
+    #[test]
+    fn test_acquire_dispatch_slot_two_same_agent_different_ids() {
+        // Core concurrency test: two dispatches using the same agent type ("claude")
+        // must both succeed when they have different dispatch_ids.
+        use std::sync::Arc; use parking_lot::Mutex;
+        let state: AppState = Arc::new(Mutex::new(Default::default()));
+        assert!(acquire_dispatch_slot(&state, "worker-claude-1").is_ok());
+        assert!(acquire_dispatch_slot(&state, "worker-claude-2").is_ok());
+        // Both are reserved
+        let inner = state.lock();
+        assert!(inner.reserved_dispatches.contains("worker-claude-1"));
+        assert!(inner.reserved_dispatches.contains("worker-claude-2"));
     }
 }

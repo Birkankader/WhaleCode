@@ -1,0 +1,23 @@
+[
+  "plan-slice/M002/S03",
+  "execute-task/M002/S03/T01",
+  "execute-task/M002/S03/T02",
+  "complete-slice/M002/S03",
+  "research-slice/M002/S04",
+  "plan-slice/M002/S04",
+  "execute-task/M002/S04/T01",
+  "execute-task/M002/S04/T02",
+  "execute-task/M002/S04/T03",
+  "complete-slice/M002/S04",
+  "research-slice/M002/S05",
+  "plan-slice/M002/S05",
+  "execute-task/M002/S05/T01",
+  "execute-task/M002/S05/T02",
+  "complete-slice/M002/S05",
+  "research-slice/M002/S06",
+  "plan-slice/M002/S06",
+  "execute-task/M002/S06/T01",
+  "execute-task/M002/S06/T02",
+  "validate-milestone/M002",
+  "complete-milestone/M002"
+]

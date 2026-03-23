@@ -10,7 +10,7 @@ import {
   emitLocalProcessMessage,
   useProcessStore,
 } from './useProcess';
-import { useTaskStore, type ToolName } from '../stores/taskStore';
+import { useTaskStore, type ToolName, type TaskStatus } from '../stores/taskStore';
 import { useOrchestratedDispatch } from './orchestration/useOrchestratedDispatch';
 
 // Re-export for consumers that may need the type
@@ -37,7 +37,8 @@ export function useTaskDispatch() {
           return result.data;
         }
         return null;
-      } catch {
+      } catch (e) {
+        console.error('Failed to suggest tool:', e);
         return null;
       }
     },
@@ -72,21 +73,22 @@ export function useTaskDispatch() {
           useTaskStore.getState().updateTaskStatus(tempId, 'waiting');
 
           // Wait for dependency to complete (with 5-minute timeout)
+          let unsub: (() => void) | undefined;
           const completed = await Promise.race([
             new Promise<boolean>((resolve) => {
-              const unsub = useProcessStore.subscribe((state) => {
+              unsub = useProcessStore.subscribe((state) => {
                 const dep = state.processes.get(dependsOn);
                 if (!dep || dep.status === 'completed') {
-                  unsub();
                   resolve(true);
                 } else if (dep.status === 'failed') {
-                  unsub();
                   resolve(false);
                 }
               });
             }),
             new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300_000)),
           ]);
+          // Always unsubscribe after race resolves — prevents leak on timeout
+          unsub?.();
 
           if (!completed) {
             useTaskStore.getState().updateTaskStatus(tempId, 'failed');
@@ -109,6 +111,8 @@ export function useTaskDispatch() {
         toolName === 'codex' ? formatCodexEvent :
         formatGeminiEvent;
 
+      let lastOutputUpdateAt = 0;
+
       channel.onmessage = (msg: OutputEvent) => {
         let formattedMsg = msg;
 
@@ -116,6 +120,16 @@ export function useTaskDispatch() {
           const formatted = formatEvent(msg.data);
           if (!formatted) return; // Skip empty/suppressed events
           formattedMsg = { event: 'stdout', data: formatted };
+
+          // Update lastOutputLine for live preview on task cards (throttled to 500ms)
+          const now = Date.now();
+          if (now - lastOutputUpdateAt > 500) {
+            const previewLine = formatted.trim();
+            if (previewLine.length > 0) {
+              lastOutputUpdateAt = now;
+              useTaskStore.getState().updateTaskOutputLine(tempId, previewLine.slice(0, 160));
+            }
+          }
 
           // Capture result text from NDJSON events for single tasks
           const rawLine = msg.data;
@@ -144,32 +158,25 @@ export function useTaskDispatch() {
                   singleTaskResultText = msgText.length > 800 ? msgText.slice(0, 797) + '...' : msgText;
                 }
               }
-            } catch { /* not valid JSON */ }
+            } catch (e) { /* not valid JSON */ }
           }
         }
 
         if (msg.event === 'exit') {
           const code = Number(msg.data);
-          const finalId = resolvedTaskId ?? tempId;
+          const finalStatus: TaskStatus = code === 0 ? 'completed' : 'failed';
 
-          // Update process store status
-          useProcessStore.getState()._updateStatus(
-            finalId,
-            code === 0 ? 'completed' : 'failed',
-            code,
-          );
-
-          // Update task store status + attach result text
-          useTaskStore.getState().updateTaskStatus(
-            tempId,
-            code === 0 ? 'completed' : 'failed',
-          );
+          // Update task store (single source of truth)
+          useTaskStore.getState().updateTaskStatus(tempId, finalStatus);
+          useTaskStore.getState().updateTaskProcess(tempId, { exitCode: code });
           if (singleTaskResultText) {
             useTaskStore.getState().updateTaskResult(tempId, singleTaskResultText);
           }
 
-          // Emit the exit event
-          emitProcessOutput(finalId, formattedMsg);
+          // Legacy processStore for xterm/OutputConsole compatibility
+          useProcessStore.getState()._updateStatus(tempId, finalStatus, code);
+
+          emitProcessOutput(tempId, formattedMsg);
           return;
         }
 
@@ -178,7 +185,7 @@ export function useTaskDispatch() {
           earlyEvents.push(formattedMsg);
           return;
         }
-        emitProcessOutput(resolvedTaskId, formattedMsg);
+        emitProcessOutput(tempId, formattedMsg);
       };
 
       try {
@@ -193,11 +200,13 @@ export function useTaskDispatch() {
         const taskId = result.data;
         resolvedTaskId = taskId;
 
-        // Register in process store (same pattern as useClaudeTask/useGeminiTask)
+        // Register in process store — use tempId for consistency with taskStore
+        // Backend usually returns the same tempId, but we normalize here
+        const processKey = tempId;
         const store = useProcessStore.getState();
         const newProcesses = new Map(store.processes);
-        newProcesses.set(taskId, {
-          taskId,
+        newProcesses.set(processKey, {
+          taskId: processKey,
           cmd: `${toolName}: ${description}`,
           status: 'running',
           channel,
@@ -208,10 +217,10 @@ export function useTaskDispatch() {
         });
         useProcessStore.setState({
           processes: newProcesses,
-          activeProcessId: taskId,
+          activeProcessId: processKey,
         });
 
-        emitLocalProcessMessage(taskId, `$ ${prompt}`);
+        emitLocalProcessMessage(processKey, `$ ${prompt}`);
 
         // Update task store with real taskId and running status
         const taskState = useTaskStore.getState();
@@ -224,11 +233,12 @@ export function useTaskDispatch() {
 
         // Replay early events
         for (const ev of earlyEvents) {
-          emitProcessOutput(taskId, ev);
+          emitProcessOutput(tempId, ev);
         }
 
-        return taskId;
-      } catch {
+        return processKey;
+      } catch (e) {
+        console.error('Failed to dispatch task:', e);
         useTaskStore.getState().updateTaskStatus(tempId, 'failed');
         return null;
       }

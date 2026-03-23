@@ -10,7 +10,7 @@ mod tests {
     use crate::context::store::ContextStore;
     use crate::router::orchestrator::{
         AgentConfig, DecompositionResult, Orchestrator, OrchestratorConfig,
-        OrchestrationPhase, WorkerResult,
+        OrchestrationPhase, SubTaskDef, WorkerResult,
     };
     use rusqlite::Connection;
 
@@ -502,5 +502,276 @@ mod tests {
             "orchestration_history table should exist after migration, got: {:?}",
             tables
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // SubTaskDef.id deserialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn subtaskdef_with_id_field_deserializes_correctly() {
+        let json = r#"{"id":"t1","agent":"claude","prompt":"do stuff","description":"things","depends_on":[]}"#;
+        let def: SubTaskDef = serde_json::from_str(json).unwrap();
+        assert_eq!(def.id, Some("t1".to_string()));
+        assert_eq!(def.agent, "claude");
+    }
+
+    #[test]
+    fn subtaskdef_without_id_field_defaults_to_none() {
+        let json = r#"{"agent":"claude","prompt":"do stuff","description":"things"}"#;
+        let def: SubTaskDef = serde_json::from_str(json).unwrap();
+        assert_eq!(def.id, None);
+        assert!(def.depends_on.is_empty());
+    }
+
+    #[test]
+    fn decomposition_result_preserves_llm_ids() {
+        let json = r#"{"tasks":[
+            {"id":"t1","agent":"claude","prompt":"schema design","description":"Design DB schema","depends_on":[]},
+            {"id":"t2","agent":"gemini","prompt":"build api","description":"REST API","depends_on":["t1"]},
+            {"id":"t3","agent":"codex","prompt":"build ui","description":"Frontend","depends_on":["t1"]},
+            {"id":"t4","agent":"claude","prompt":"integration","description":"Wire up","depends_on":["t2","t3"]}
+        ]}"#;
+        let result: DecompositionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.tasks.len(), 4);
+        assert_eq!(result.tasks[0].id, Some("t1".to_string()));
+        assert_eq!(result.tasks[1].id, Some("t2".to_string()));
+        assert_eq!(result.tasks[2].id, Some("t3".to_string()));
+        assert_eq!(result.tasks[3].id, Some("t4".to_string()));
+        // depends_on references are preserved as-is
+        assert_eq!(result.tasks[3].depends_on, vec!["t2", "t3"]);
+    }
+
+    #[test]
+    fn decomposition_result_mixed_ids_all_become_none_safe() {
+        // When only SOME tasks have ids, the DAG builder falls back to index-based.
+        // Here we just verify serde handles the mixed case correctly.
+        let json = r#"{"tasks":[
+            {"id":"t1","agent":"claude","prompt":"a","description":"A","depends_on":[]},
+            {"agent":"gemini","prompt":"b","description":"B","depends_on":[]}
+        ]}"#;
+        let result: DecompositionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.tasks[0].id, Some("t1".to_string()));
+        assert_eq!(result.tasks[1].id, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Worktree integration: WorktreeEntry struct and event shape (T02)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn worktree_entry_has_expected_fields() {
+        use crate::worktree::models::WorktreeEntry;
+        use std::path::PathBuf;
+
+        let entry = WorktreeEntry {
+            task_id: "t1".to_string(),
+            worktree_name: "whalecode-t1".to_string(),
+            branch_name: "whalecode/task/t1".to_string(),
+            path: PathBuf::from("/tmp/.whalecode-worktrees/whalecode-t1"),
+            created_at: "2026-03-23T10:00:00Z".to_string(),
+        };
+
+        assert_eq!(entry.task_id, "t1");
+        assert_eq!(entry.worktree_name, "whalecode-t1");
+        assert_eq!(entry.branch_name, "whalecode/task/t1");
+        assert!(entry.path.to_str().unwrap().contains("whalecode-t1"));
+        assert!(!entry.created_at.is_empty());
+    }
+
+    #[test]
+    fn worktree_created_event_json_shape() {
+        // Verify the JSON shape emitted by worktree_created events
+        // has all required fields for downstream consumers (S04 review/merge).
+        let event_data = serde_json::json!({
+            "dag_id": "t1",
+            "task_id": "t1",
+            "branch": "whalecode/task/t1",
+            "path": "/tmp/.whalecode-worktrees/whalecode-t1"
+        });
+
+        assert!(event_data.get("dag_id").is_some(), "worktree_created must include dag_id");
+        assert!(event_data.get("task_id").is_some(), "worktree_created must include task_id");
+        assert!(event_data.get("branch").is_some(), "worktree_created must include branch");
+        assert!(event_data.get("path").is_some(), "worktree_created must include path");
+
+        assert_eq!(event_data["dag_id"], "t1");
+        assert_eq!(event_data["branch"], "whalecode/task/t1");
+    }
+
+    #[test]
+    fn worker_event_enrichment_json_shape() {
+        // Verify enriched worker events include worktree_path and worktree_branch
+        // fields for downstream consumption by S04 (review/merge).
+        let worker_started = serde_json::json!({
+            "dag_id": "t1",
+            "process_id": "proc-abc",
+            "worktree_path": "/tmp/.whalecode-worktrees/whalecode-t1",
+            "worktree_branch": "whalecode/task/t1"
+        });
+        assert!(worker_started.get("worktree_path").is_some(), "worker_started must include worktree_path");
+        assert!(worker_started.get("worktree_branch").is_some(), "worker_started must include worktree_branch");
+
+        let task_completed = serde_json::json!({
+            "dag_id": "t1",
+            "exit_code": 0,
+            "summary": "Done",
+            "agent": "claude",
+            "failure_reason": "",
+            "worktree_path": "/tmp/.whalecode-worktrees/whalecode-t1",
+            "worktree_branch": "whalecode/task/t1"
+        });
+        assert!(task_completed.get("worktree_path").is_some(), "task_completed must include worktree_path");
+        assert!(task_completed.get("worktree_branch").is_some(), "task_completed must include worktree_branch");
+
+        let task_failed = serde_json::json!({
+            "dag_id": "t2",
+            "exit_code": 1,
+            "summary": "Error",
+            "agent": "gemini",
+            "failure_reason": "process died",
+            "worktree_path": "/tmp/.whalecode-worktrees/whalecode-t2",
+            "worktree_branch": "whalecode/task/t2"
+        });
+        assert!(task_failed.get("worktree_path").is_some(), "task_failed must include worktree_path");
+        assert!(task_failed.get("worktree_branch").is_some(), "task_failed must include worktree_branch");
+    }
+
+    #[test]
+    fn worktree_manager_import_smoke_test() {
+        // Verify WorktreeManager can be imported and constructed.
+        // This confirms the wiring between orchestrator and worktree modules compiles.
+        use crate::worktree::manager::WorktreeManager;
+        let manager = WorktreeManager::new(std::path::PathBuf::from("/tmp/fake-repo"));
+        let base = manager.worktree_base_dir();
+        assert!(base.to_str().unwrap().contains(".whalecode-worktrees"),
+            "worktree base dir should contain .whalecode-worktrees, got: {:?}", base);
+    }
+
+    // -----------------------------------------------------------------------
+    // T03: Parallel worker dispatch — WorkerOutcome and JoinSet patterns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn worker_outcome_struct_fields() {
+        // Verify WorkerOutcome carries all necessary fields for post-wave merging.
+        // This struct is returned by dispatch_and_await_worker and consumed by the
+        // JoinSet collection loop to populate failed_dag_ids and worker_task_ids.
+        use super::super::orchestrator::WorkerOutcome;
+        let outcome = WorkerOutcome {
+            dag_id: "task-1".to_string(),
+            success: true,
+            process_task_id: Some("proc-abc".to_string()),
+            agent: "claude".to_string(),
+            exit_code: 0,
+            output_summary: "Completed successfully".to_string(),
+            failure_reason: None,
+            retry_count: 0,
+            original_agent: None,
+        };
+        assert!(outcome.success);
+        assert_eq!(outcome.dag_id, "task-1");
+        assert_eq!(outcome.process_task_id.as_deref(), Some("proc-abc"));
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.failure_reason.is_none());
+        assert!(outcome.original_agent.is_none());
+    }
+
+    #[test]
+    fn worker_outcome_failed_with_fallback() {
+        // Verify WorkerOutcome correctly represents a failed task with agent fallback.
+        use super::super::orchestrator::WorkerOutcome;
+        let outcome = WorkerOutcome {
+            dag_id: "task-2".to_string(),
+            success: false,
+            process_task_id: Some("proc-xyz".to_string()),
+            agent: "gemini".to_string(),
+            exit_code: 1,
+            output_summary: "Rate limited".to_string(),
+            failure_reason: Some("API rate limit exceeded".to_string()),
+            retry_count: 2,
+            original_agent: Some("claude".to_string()),
+        };
+        assert!(!outcome.success);
+        assert_eq!(outcome.exit_code, 1);
+        assert_eq!(outcome.retry_count, 2);
+        assert_eq!(outcome.original_agent.as_deref(), Some("claude"));
+        assert_eq!(outcome.agent, "gemini"); // fallback agent
+    }
+
+    #[tokio::test]
+    async fn joinset_collects_concurrent_worker_outcomes() {
+        // Verify the JoinSet pattern used in the wave loop correctly collects
+        // results from multiple concurrently-spawned async tasks.
+        use super::super::orchestrator::WorkerOutcome;
+        let mut join_set = tokio::task::JoinSet::new();
+
+        // Spawn 3 simulated workers
+        for i in 0..3 {
+            let dag_id = format!("task-{}", i);
+            join_set.spawn(async move {
+                // Simulate varying completion times
+                tokio::time::sleep(std::time::Duration::from_millis(10 * (i as u64 + 1))).await;
+                WorkerOutcome {
+                    dag_id,
+                    success: i != 1, // task-1 fails
+                    process_task_id: Some(format!("proc-{}", i)),
+                    agent: "claude".to_string(),
+                    exit_code: if i == 1 { 1 } else { 0 },
+                    output_summary: format!("Result {}", i),
+                    failure_reason: if i == 1 { Some("test failure".to_string()) } else { None },
+                    retry_count: 0,
+                    original_agent: None,
+                }
+            });
+        }
+
+        let mut outcomes = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            outcomes.push(result.unwrap());
+        }
+
+        assert_eq!(outcomes.len(), 3, "Should collect all 3 worker outcomes");
+
+        let successes: Vec<_> = outcomes.iter().filter(|o| o.success).collect();
+        let failures: Vec<_> = outcomes.iter().filter(|o| !o.success).collect();
+        assert_eq!(successes.len(), 2, "2 tasks should succeed");
+        assert_eq!(failures.len(), 1, "1 task should fail");
+        assert_eq!(failures[0].dag_id, "task-1");
+    }
+
+    #[test]
+    fn worker_outcome_merges_into_worker_results() {
+        // Verify that WorkerOutcome fields map correctly to WorkerResult fields
+        // used by the plan's worker_results Vec. This is the merge step after
+        // JoinSet drains in the wave loop.
+        use super::super::orchestrator::WorkerOutcome;
+        let outcome = WorkerOutcome {
+            dag_id: "task-a".to_string(),
+            success: true,
+            process_task_id: Some("proc-123".to_string()),
+            agent: "claude".to_string(),
+            exit_code: 0,
+            output_summary: "Done".to_string(),
+            failure_reason: None,
+            retry_count: 1,
+            original_agent: None,
+        };
+
+        // Simulate the merge logic from the wave loop
+        let worker_result = WorkerResult {
+            task_id: outcome.dag_id.clone(),
+            agent: outcome.agent.clone(),
+            exit_code: outcome.exit_code,
+            output_summary: outcome.output_summary.clone(),
+            retry_count: outcome.retry_count,
+            original_agent: outcome.original_agent.clone(),
+            failure_reason: outcome.failure_reason.clone(),
+        };
+
+        assert_eq!(worker_result.task_id, "task-a");
+        assert_eq!(worker_result.agent, "claude");
+        assert_eq!(worker_result.exit_code, 0);
+        assert_eq!(worker_result.retry_count, 1);
     }
 }

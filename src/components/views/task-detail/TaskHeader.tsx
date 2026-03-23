@@ -6,6 +6,7 @@ import type { ToolName } from '@/stores/taskStore';
 
 export interface TaskDisplayData {
   title: string;
+  prompt: string;
   id: string;
   agent: ToolName;
   status: string;
@@ -50,29 +51,15 @@ export function TaskHeaderBar({ onClose }: { onClose: () => void }) {
       <button
         type="button"
         onClick={onClose}
+        className="flex items-center justify-center rounded-lg border border-wc-border bg-transparent hover:bg-wc-surface-hover hover:border-wc-border-strong transition-all duration-150"
         style={{
           width: 28,
           height: 28,
-          borderRadius: 8,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: 'transparent',
-          border: `1px solid ${C.border}`,
           color: C.textMuted,
           cursor: 'pointer',
           fontSize: 16,
           lineHeight: 1,
           fontFamily: 'Inter, sans-serif',
-          transition: 'all 150ms ease',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = C.surfaceHover;
-          e.currentTarget.style.borderColor = C.borderStrong;
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.borderColor = C.border;
         }}
       >
         &#10005;
@@ -85,7 +72,7 @@ export function TaskHeaderBar({ onClose }: { onClose: () => void }) {
 
 /** Status pill, title, agent card, and result summary. Rendered inside ScrollArea. */
 export function TaskIdentity({ display }: { display: TaskDisplayData }) {
-  const agentIcon = AGENTS[display.agent];
+  const agentIcon = AGENTS[display.agent] ?? AGENTS.claude;
 
   return (
     <>
@@ -134,10 +121,33 @@ export function TaskIdentity({ display }: { display: TaskDisplayData }) {
         >
           {display.title}
         </div>
+        {/* Full prompt (if different from title) */}
+        {display.prompt && display.prompt !== display.title && (
+          <div
+            style={{
+              marginTop: 4,
+              marginBottom: 4,
+              padding: '8px 10px',
+              borderRadius: 8,
+              background: C.panel,
+              border: `1px solid ${C.border}`,
+              fontSize: 11,
+              lineHeight: '16px',
+              color: C.textSecondary,
+              fontFamily: 'var(--font-mono)',
+              maxHeight: 120,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {display.prompt}
+          </div>
+        )}
         <div
           style={{
             fontSize: 11,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontFamily: 'var(--font-mono)',
             color: C.textMuted,
           }}
         >
@@ -177,7 +187,7 @@ export function TaskIdentity({ display }: { display: TaskDisplayData }) {
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>
-              {AGENTS[display.agent].label}
+              {agentIcon.label}
             </span>
             {display.role && (
               <span

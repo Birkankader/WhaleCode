@@ -52,7 +52,7 @@ pub use codex::{
     validate_codex_result,
 };
 pub use context::{get_context_summary, get_orchestration_history, get_recent_changes, record_task_completion_cmd};
-pub use process::{cancel_process, pause_process, resume_process, spawn_process};
+pub use process::{cancel_process, get_running_processes, pause_process, resume_process, spawn_process};
 pub use prompt::optimize_prompt;
 pub use orchestrator::{
     dispatch_orchestrated_task, get_agent_context_info,
@@ -63,11 +63,11 @@ pub use orchestrator::{
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{
     check_worktree_conflicts, cleanup_worktrees, create_worktree, get_worktree_diff,
-    list_worktrees, merge_worktree,
+    list_worktrees, merge_worktree, remove_single_worktree,
 };
 pub use stdin::send_to_process;
 pub use cleanup::cleanup_completed_processes;
-pub use detection::detect_agents;
+pub use detection::{detect_agents, fetch_agent_usage};
 pub use git::{
     git_commit, git_diff_file, git_log, git_pull, git_push, git_stage_files, git_status,
     git_unstage_files,
@@ -90,6 +90,6 @@ pub async fn start_stream(on_event: Channel<OutputEvent>) -> Result<(), String> 
 #[tauri::command]
 #[specta::specta]
 pub async fn get_task_count(state: tauri::State<'_, AppState>) -> Result<u32, String> {
-    let inner = state.lock().map_err(|e| e.to_string())?;
+    let inner = state.lock();
     Ok(inner.tasks.len() as u32)
 }

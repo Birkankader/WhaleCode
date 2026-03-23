@@ -18,6 +18,7 @@ import {
 } from '../../hooks/useProcess';
 import { useMessengerStore } from '../../stores/messengerStore';
 import { useTaskStore } from '../../stores/taskStore';
+import { useShallow } from 'zustand/react/shallow';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 
@@ -118,8 +119,9 @@ interface ActivityPanelProps {
 export function ActivityPanel({ className = '' }: ActivityPanelProps) {
   const processes = useProcessStore((s) => s.processes);
   const messages = useMessengerStore((s) => s.messages);
-  const activePlan = useTaskStore((s) => s.activePlan);
-  const pendingQuestion = useTaskStore((s) => s.pendingQuestion);
+  const { activePlan, pendingQuestion } = useTaskStore(
+    useShallow((s) => ({ activePlan: s.activePlan, pendingQuestion: s.pendingQuestion })),
+  );
   const setPendingQuestion = useTaskStore((s) => s.setPendingQuestion);
   const [answer, setAnswer] = useState('');
 

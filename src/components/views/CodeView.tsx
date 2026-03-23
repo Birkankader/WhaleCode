@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
+import { cn } from '@/lib/utils';
 import { C } from '@/lib/theme';
+import { sanitizeShikiHtml } from '@/lib/sanitize';
 import { useUIStore } from '@/stores/uiStore';
 import { useFileExplorer, type TreeNode } from '@/hooks/useFileExplorer';
 import { commands } from '@/bindings';
@@ -10,7 +12,16 @@ import type { FileContent } from '@/bindings';
 type Highlighter = {
   codeToHtml: (code: string, opts: { lang: string; theme: string }) => string;
   getLoadedLanguages: () => string[];
+  loadLanguage: (...langs: string[]) => Promise<void>;
 };
+
+// Core languages loaded eagerly — others loaded on demand
+const CORE_LANGS = ['typescript', 'javascript', 'rust', 'json', 'bash', 'markdown'] as const;
+const EXTRA_LANGS = [
+  'python', 'yaml', 'toml', 'html', 'css', 'sql', 'go',
+  'java', 'c', 'cpp', 'ruby', 'swift', 'kotlin', 'vue',
+  'svelte', 'graphql', 'dockerfile', 'scss',
+] as const;
 
 let shikiHighlighterPromise: Promise<Highlighter> | null = null;
 
@@ -19,16 +30,27 @@ async function getHighlighter(): Promise<Highlighter> {
     shikiHighlighterPromise = import('shiki').then(({ createHighlighter }) =>
       createHighlighter({
         themes: ['github-dark-default'],
-        langs: [
-          'typescript', 'javascript', 'rust', 'python', 'json', 'yaml',
-          'toml', 'html', 'css', 'markdown', 'bash', 'sql', 'go',
-          'java', 'c', 'cpp', 'ruby', 'swift', 'kotlin', 'vue',
-          'svelte', 'graphql', 'dockerfile', 'scss',
-        ],
+        langs: [...CORE_LANGS],
       })
     ) as Promise<Highlighter>;
   }
   return shikiHighlighterPromise;
+}
+
+/** Load a language on demand if not already loaded */
+async function ensureLanguage(highlighter: Highlighter, lang: string): Promise<string> {
+  const loaded = highlighter.getLoadedLanguages();
+  if (loaded.includes(lang)) return lang;
+  // Check if it's a known language we can load
+  if ((EXTRA_LANGS as readonly string[]).includes(lang)) {
+    try {
+      await highlighter.loadLanguage(lang as never);
+      return lang;
+    } catch {
+      return 'text';
+    }
+  }
+  return 'text';
 }
 
 /* ── File icon helper ─────────────────────────────────── */
@@ -63,21 +85,17 @@ function TreeItem({
   return (
     <>
       <div
-        className="flex items-center gap-1.5 py-1 px-2 cursor-pointer transition-colors text-xs"
+        className={cn(
+          'flex items-center gap-1.5 py-1 px-2 cursor-pointer transition-colors text-xs',
+          isSelected ? 'bg-wc-accent-soft' : 'bg-transparent hover:bg-wc-surface-hover'
+        )}
         style={{
           paddingLeft: depth * 16 + 8,
-          background: isSelected ? C.accentSoft : 'transparent',
           color: isSelected ? C.accentText : C.textPrimary,
         }}
         onClick={() => {
           if (node.entry.is_dir) onToggleDir(node.entry.path);
           else onSelectFile(node.entry.path);
-        }}
-        onMouseEnter={(e) => {
-          if (!isSelected) (e.currentTarget.style.background = C.surfaceHover);
-        }}
-        onMouseLeave={(e) => {
-          if (!isSelected) (e.currentTarget.style.background = 'transparent');
         }}
       >
         {node.entry.is_dir && (
@@ -154,17 +172,16 @@ function CodePanel({
 
     let cancelled = false;
 
-    getHighlighter().then((highlighter) => {
+    getHighlighter().then(async (highlighter) => {
       if (cancelled) return;
       try {
-        const langs = highlighter.getLoadedLanguages();
-        const lang = langs.includes(fileContent.language) ? fileContent.language : 'text';
+        const lang = await ensureLanguage(highlighter, fileContent.language);
         const html = highlighter.codeToHtml(fileContent.content, {
           lang,
           theme: 'github-dark-default',
         });
         if (!cancelled) setHighlightedHtml(html);
-      } catch {
+      } catch { // expected: language may not be loaded in shiki
         if (!cancelled) setHighlightedHtml('');
       }
     });
@@ -331,7 +348,7 @@ function CodePanel({
           <div
             className="shiki-container text-[12px] leading-[20px] p-4"
             style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
-            dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+            dangerouslySetInnerHTML={{ __html: sanitizeShikiHtml(highlightedHtml) }}
           />
         ) : (
           <pre

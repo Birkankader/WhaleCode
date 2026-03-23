@@ -61,7 +61,7 @@ export function parseCodexEvent(line: string): CodexStreamEvent | null {
       return parsed as CodexStreamEvent;
     }
     return null;
-  } catch {
+  } catch { // expected: not valid JSON
     return null;
   }
 }

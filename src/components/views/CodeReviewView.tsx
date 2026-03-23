@@ -1,14 +1,21 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { cn } from '@/lib/utils';
 import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useShallow } from 'zustand/react/shallow';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
+import { useUIStore } from '@/stores/uiStore';
+import { DiffReview } from '../../components/review/DiffReview';
+import { useWorktree } from '../../hooks/useWorktree';
 
 /* ── Types ─────────────────────────────────────────────── */
 
 interface CodeReviewViewProps {
   onDone: () => void;
 }
+
+type WorktreeStatus = 'pending' | 'merged' | 'discarded' | 'error';
 
 /* ── Sub-components ────────────────────────────────────── */
 
@@ -49,29 +56,86 @@ function WarningIcon() {
   );
 }
 
+function ChevronIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      style={{
+        flexShrink: 0,
+        transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+        transition: 'transform 150ms ease',
+      }}
+    >
+      <path d="M5 3l4 4-4 4" stroke={C.textMuted} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function StatusBadge({ status }: { status: WorktreeStatus }) {
+  const config = {
+    pending: { label: 'Pending', bg: C.surface, color: C.textMuted, border: C.border },
+    merged: { label: 'Merged', bg: C.greenBg, color: C.green, border: C.greenBorder },
+    discarded: { label: 'Discarded', bg: C.surface, color: C.textMuted, border: C.border },
+    error: { label: 'Error', bg: C.redBg, color: C.red, border: C.border },
+  }[status];
+
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '2px 8px',
+        borderRadius: 6,
+        background: config.bg,
+        color: config.color,
+        border: `1px solid ${config.border}`,
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+      }}
+    >
+      {config.label}
+    </span>
+  );
+}
+
 /* ── Main Component ────────────────────────────────────── */
 
 export function CodeReviewView({ onDone }: CodeReviewViewProps) {
-  const [accepted, setAccepted] = useState(false);
-  const activePlan = useTaskStore((s) => s.activePlan);
-  const orchestrationPlan = useTaskStore((s) => s.orchestrationPlan);
-  const tasks = useTaskStore((s) => s.tasks);
-  const orchestrationLogs = useTaskStore((s) => s.orchestrationLogs);
+  const { activePlan, orchestrationPlan, tasks, orchestrationLogs, worktreeEntries } = useTaskStore(
+    useShallow((s) => ({
+      activePlan: s.activePlan,
+      orchestrationPlan: s.orchestrationPlan,
+      tasks: s.tasks,
+      orchestrationLogs: s.orchestrationLogs,
+      worktreeEntries: s.worktreeEntries,
+    })),
+  );
   const setOrchestrationPhase = useTaskStore((s) => s.setOrchestrationPhase);
 
-  // Determine master agent from config (available at launch) or plan (available after completion)
+  const projectDir = useUIStore((s) => s.projectDir);
+  const { mergeWorktree, cleanupWorktrees } = useWorktree(projectDir);
+
+  // Determine master agent from config or plan
   const masterAgent: ToolName = (orchestrationPlan?.masterAgent as ToolName)
     || (activePlan?.master_agent as ToolName)
     || 'claude';
   const icon = AGENTS[masterAgent];
 
   // Derive stats from tasks
-  const taskArray = Array.from(tasks.values());
-  const tasksDone = taskArray.filter(t => t.status === 'completed').length;
-  const warnings = taskArray.filter(t => t.status === 'failed').length;
-  const totalTasks = taskArray.length;
+  const { taskArray, tasksDone, warnings, totalTasks } = useMemo(() => {
+    const arr = Array.from(tasks.values());
+    let done = 0, failed = 0;
+    for (const t of arr) {
+      if (t.status === 'completed') done++;
+      else if (t.status === 'failed') failed++;
+    }
+    return { taskArray: arr, tasksDone: done, warnings: failed, totalTasks: arr.length };
+  }, [tasks]);
 
-  // Extract review text from orchestration logs (Phase 3 review results)
+  // Extract review text from orchestration logs
   const reviewLogs = orchestrationLogs.filter(
     l => l.level === 'success' || (l.level === 'info' && l.message.includes('Review complete'))
   );
@@ -88,24 +152,71 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
     isOk: t.status === 'completed',
   }));
 
-  const acceptTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Per-worktree status tracking
+  const [worktreeStatuses, setWorktreeStatuses] = useState<Map<string, WorktreeStatus>>(new Map());
+  const [expandedWorktree, setExpandedWorktree] = useState<string | null>(null);
+  const [mergeAllInProgress, setMergeAllInProgress] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
-  // Cleanup timer on unmount to prevent stale callbacks
-  useEffect(() => () => {
-    if (acceptTimerRef.current) clearTimeout(acceptTimerRef.current);
+  // Initialize worktree statuses when entries arrive
+  useEffect(() => {
+    if (worktreeEntries.size > 0 && worktreeStatuses.size === 0) {
+      const initial = new Map<string, WorktreeStatus>();
+      for (const [dagId] of worktreeEntries) {
+        initial.set(dagId, 'pending');
+      }
+      setWorktreeStatuses(initial);
+    }
+  }, [worktreeEntries, worktreeStatuses.size]);
+
+  const entries = Array.from(worktreeEntries.values());
+  const pendingCount = entries.filter(e => (worktreeStatuses.get(e.dagId) ?? 'pending') === 'pending').length;
+  const errorCount = entries.filter(e => worktreeStatuses.get(e.dagId) === 'error').length;
+  const allHandled = entries.length > 0 && pendingCount === 0 && errorCount === 0;
+  const hasWorktrees = worktreeEntries.size > 0;
+
+  const handleWorktreeClose = useCallback((dagId: string, action: 'merged' | 'discarded') => {
+    setWorktreeStatuses(prev => {
+      const next = new Map(prev);
+      next.set(dagId, action);
+      return next;
+    });
+    setExpandedWorktree(null);
   }, []);
 
-  const handleAccept = () => {
-    setAccepted(true);
-    setOrchestrationPhase('completed');
-    // After a short delay, transition to done view
-    acceptTimerRef.current = setTimeout(() => onDone(), 1500);
-  };
+  const handleMergeAll = useCallback(async () => {
+    setMergeAllInProgress(true);
+    try {
+      const pendingEntries = entries.filter(e => worktreeStatuses.get(e.dagId) === 'pending');
+      for (const entry of pendingEntries) {
+        const success = await mergeWorktree(entry.branchName);
+        setWorktreeStatuses(prev => {
+          const next = new Map(prev);
+          next.set(entry.dagId, success ? 'merged' : 'error');
+          return next;
+        });
+      }
+    } finally {
+      setMergeAllInProgress(false);
+    }
+  }, [entries, worktreeStatuses, mergeWorktree]);
 
-  const handleReject = () => {
-    setOrchestrationPhase('failed');
+  const handleComplete = useCallback(async () => {
+    setCompleting(true);
+    try {
+      await cleanupWorktrees();
+    } catch {
+      // Cleanup failure is non-fatal
+    } finally {
+      setOrchestrationPhase('completed');
+      onDone();
+    }
+  }, [cleanupWorktrees, setOrchestrationPhase, onDone]);
+
+  const handleDirectComplete = useCallback(() => {
+    setOrchestrationPhase('completed');
     onDone();
-  };
+  }, [setOrchestrationPhase, onDone]);
 
   return (
     <ScrollArea style={{ height: '100%' }}>
@@ -140,7 +251,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
               Code Review
             </h2>
             <p style={{ fontSize: 12, color: C.textSecondary, marginTop: 2, marginBottom: 0 }}>
-              {AGENTS[masterAgent].label} has reviewed all completed work
+              {icon.label} has reviewed all completed work
             </p>
           </div>
         </div>
@@ -192,7 +303,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
               >
                 {icon.letter}
               </div>
-              {AGENTS[masterAgent].label}'s Review
+              {icon.label}&apos;s Review
             </div>
             <div
               style={{
@@ -200,7 +311,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
                 color: C.textPrimary,
                 lineHeight: '22px',
                 whiteSpace: 'pre-wrap',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontFamily: 'var(--font-mono)',
               }}
             >
               {reviewText}
@@ -238,7 +349,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
               <span>Agent / Status</span>
             </div>
             {taskRows.map((row) => {
-              const agentIcon = AGENTS[row.agent];
+              const agentIcon = AGENTS[row.agent] ?? AGENTS.claude;
               return (
                 <div
                   key={row.id}
@@ -255,7 +366,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
                   <span
                     style={{
                       fontSize: 12,
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontFamily: 'var(--font-mono)',
                       color: C.textPrimary,
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
@@ -283,7 +394,7 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
                       {agentIcon.letter}
                     </div>
                     <span style={{ fontSize: 12, color: C.textSecondary, lineHeight: '18px' }}>
-                      {AGENTS[row.agent].label} — {row.status}
+                      {agentIcon.label} — {row.status}
                     </span>
                   </div>
                 </div>
@@ -292,83 +403,181 @@ export function CodeReviewView({ onDone }: CodeReviewViewProps) {
           </div>
         )}
 
-        {/* Accept / Reject */}
-        {accepted ? (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: 18,
-              borderRadius: 16,
-              background: C.greenBg,
-              border: `1px solid ${C.greenBorder}`,
-            }}
-          >
-            <CheckIcon />
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.green }}>
-              Review accepted. Proceeding to completion.
-            </span>
+        {/* ── Per-Worktree Review Section ────────────────── */}
+        {hasWorktrees ? (
+          <div style={{ marginBottom: 24 }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: C.textMuted,
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+                marginBottom: 12,
+              }}
+            >
+              Worktree Changes ({entries.length})
+            </div>
+
+            {entries.map((entry) => {
+              const status = worktreeStatuses.get(entry.dagId) ?? 'pending';
+              const isExpanded = expandedWorktree === entry.dagId;
+              const isHandled = status !== 'pending';
+
+              return (
+                <div
+                  key={entry.dagId}
+                  style={{
+                    borderRadius: 14,
+                    border: `1px solid ${C.border}`,
+                    marginBottom: 10,
+                    overflow: 'hidden',
+                    opacity: isHandled ? 0.6 : 1,
+                    transition: 'opacity 150ms ease',
+                  }}
+                >
+                  {/* Worktree card header */}
+                  <button
+                    type="button"
+                    onClick={() => setExpandedWorktree(isExpanded ? null : entry.dagId)}
+                    disabled={isHandled}
+                    className={cn(
+                      'w-full flex items-center gap-2.5 bg-wc-surface transition-colors duration-150',
+                      !isHandled && 'hover:bg-wc-surface-hover'
+                    )}
+                    style={{
+                      padding: '12px 16px',
+                      border: 'none',
+                      cursor: isHandled ? 'default' : 'pointer',
+                      textAlign: 'left',
+                      fontFamily: 'Inter, sans-serif',
+                      outline: 'revert',
+                    }}
+                  >
+                    <ChevronIcon expanded={isExpanded} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, marginBottom: 2 }}>
+                        {entry.branchName}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.textSecondary, display: 'flex', gap: 10 }}>
+                        <span>{entry.fileCount} file{entry.fileCount !== 1 ? 's' : ''}</span>
+                        <span style={{ color: C.green }}>+{entry.additions}</span>
+                        <span style={{ color: '#f87171' }}>-{entry.deletions}</span>
+                      </div>
+                    </div>
+                    <StatusBadge status={status} />
+                  </button>
+
+                  {/* Expanded diff viewer */}
+                  {isExpanded && !isHandled && projectDir && (
+                    <div style={{ height: 480, borderTop: `1px solid ${C.border}` }}>
+                      <DiffReview
+                        projectDir={projectDir}
+                        branchName={entry.branchName}
+                        taskId={entry.dagId}
+                        onClose={(action) => handleWorktreeClose(entry.dagId, action)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Batch merge controls */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 10,
+                marginTop: 16,
+              }}
+            >
+              {pendingCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleMergeAll}
+                  disabled={mergeAllInProgress}
+                  className={cn(
+                    'transition-all duration-150',
+                    !mergeAllInProgress && 'hover:brightness-110'
+                  )}
+                  style={{
+                    padding: '8px 20px',
+                    borderRadius: 12,
+                    background: icon.gradient,
+                    border: 'none',
+                    color: '#fff',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: mergeAllInProgress ? 'not-allowed' : 'pointer',
+                    fontFamily: 'Inter, sans-serif',
+                    boxShadow: '0 8px 24px rgba(109,94,252,0.28)',
+                    opacity: mergeAllInProgress ? 0.6 : 1,
+                  }}
+                >
+                  {mergeAllInProgress ? 'Merging…' : `Merge All (${pendingCount})`}
+                </button>
+              )}
+
+              {allHandled && (
+                <button
+                  type="button"
+                  onClick={handleComplete}
+                  disabled={completing}
+                  style={{
+                    padding: '8px 20px',
+                    borderRadius: 12,
+                    background: C.green,
+                    border: 'none',
+                    color: '#fff',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: completing ? 'not-allowed' : 'pointer',
+                    fontFamily: 'Inter, sans-serif',
+                    opacity: completing ? 0.6 : 1,
+                    transition: 'all 150ms ease',
+                  }}
+                >
+                  {completing ? 'Cleaning up…' : 'Done'}
+                </button>
+              )}
+            </div>
           </div>
         ) : (
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              gap: 10,
-            }}
-          >
-            <button
-              type="button"
-              onClick={handleReject}
+          /* ── Zero worktreeEntries: direct completion path ── */
+          <div style={{ marginBottom: 24 }}>
+            <div
               style={{
-                padding: '8px 20px',
-                borderRadius: 12,
-                background: 'transparent',
+                padding: 16,
+                borderRadius: 16,
+                background: C.surface,
                 border: `1px solid ${C.border}`,
-                color: C.textSecondary,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontFamily: 'Inter, sans-serif',
-                transition: 'all 150ms ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = C.surfaceHover;
-                e.currentTarget.style.borderColor = C.borderStrong;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.borderColor = C.border;
+                textAlign: 'center',
               }}
             >
-              Reject
-            </button>
-            <button
-              type="button"
-              onClick={handleAccept}
-              style={{
-                padding: '8px 20px',
-                borderRadius: 12,
-                background: icon.gradient,
-                border: 'none',
-                color: '#fff',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontFamily: 'Inter, sans-serif',
-                boxShadow: '0 8px 24px rgba(109,94,252,0.28)',
-                transition: 'all 150ms ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.filter = 'brightness(1.1)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.filter = 'brightness(1)';
-              }}
-            >
-              Accept & Complete
-            </button>
+              <p style={{ fontSize: 13, color: C.textSecondary, margin: 0, marginBottom: 12 }}>
+                No file changes to review
+              </p>
+              <button
+                type="button"
+                onClick={handleDirectComplete}
+                className="hover:brightness-110 transition-all duration-150"
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: 12,
+                  background: icon.gradient,
+                  border: 'none',
+                  color: '#fff',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  fontFamily: 'Inter, sans-serif',
+                  boxShadow: '0 8px 24px rgba(109,94,252,0.28)',
+                }}
+              >
+                Complete
+              </button>
+            </div>
           </div>
         )}
       </div>

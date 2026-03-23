@@ -8,7 +8,7 @@ pub async fn send_to_process(
     text: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let inner = state.lock().map_err(|e| e.to_string())?;
+    let inner = state.lock();
     let entry = inner
         .processes
         .get(&task_id)

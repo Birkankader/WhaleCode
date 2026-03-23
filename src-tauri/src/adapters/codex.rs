@@ -152,62 +152,24 @@ pub fn validate_result(event: &CodexStreamEvent) -> Result<(), String> {
 
 /// Information about a detected rate limit.
 #[allow(dead_code)]
-pub struct RateLimitInfo {
-    pub retry_after_secs: Option<u64>,
-}
+// ---------------------------------------------------------------------------
+// Rate Limiting — uses shared RateLimitInfo from adapters::mod
+// ---------------------------------------------------------------------------
 
 /// Detect rate-limit or quota errors in a stderr/stdout line.
-/// Returns `Some(RateLimitInfo)` if the line indicates a rate limit.
-///
-/// OpenAI/Codex-specific patterns:
-/// - 429 HTTP status
-/// - rate_limit
-/// - Too Many Requests
-/// - insufficient_quota
-#[allow(dead_code)]
-pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
+/// OpenAI/Codex-specific patterns: 429, rate_limit, Too Many Requests, insufficient_quota.
+pub(crate) fn detect_rate_limit_codex(line: &str) -> Option<super::RateLimitInfo> {
     let lower = line.to_lowercase();
     if lower.contains("429")
         || lower.contains("rate_limit")
         || lower.contains("too many requests")
         || lower.contains("insufficient_quota")
     {
-        Some(RateLimitInfo {
+        Some(super::RateLimitInfo {
             retry_after_secs: None,
         })
     } else {
         None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Retry Policy
-// ---------------------------------------------------------------------------
-
-/// Exponential backoff retry policy for rate-limited Codex CLI requests.
-#[allow(dead_code)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub base_delay_ms: u64,
-    pub max_delay_ms: u64,
-}
-
-#[allow(dead_code)]
-impl RetryPolicy {
-    /// Default retry policy for Codex CLI: 3 retries, 5s base, 60s max.
-    pub fn default_codex() -> Self {
-        Self {
-            max_retries: 3,
-            base_delay_ms: 5_000,
-            max_delay_ms: 60_000,
-        }
-    }
-
-    /// Calculate the delay in milliseconds for a given attempt (0-indexed).
-    /// Delay = base * 2^attempt, capped at max_delay_ms.
-    pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
-        let delay = self.base_delay_ms.saturating_mul(2u64.saturating_pow(attempt));
-        delay.min(self.max_delay_ms)
     }
 }
 
@@ -240,17 +202,14 @@ impl ToolAdapter for CodexAdapter {
     }
 
     fn detect_rate_limit(&self, line: &str) -> Option<SharedRateLimitInfo> {
-        detect_rate_limit(line).map(|info| SharedRateLimitInfo {
-            retry_after_secs: info.retry_after_secs,
-        })
+        detect_rate_limit_codex(line)
     }
 
     fn retry_policy(&self) -> SharedRetryPolicy {
-        let p = RetryPolicy::default_codex();
         SharedRetryPolicy {
-            max_retries: p.max_retries,
-            base_delay_ms: p.base_delay_ms,
-            max_delay_ms: p.max_delay_ms,
+            max_retries: 3,
+            base_delay_ms: 5_000,
+            max_delay_ms: 60_000,
         }
     }
 
@@ -523,31 +482,31 @@ mod tests {
 
     #[test]
     fn test_detect_rate_limit_429() {
-        let info = detect_rate_limit("Error: 429 Too Many Requests");
+        let info = super::detect_rate_limit_codex("Error: 429 Too Many Requests");
         assert!(info.is_some(), "Expected rate limit detection for 429");
     }
 
     #[test]
     fn test_detect_rate_limit_rate_limit_string() {
-        let info = detect_rate_limit("rate_limit exceeded");
+        let info = super::detect_rate_limit_codex("rate_limit exceeded");
         assert!(info.is_some(), "Expected rate limit detection for rate_limit");
     }
 
     #[test]
     fn test_detect_rate_limit_too_many_requests() {
-        let info = detect_rate_limit("Too Many Requests, please retry later");
+        let info = super::detect_rate_limit_codex("Too Many Requests, please retry later");
         assert!(info.is_some(), "Expected rate limit detection for Too Many Requests");
     }
 
     #[test]
     fn test_detect_rate_limit_insufficient_quota() {
-        let info = detect_rate_limit("insufficient_quota: you have exceeded your usage limit");
+        let info = super::detect_rate_limit_codex("insufficient_quota: you have exceeded your usage limit");
         assert!(info.is_some(), "Expected rate limit detection for insufficient_quota");
     }
 
     #[test]
     fn test_detect_rate_limit_normal_line() {
-        let info = detect_rate_limit("Processing your request...");
+        let info = super::detect_rate_limit_codex("Processing your request...");
         assert!(info.is_none(), "Expected None for normal line");
     }
 
@@ -593,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_retry_policy_default_codex() {
-        let policy = RetryPolicy::default_codex();
+        let policy = super::super::RetryPolicy { max_retries: 3, base_delay_ms: 5_000, max_delay_ms: 60_000 };
         assert_eq!(policy.max_retries, 3);
         assert_eq!(policy.base_delay_ms, 5_000);
         assert_eq!(policy.max_delay_ms, 60_000);
@@ -601,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_retry_policy_delay_doubles() {
-        let policy = RetryPolicy::default_codex();
+        let policy = super::super::RetryPolicy { max_retries: 3, base_delay_ms: 5_000, max_delay_ms: 60_000 };
         let d0 = policy.delay_for_attempt(0); // 5000
         let d1 = policy.delay_for_attempt(1); // 10000
         let d2 = policy.delay_for_attempt(2); // 20000
@@ -612,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_retry_policy_delay_capped_at_max() {
-        let policy = RetryPolicy::default_codex();
+        let policy = super::super::RetryPolicy { max_retries: 3, base_delay_ms: 5_000, max_delay_ms: 60_000 };
         let d10 = policy.delay_for_attempt(10); // would be huge, capped at 60000
         assert_eq!(d10, 60_000);
     }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { useWorktree } from '../../hooks/useWorktree';
 import { FileDiffView } from './FileDiffView';
 import type { FileDiff } from '../../bindings';
@@ -7,7 +8,7 @@ interface DiffReviewProps {
   projectDir: string;
   branchName: string;
   taskId: string;
-  onClose: () => void;
+  onClose: (action: 'merged' | 'discarded') => void;
 }
 
 /** Status icon and color for a file diff entry. */
@@ -32,7 +33,7 @@ function statusIcon(status: string): { icon: string; color: string } {
  * No auto-merge -- every merge requires explicit user action.
  */
 export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }: DiffReviewProps) {
-  const { diffReport, loading, error, getWorktreeDiff, selectiveMerge, cleanupWorktrees } =
+  const { diffReport, loading, error, getWorktreeDiff, selectiveMerge, removeWorktree } =
     useWorktree(projectDir);
 
   const [acceptedFiles, setAcceptedFiles] = useState<Set<string>>(new Set());
@@ -86,37 +87,45 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
 
   const handleMerge = async () => {
     if (acceptedFiles.size === 0) {
-      const discardAll = window.confirm(
+      const discardAll = await ask(
         'No files are accepted. Discard all changes from this task?',
+        { title: 'Discard Changes', kind: 'warning' },
       );
       if (!discardAll) return;
-      await cleanupWorktrees();
-      onClose();
+      await removeWorktree(branchName);
+      onClose('discarded');
       return;
     }
 
-    const confirmed = window.confirm(
-      `Merge ${acceptedCount} file${acceptedCount !== 1 ? 's' : ''}? ${rejectedCount > 0 ? `${rejectedCount} file${rejectedCount !== 1 ? 's' : ''} will be discarded.` : ''}`,
-    );
+    const mergeMsg = rejectedCount > 0
+      ? `Merge ${acceptedCount} file${acceptedCount !== 1 ? 's' : ''}? ${rejectedCount} file${rejectedCount !== 1 ? 's' : ''} will be discarded.`
+      : `Merge ${acceptedCount} file${acceptedCount !== 1 ? 's' : ''}?`;
+    const confirmed = await ask(mergeMsg, { title: 'Confirm Merge', kind: 'info' });
     if (!confirmed) return;
 
     setMerging(true);
     try {
-      await selectiveMerge(branchName, Array.from(acceptedFiles));
-      onClose();
+      const success = await selectiveMerge(branchName, Array.from(acceptedFiles));
+      onClose(success ? 'merged' : 'discarded');
+    } catch {
+      // selectiveMerge threw — merge genuinely failed
+      onClose('discarded');
     } finally {
       setMerging(false);
     }
   };
 
   const handleDiscard = async () => {
-    const confirmed = window.confirm('Discard all changes from this task?');
+    const confirmed = await ask(
+      'Discard all changes from this task?',
+      { title: 'Discard All Changes', kind: 'warning' },
+    );
     if (!confirmed) return;
 
     setMerging(true);
     try {
-      await cleanupWorktrees();
-      onClose();
+      await removeWorktree(branchName);
+      onClose('discarded');
     } finally {
       setMerging(false);
     }
@@ -166,6 +175,22 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
       </div>
 
       {/* Main content */}
+      {files.length === 0 ? (
+        /* Zero-changes empty state */
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-zinc-400">
+          <div className="flex flex-col items-center gap-2">
+            <span className="text-2xl">📂</span>
+            <p className="text-sm">This worker made no file changes.</p>
+          </div>
+          <button
+            onClick={handleDiscard}
+            disabled={merging}
+            className="px-4 py-2 text-xs rounded bg-zinc-800 text-red-400 hover:bg-zinc-700 hover:text-red-300 disabled:opacity-50 transition-colors"
+          >
+            Discard Worktree
+          </button>
+        </div>
+      ) : (
       <div className="flex flex-1 min-h-0">
         {/* File list sidebar */}
         <div className="w-72 shrink-0 flex flex-col border-r border-zinc-800 bg-zinc-900/40">
@@ -239,6 +264,7 @@ export function DiffReview({ projectDir, branchName, taskId: _taskId, onClose }:
           )}
         </div>
       </div>
+      )}
 
       {/* Bottom bar - only shown when there are files to review */}
       {files.length > 0 && (

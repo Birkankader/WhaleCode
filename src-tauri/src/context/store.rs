@@ -2,7 +2,8 @@ use rusqlite::Connection;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 use super::migrations::run_migrations;
 use super::models::OrchestrationRecord;
@@ -19,7 +20,7 @@ impl ContextStore {
     where
         F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
     {
-        let conn = self.conn.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        let conn = self.conn.lock();
         f(&conn).map_err(|e| e.to_string())
     }
 
@@ -36,6 +37,7 @@ impl ContextStore {
         let mut conn = Connection::open(db_path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "busy_timeout", "5000")?;
         run_migrations(&mut conn)
             .map_err(|e| rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
@@ -115,7 +117,7 @@ mod tests {
     fn tables_exist_after_init() {
         let db_path = temp_db_path("tables_exist");
         let store = ContextStore::new(&db_path).unwrap();
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock();
 
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -133,7 +135,7 @@ mod tests {
     fn wal_mode_active() {
         let db_path = temp_db_path("wal_mode");
         let store = ContextStore::new(&db_path).unwrap();
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock();
 
         let mode: String = conn
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
@@ -145,7 +147,7 @@ mod tests {
     fn foreign_keys_enabled() {
         let db_path = temp_db_path("foreign_keys");
         let store = ContextStore::new(&db_path).unwrap();
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock();
 
         let fk: i32 = conn
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))
@@ -168,7 +170,7 @@ mod tests {
         // Open, insert data, close
         {
             let store = ContextStore::new(&db_path).unwrap();
-            let conn = store.conn.lock().unwrap();
+            let conn = store.conn.lock();
             conn.execute(
                 "INSERT INTO context_events (task_id, tool_name, event_type, project_dir)
                  VALUES ('t1', 'claude', 'task_completed', '/project')",
@@ -180,7 +182,7 @@ mod tests {
         // Reopen and verify data persists
         {
             let store = ContextStore::new(&db_path).unwrap();
-            let conn = store.conn.lock().unwrap();
+            let conn = store.conn.lock();
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM context_events", [], |row| row.get(0))
                 .unwrap();

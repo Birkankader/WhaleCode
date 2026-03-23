@@ -1,5 +1,11 @@
 import type { ToolName } from '@/stores/taskStore';
 
+export function asToolName(name: string): ToolName {
+  if (name === 'claude' || name === 'gemini' || name === 'codex') return name;
+  console.warn(`Unknown tool name "${name}", falling back to claude`);
+  return 'claude';
+}
+
 export const AGENTS: Record<ToolName, {
   label: string;
   letter: string;
@@ -25,3 +31,8 @@ export const AGENTS: Record<ToolName, {
     color: '#4ade80',
   },
 } as const;
+
+/** Safe agent lookup — returns claude as fallback for unknown agent names. */
+export function getAgent(name: string) {
+  return AGENTS[name as ToolName] ?? AGENTS.claude;
+}

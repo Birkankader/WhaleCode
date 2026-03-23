@@ -250,6 +250,36 @@ pub async fn list_worktrees(project_dir: String) -> Result<Vec<String>, String> 
     .map_err(|e| format!("List task failed: {}", e))?
 }
 
+/// Remove a single worktree by its branch name.
+///
+/// Derives the worktree directory name from the branch name using the same
+/// pattern as `merge_worktree`: `whalecode/task/{prefix}` → `whalecode-{prefix}`.
+/// Calls `WorktreeManager::remove_worktree()` which prunes the worktree,
+/// removes the directory, and deletes the branch.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_single_worktree(
+    project_dir: String,
+    branch_name: String,
+) -> Result<(), String> {
+    let project_path = super::expand_tilde(&project_dir);
+    tokio::task::spawn_blocking(move || {
+        let prefix = branch_name
+            .strip_prefix("whalecode/task/")
+            .ok_or_else(|| {
+                format!(
+                    "Invalid branch name '{}': expected 'whalecode/task/...' prefix",
+                    branch_name
+                )
+            })?;
+        let wt_name = format!("whalecode-{}", prefix);
+        let manager = WorktreeManager::new(project_path);
+        manager.remove_worktree(&wt_name)
+    })
+    .await
+    .map_err(|e| format!("Remove worktree task failed: {}", e))?
+}
+
 /// Find the default branch name (main or master).
 fn find_default_branch(repo: &git2::Repository) -> Result<String, String> {
     if repo

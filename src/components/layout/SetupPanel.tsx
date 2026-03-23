@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { cn } from '@/lib/utils';
 import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
 // taskStore types available via: import { useTaskStore } from '@/stores/taskStore'
@@ -18,6 +19,8 @@ interface DetectedAgent {
   version: string | null;
   model: string | null;
   cli: string;
+  usagePercent: number | null; // 0-100, null if unknown
+  usageLabel: string | null;   // e.g. "Session: 45%"
 }
 
 // ---------------------------------------------------------------------------
@@ -25,10 +28,10 @@ interface DetectedAgent {
 // ---------------------------------------------------------------------------
 
 const DISCOVERED_AGENTS: DetectedAgent[] = [
-  { id: 'claude-opus', name: 'Claude Opus 4', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-opus-4-5' },
-  { id: 'claude-haiku', name: 'Claude Haiku 3.5', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-haiku-3-5' },
-  { id: 'gemini', name: 'Gemini 2.5 Pro', cli: 'gemini', icon: '\u{1F535}', auth: true, version: 'v0.9.1', model: 'gemini-2.5-pro' },
-  { id: 'codex', name: 'Codex CLI', cli: 'codex', icon: '\u{2B1B}', auth: false, version: 'v0.1.2504', model: null },
+  { id: 'claude-opus', name: 'Claude Opus 4', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-opus-4-5', usagePercent: null, usageLabel: null },
+  { id: 'claude-haiku', name: 'Claude Haiku 3.5', cli: 'claude', icon: '\u{1F7E3}', auth: true, version: 'v1.2.3', model: 'claude-haiku-3-5', usagePercent: null, usageLabel: null },
+  { id: 'gemini', name: 'Gemini 2.5 Pro', cli: 'gemini', icon: '\u{1F535}', auth: true, version: 'v0.9.1', model: 'gemini-2.5-pro', usagePercent: null, usageLabel: null },
+  { id: 'codex', name: 'Codex CLI', cli: 'codex', icon: '\u{2B1B}', auth: false, version: 'v0.1.2504', model: null, usagePercent: null, usageLabel: null },
 ];
 
 // ---------------------------------------------------------------------------
@@ -45,6 +48,8 @@ function mapBackendAgent(a: BackendDetectedAgent): DetectedAgent {
     version: a.version,
     model: null,
     cli: a.tool_name,
+    usagePercent: null,
+    usageLabel: null,
   };
 }
 
@@ -86,7 +91,9 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
   // Local state
   const [step, setStep] = useState(0);
-  const [sessionName, setSessionName] = useState('');
+  const [sessionName, setSessionName] = useState(
+    new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' session'
+  );
   const [projectDir, setProjectDir] = useState(globalProjectDir || '');
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
@@ -100,12 +107,43 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
     let cancelled = false;
     setAgentsLoading(true);
 
-    commands.detectAgents().then((result) => {
+    // Fetch agents and usage in parallel
+    Promise.all([
+      commands.detectAgents(),
+      commands.fetchAgentUsage(),
+    ]).then(([agentResult, usageResult]) => {
       if (cancelled) return;
-      if (result.status === 'ok' && result.data.length > 0) {
-        setAgents(result.data.map(mapBackendAgent));
+
+      // Map usage data by agent name
+      const usageMap = new Map<string, { percent: number; label: string }>();
+      if (usageResult.status === 'ok') {
+        for (const usage of usageResult.data) {
+          // Find the highest utilization line (Session or Weekly)
+          const progressLines = usage.lines.filter(l => l.line_type === 'progress' && l.used != null);
+          if (progressLines.length > 0) {
+            // Use the highest usage — show REMAINING capacity (100 - used)
+            const highest = progressLines.reduce((max, l) => (l.used ?? 0) > (max.used ?? 0) ? l : max);
+            const used = Math.round(highest.used ?? 0);
+            const remaining = Math.max(0, 100 - used);
+            usageMap.set(usage.agent, {
+              percent: remaining,
+              label: `${remaining}% left`,
+            });
+          }
+        }
+      }
+
+      if (agentResult.status === 'ok' && agentResult.data.length > 0) {
+        setAgents(agentResult.data.map(a => {
+          const mapped = mapBackendAgent(a);
+          const usage = usageMap.get(a.tool_name);
+          if (usage) {
+            mapped.usagePercent = usage.percent;
+            mapped.usageLabel = usage.label;
+          }
+          return mapped;
+        }));
       } else {
-        // Fallback to mock data
         setAgents(DISCOVERED_AGENTS);
       }
       setAgentsLoading(false);
@@ -122,7 +160,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
   useEffect(() => {
     if (showSetup) {
       setStep(0);
-      setSessionName('');
+      setSessionName(new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' session');
       setProjectDir(globalProjectDir || '');
       setMaster(null);
       setWorkerCounts({});
@@ -172,6 +210,35 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
   // Handlers
   const close = useCallback(() => setShowSetup(false), [setShowSetup]);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  const handlePanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      close();
+      return;
+    }
+    if (e.key === 'Tab') {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+  }, [close]);
 
   const handleLaunch = useCallback(() => {
     onLaunch?.({
@@ -303,6 +370,9 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
         </div>
         <button
           onClick={() => onChange(!value)}
+          role="switch"
+          aria-checked={value}
+          aria-label={label}
           style={{
             width: 40,
             height: 22,
@@ -378,27 +448,15 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               const selected = await open({ directory: true, multiple: false, title: 'Select Project Directory' });
               if (selected) setProjectDir(selected as string);
             }}
+            className={cn(
+              'flex items-center gap-3 w-full rounded-xl bg-wc-surface hover:bg-wc-surface-hover hover:border-wc-accent transition-all',
+              projectDir ? 'border-[1.5px] border-dashed border-wc-accent' : 'border-[1.5px] border-dashed border-wc-border-strong'
+            )}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              width: '100%',
               marginTop: 8,
               padding: projectDir ? '10px 14px' : '20px 14px',
-              background: C.surface,
-              border: `1.5px dashed ${projectDir ? C.accent : C.borderStrong}`,
-              borderRadius: 12,
               cursor: 'pointer',
               textAlign: 'left',
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = C.accent;
-              e.currentTarget.style.background = C.surfaceHover;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = projectDir ? C.accent : C.borderStrong;
-              e.currentTarget.style.background = C.surface;
             }}
           >
             {projectDir ? (
@@ -416,7 +474,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
                   <div style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {projectDir.split('/').pop()}
                   </div>
-                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
                     {projectDir}
                   </div>
                 </div>
@@ -442,7 +500,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
             Settings
           </div>
           {renderToggle('Developer Mode', developerMode, setDeveloperMode, 'Show raw output and debug info')}
-          {renderToggle('Auto Merge', autoMerge, setAutoMerge, 'Merge worktree branches automatically')}
+          {renderToggle('Auto Merge', autoMerge, setAutoMerge, 'Merge worker changes automatically')}
           {renderToggle('Code Review Gate', codeReview, setCodeReview, 'Require review before merging')}
         </div>
       </div>
@@ -530,6 +588,43 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
                   >
                     {agent.auth ? 'Authenticated' : 'No Auth'}
                   </div>
+                  {/* Usage indicator */}
+                  {agent.auth && agent.usagePercent !== null && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 40,
+                          height: 4,
+                          borderRadius: 2,
+                          background: C.surface,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${agent.usagePercent}%`,
+                            height: '100%',
+                            borderRadius: 2,
+                            background: agent.usagePercent <= 10 ? C.red : agent.usagePercent <= 30 ? C.amber : C.green,
+                          }}
+                        />
+                      </div>
+                      <span style={{
+                        fontSize: 10,
+                        color: agent.usagePercent <= 10 ? C.red : agent.usagePercent <= 30 ? C.amber : C.textMuted,
+                        fontFamily: 'var(--font-mono)',
+                      }}>
+                        {agent.usageLabel ?? `${agent.usagePercent}%`}
+                      </span>
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -718,8 +813,13 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: C.textMuted, padding: '8px 12px' }}>
-              No workers selected
+            <div style={{ padding: '8px 12px' }}>
+              <div style={{ fontSize: 12, color: C.textMuted }}>
+                No workers selected
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+                This will run as a direct single-agent task. No decomposition, no sub-tasks.
+              </div>
             </div>
           )}
         </div>
@@ -735,7 +835,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
   return (
     <div style={overlayStyle} onClick={close}>
-      <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
+      <div ref={panelRef} style={panelStyle} onClick={(e) => e.stopPropagation()} tabIndex={-1} onKeyDown={handlePanelKeyDown} autoFocus>
         {/* Header */}
         <div style={headerStyle}>
           <h2 style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, margin: 0 }}>
@@ -743,23 +843,15 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
           </h2>
           <button
             onClick={close}
+            className="flex items-center justify-center rounded-lg border border-wc-border bg-transparent hover:bg-wc-surface-hover transition-colors"
             style={{
               width: 32,
               height: 32,
-              borderRadius: 8,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: 'transparent',
-              border: `1px solid ${C.border}`,
               color: C.textSecondary,
               cursor: 'pointer',
               fontSize: 18,
               lineHeight: 1,
-              transition: 'background 0.15s',
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = C.surfaceHover; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >
             &times;
           </button>
@@ -779,6 +871,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
             {step > 0 && (
               <button
                 onClick={() => setStep((s) => s - 1)}
+                className="hover:bg-wc-surface-hover transition-colors"
                 style={{
                   padding: '8px 20px',
                   borderRadius: 10,
@@ -788,10 +881,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
                   cursor: 'pointer',
                   fontSize: 13,
                   fontWeight: 500,
-                  transition: 'background 0.15s',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = C.surfaceHover; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               >
                 Back
               </button>
@@ -800,6 +890,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
 
           <div>
             {step < 2 ? (
+              <span title={!canContinue ? (step === 0 ? 'Select a project directory to continue' : 'Select a conductor agent to continue') : undefined}>
               <button
                 onClick={() => setStep((s) => s + 1)}
                 disabled={!canContinue}
@@ -818,7 +909,9 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               >
                 Continue
               </button>
+              </span>
             ) : (
+              <span title={!canContinue ? 'Enter a task description to launch' : undefined}>
               <button
                 onClick={handleLaunch}
                 disabled={!canContinue}
@@ -838,6 +931,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               >
                 Launch
               </button>
+              </span>
             )}
           </div>
         </div>

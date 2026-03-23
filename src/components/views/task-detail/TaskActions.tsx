@@ -1,7 +1,10 @@
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 import { C } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
+import { humanizeError } from '@/lib/humanizeError';
+import { removeTaskWithUndo } from '@/lib/undoableActions';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useTaskDispatch } from '@/hooks/useTaskDispatch';
 import { useConfirmDialog } from '@/components/shared/ConfirmDialog';
@@ -40,6 +43,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const handleReassign = useCallback((newAgent: ToolName) => {
     setReassignOpen(false);
@@ -127,8 +131,8 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
       const newTaskId = await dispatchTask(task.prompt, projectDir, task.toolName);
 
       if (newTaskId) {
-        // Remove old failed task now that new one exists
-        useTaskStore.getState().removeTask(taskId);
+        // Remove old failed task with undo support
+        removeTaskWithUndo(taskId, task.description);
 
         // Mark retried task as worker
         const ts = useTaskStore.getState();
@@ -154,6 +158,36 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
     }
   }, [projectDir, task, taskId, retrying, dispatchTask, onClose, confirm]);
 
+  const handleCancel = useCallback(async () => {
+    if (!task || cancelling) return;
+    const ok = await confirm({
+      title: 'Cancel Task',
+      description: `Cancel the running task "${task.description}"? The agent process will be terminated.`,
+      confirmLabel: 'Cancel Task',
+      destructive: true,
+    });
+    if (!ok) return;
+    setCancelling(true);
+    try {
+      const result = await commands.cancelProcess(task.taskId);
+      if (result.status === 'ok') {
+        updateTaskStatus(taskId, 'failed' as any);
+        useTaskStore.getState().addOrchestrationLog({
+          agent: task.toolName,
+          level: 'warn',
+          message: `Task cancelled by user: ${task.description}`,
+        });
+        toast.success('Task cancelled');
+      } else {
+        toast.error('Failed to cancel task', { description: humanizeError(result.error) });
+      }
+    } catch (e) {
+      toast.error('Failed to cancel task', { description: humanizeError(e) });
+    } finally {
+      setCancelling(false);
+    }
+  }, [task, taskId, cancelling, updateTaskStatus, confirm]);
+
   const progress = display.isRunning && display.startedAt
     ? Math.min(95, Math.floor(((Date.now() - display.startedAt) / 120_000) * 100))
     : null;
@@ -161,6 +195,63 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
   return (
     <>
       {ConfirmDialogElement}
+
+      {/* Cancel card — only show for running tasks */}
+      {display.isRunning && (
+        <div
+          style={{
+            padding: 16,
+            borderRadius: 14,
+            background: C.amberBg,
+            border: `1px solid ${C.amberBorder}`,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: C.amber,
+              marginBottom: 8,
+            }}
+          >
+            Task Running
+          </div>
+          <p
+            style={{
+              fontSize: 12,
+              color: C.textSecondary,
+              margin: 0,
+              marginBottom: 14,
+              lineHeight: '18px',
+            }}
+          >
+            This task is currently being processed. You can cancel it to stop the agent.
+          </p>
+          <button
+            type="button"
+            disabled={cancelling}
+            onClick={handleCancel}
+            className={cn(
+              'flex items-center gap-1.5 transition-all duration-150',
+              !cancelling && 'hover:brightness-[1.15]'
+            )}
+            style={{
+              padding: '8px 20px',
+              borderRadius: 10,
+              background: cancelling ? C.borderStrong : C.red,
+              border: 'none',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: cancelling ? 'wait' : 'pointer',
+              fontFamily: 'Inter, sans-serif',
+              opacity: cancelling ? 0.7 : 1,
+            }}
+          >
+            {cancelling ? 'Cancelling...' : '✕ Cancel Task'}
+          </button>
+        </div>
+      )}
 
       {/* Retry card — only show for failed tasks */}
       {display.status === 'failed' && projectDir && (
@@ -197,6 +288,10 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
             type="button"
             disabled={retrying}
             onClick={handleRetry}
+            className={cn(
+              'flex items-center gap-1.5 transition-all duration-150',
+              !retrying && 'hover:brightness-[1.15]'
+            )}
             style={{
               padding: '8px 20px',
               borderRadius: 10,
@@ -207,17 +302,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
               fontWeight: 700,
               cursor: retrying ? 'wait' : 'pointer',
               fontFamily: 'Inter, sans-serif',
-              transition: 'all 150ms ease',
               opacity: retrying ? 0.7 : 1,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-            onMouseEnter={(e) => {
-              if (!retrying) e.currentTarget.style.filter = 'brightness(1.15)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.filter = 'brightness(1)';
             }}
           >
             {retrying ? 'Retrying...' : '\u21BB Retry Task'}
@@ -250,7 +335,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
           <div
             style={{
               fontSize: 12,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontFamily: 'var(--font-mono)',
               color: C.accentText,
             }}
           >
@@ -303,29 +388,18 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
             type="button"
             onClick={handleViewChanges}
             disabled={diffLoading}
+            className={cn(
+              'w-full flex items-center justify-center gap-2 rounded-xl border border-wc-border bg-wc-surface transition-all duration-150',
+              !diffLoading && 'hover:border-wc-accent'
+            )}
             style={{
-              width: '100%',
               padding: '10px 14px',
-              borderRadius: 12,
-              background: C.surface,
-              border: `1px solid ${C.border}`,
               color: C.accentText,
               fontSize: 12,
               fontWeight: 600,
               fontFamily: 'Inter, sans-serif',
               cursor: diffLoading ? 'wait' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 8,
-              transition: 'all 150ms ease',
               opacity: diffLoading ? 0.6 : 1,
-            }}
-            onMouseEnter={(e) => {
-              if (!diffLoading) e.currentTarget.style.borderColor = C.accent;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = C.border;
             }}
           >
             {diffLoading ? 'Loading diff...' : diffFiles ? 'Hide Changes' : 'View Changes'}
@@ -407,6 +481,10 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
             type="button"
             disabled={merging || !projectDir}
             onClick={handleMerge}
+            className={cn(
+              'transition-all duration-150',
+              !merging && 'hover:brightness-110'
+            )}
             style={{
               padding: '8px 20px',
               borderRadius: 10,
@@ -417,14 +495,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
               fontWeight: 700,
               cursor: merging ? 'wait' : 'pointer',
               fontFamily: 'Inter, sans-serif',
-              transition: 'all 150ms ease',
               opacity: merging ? 0.7 : 1,
-            }}
-            onMouseEnter={(e) => {
-              if (!merging) e.currentTarget.style.filter = 'brightness(1.1)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.filter = 'brightness(1)';
             }}
           >
             {merging ? 'Merging...' : 'Merge Branch'}
@@ -467,27 +538,14 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
           <button
             type="button"
             onClick={() => setReassignOpen(!reassignOpen)}
+            className="w-full flex items-center justify-between rounded-xl border border-wc-border bg-wc-surface hover:border-wc-border-strong transition-all duration-150"
             style={{
-              width: '100%',
               padding: '10px 14px',
-              borderRadius: 12,
-              background: C.surface,
-              border: `1px solid ${C.border}`,
               color: C.textPrimary,
               fontSize: 13,
               fontFamily: 'Inter, sans-serif',
               textAlign: 'left',
               cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              transition: 'all 150ms ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = C.borderStrong;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = C.border;
             }}
           >
             <span>{AGENTS[display.agent].label}</span>
@@ -519,6 +577,7 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
                     key={toolName}
                     type="button"
                     onClick={() => handleReassign(toolName)}
+                    className="hover:bg-wc-surface-hover transition-colors duration-150"
                     style={{
                       width: '100%',
                       padding: '10px 14px',
@@ -533,13 +592,6 @@ export function TaskActions({ taskId, display, projectDir, isGitRepo, onClose }:
                       fontFamily: 'Inter, sans-serif',
                       cursor: 'pointer',
                       textAlign: 'left',
-                      transition: 'background 150ms ease',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = C.surfaceHover;
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
                     }}
                   >
                     <div

@@ -66,6 +66,8 @@ pub struct DecompositionResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SubTaskDef {
+    #[serde(default)]
+    pub id: Option<String>,
     pub agent: String,
     pub prompt: String,
     pub description: String,
@@ -121,25 +123,26 @@ impl Orchestrator {
             .collect();
 
         format!(
-            "You are a task orchestrator. Analyze the following task and decompose it into sub-tasks \
-             for the available agents. Return ONLY a JSON object with no other text.\n\n\
+            "You are a task orchestrator. Your ONLY job is to return a JSON task plan.\n\n\
              Available agents:\n{}\n\n\
-             Task: {}\n\n\
-             Return format (strict JSON, no markdown fences):\n\
-             {{\"tasks\": [{{\"id\": \"t1\", \"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt>\", \"description\": \"<short description>\", \"depends_on\": [\"t0\"]}}]}}\n\n\
+             User request: {}\n\n\
+             INSTRUCTIONS:\n\
+             - You MUST return ONLY a JSON object. No greetings, no explanations, no markdown.\n\
+             - If the request is simple, conversational, or a single task, return it as ONE task.\n\
+             - If it's complex, decompose it into multiple sub-tasks.\n\
+             - CRITICAL: You may ONLY use agents from the list above. Do NOT use any other agent names.\n\n\
+             Return format (strict JSON, no code fences):\n\
+             {{\"tasks\": [{{\"id\": \"t1\", \"agent\": \"<agent_name>\", \"prompt\": \"<detailed prompt for the agent>\", \"description\": \"<short description>\", \"depends_on\": []}}]}}\n\n\
              Rules:\n\
              - Give each task a short id like t1, t2, t3\n\
-             - Use depends_on to specify which task IDs must complete before this task can start\n\
-             - Tasks with no dependencies should have an empty depends_on array\n\
+             - Use depends_on to specify dependencies (empty array if none)\n\
              - Tasks that CAN run in parallel SHOULD have independent dependencies\n\
              - Assign each sub-task to the most appropriate agent\n\
-             - Each agent can receive multiple tasks\n\
              - Prompts should be self-contained and detailed\n\
-             - You may assign tasks to yourself\n\
-             - CRITICAL: Each agent works in an isolated git worktree. To prevent merge conflicts, \
-             ensure sub-tasks do NOT modify the same files. If two tasks must touch the same file, \
-             merge them into a single task for one agent. Explicitly tell each agent which files it \
-             should create or modify and which files it must NOT touch.",
+             - CRITICAL: Each agent works in an isolated git worktree. Do NOT assign tasks that \
+             modify the same files to different agents.\n\
+             - EVEN FOR SIMPLE REQUESTS: You must still return the JSON format above with at least one task.\n\
+             - NEVER respond with plain text. ALWAYS respond with JSON.",
             agent_list.join("\n"),
             prompt
         )
@@ -203,6 +206,94 @@ impl Orchestrator {
             worker_list.join("\n"),
             prompt
         )
+    }
+
+    /// Build a review prompt enriched with actual worktree diffs.
+    ///
+    /// Takes the same inputs as `build_review_prompt` plus a vec of
+    /// `(dag_id, diff_text)` pairs. Appends a "File Changes" section with
+    /// truncated unified diffs. Total diff text is capped at ~20KB
+    /// (distributed proportionally across worktrees).
+    pub fn build_review_prompt_with_diffs(
+        original_prompt: &str,
+        worker_results: &[WorkerResult],
+        worktree_diffs: &[(String, String)], // (dag_id, combined_patch_text)
+    ) -> String {
+        const MAX_TOTAL_DIFF_BYTES: usize = 20 * 1024;
+
+        // Start with the base review prompt content
+        let result_sections: Vec<String> = worker_results
+            .iter()
+            .map(|r| {
+                format!(
+                    "### {} (exit code: {})\n{}",
+                    r.agent, r.exit_code, r.output_summary
+                )
+            })
+            .collect();
+
+        let mut prompt = format!(
+            "You are reviewing the results of a multi-agent task.\n\n\
+             Original task: {}\n\n\
+             Worker results:\n{}\n\n",
+            original_prompt,
+            result_sections.join("\n\n")
+        );
+
+        // Append file changes section
+        prompt.push_str("## File Changes\n\n");
+
+        if worktree_diffs.is_empty() {
+            prompt.push_str("No worktree diffs available.\n\n");
+        } else {
+            // Calculate total raw size to determine proportional budgets
+            let total_raw: usize = worktree_diffs.iter().map(|(_, d)| d.len()).sum();
+
+            for (dag_id, diff_text) in worktree_diffs {
+                prompt.push_str(&format!("### Worktree: {}\n", dag_id));
+
+                if diff_text.is_empty() {
+                    prompt.push_str("No file changes detected.\n\n");
+                    continue;
+                }
+
+                // Proportional budget for this worktree
+                let budget = if total_raw > MAX_TOTAL_DIFF_BYTES && total_raw > 0 {
+                    (diff_text.len() as f64 / total_raw as f64 * MAX_TOTAL_DIFF_BYTES as f64)
+                        as usize
+                } else {
+                    diff_text.len()
+                };
+                let budget = budget.max(256); // minimum readable chunk
+
+                if diff_text.len() <= budget {
+                    prompt.push_str("```diff\n");
+                    prompt.push_str(diff_text);
+                    if !diff_text.ends_with('\n') {
+                        prompt.push('\n');
+                    }
+                    prompt.push_str("```\n\n");
+                } else {
+                    prompt.push_str("```diff\n");
+                    // Truncate at a line boundary when possible
+                    let truncated = &diff_text[..budget];
+                    let end = truncated.rfind('\n').unwrap_or(budget);
+                    prompt.push_str(&diff_text[..end]);
+                    prompt.push_str("\n[diff truncated]\n```\n\n");
+                }
+            }
+        }
+
+        prompt.push_str(
+            "Please:\n\
+             1. Summarize what each worker accomplished\n\
+             2. Review the file changes for correctness and conflicts\n\
+             3. Identify any issues between outputs\n\
+             4. Provide a final integration summary\n\
+             5. Note any tasks that failed and suggest remediation",
+        );
+
+        prompt
     }
 
     /// Prompt sent to master when a worker asks a question.
@@ -504,5 +595,95 @@ mod tests {
         assert_eq!(result.retry_count, 1);
         assert_eq!(result.original_agent.unwrap(), "claude");
         assert_eq!(result.failure_reason.unwrap(), "Rate limited");
+    }
+
+    #[test]
+    fn test_build_review_prompt_with_diffs_basic() {
+        let results = vec![
+            WorkerResult {
+                task_id: "t1".to_string(),
+                agent: "gemini".to_string(),
+                exit_code: 0,
+                output_summary: "Implemented auth".to_string(),
+                retry_count: 0,
+                original_agent: None,
+                failure_reason: None,
+            },
+            WorkerResult {
+                task_id: "t2".to_string(),
+                agent: "claude".to_string(),
+                exit_code: 0,
+                output_summary: "Built API".to_string(),
+                retry_count: 0,
+                original_agent: None,
+                failure_reason: None,
+            },
+        ];
+        let diffs = vec![
+            ("t1".to_string(), "+fn login() {}\n-fn old_login() {}".to_string()),
+            ("t2".to_string(), "+fn api_handler() {}".to_string()),
+        ];
+        let prompt = Orchestrator::build_review_prompt_with_diffs("build app", &results, &diffs);
+
+        assert!(prompt.contains("build app"));
+        assert!(prompt.contains("gemini"));
+        assert!(prompt.contains("claude"));
+        assert!(prompt.contains("Implemented auth"));
+        assert!(prompt.contains("Built API"));
+        assert!(prompt.contains("## File Changes"));
+        assert!(prompt.contains("### Worktree: t1"));
+        assert!(prompt.contains("### Worktree: t2"));
+        assert!(prompt.contains("+fn login()"));
+        assert!(prompt.contains("+fn api_handler()"));
+        assert!(prompt.contains("Review the file changes"));
+    }
+
+    #[test]
+    fn test_build_review_prompt_with_diffs_zero_changes() {
+        let results = vec![WorkerResult {
+            task_id: "t1".to_string(),
+            agent: "gemini".to_string(),
+            exit_code: 0,
+            output_summary: "Analysis only".to_string(),
+            retry_count: 0,
+            original_agent: None,
+            failure_reason: None,
+        }];
+        let diffs = vec![("t1".to_string(), String::new())];
+        let prompt = Orchestrator::build_review_prompt_with_diffs("analyze code", &results, &diffs);
+
+        assert!(prompt.contains("No file changes detected"));
+    }
+
+    #[test]
+    fn test_build_review_prompt_with_diffs_truncation() {
+        let results = vec![WorkerResult {
+            task_id: "t1".to_string(),
+            agent: "gemini".to_string(),
+            exit_code: 0,
+            output_summary: "Big changes".to_string(),
+            retry_count: 0,
+            original_agent: None,
+            failure_reason: None,
+        }];
+        // Create a diff larger than 20KB
+        let big_diff = "a".repeat(25 * 1024);
+        let diffs = vec![("t1".to_string(), big_diff)];
+        let prompt =
+            Orchestrator::build_review_prompt_with_diffs("refactor", &results, &diffs);
+
+        assert!(prompt.contains("[diff truncated]"));
+        // Total prompt should be bounded
+        assert!(prompt.len() < 30 * 1024);
+    }
+
+    #[test]
+    fn test_build_review_prompt_with_diffs_empty_vec() {
+        let results = vec![];
+        let diffs: Vec<(String, String)> = vec![];
+        let prompt =
+            Orchestrator::build_review_prompt_with_diffs("nothing", &results, &diffs);
+
+        assert!(prompt.contains("No worktree diffs available"));
     }
 }

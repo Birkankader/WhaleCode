@@ -18,6 +18,15 @@ pub fn list_dir(base_path: &Path, relative_path: &str) -> Result<Vec<FsEntry>, S
         return Err(format!("Not a directory: {}", full_path.display()));
     }
 
+    // Safety: don't allow listing outside base_path
+    let canonical_base = base_path.canonicalize()
+        .map_err(|e| format!("Invalid base path: {}", e))?;
+    let canonical_dir = full_path.canonicalize()
+        .map_err(|e| format!("Invalid directory path: {}", e))?;
+    if !canonical_dir.starts_with(&canonical_base) {
+        return Err("Cannot list outside project directory".to_string());
+    }
+
     let gitignore = build_gitignore(base_path);
 
     let mut dirs: Vec<FsEntry> = Vec::new();
@@ -139,6 +148,13 @@ mod tests {
         assert!(names.contains(&".gitignore"));
         assert!(!names.contains(&"debug.log"));
         assert!(!names.contains(&"build"));
+    }
+
+    #[test]
+    fn test_list_dir_rejects_path_traversal() {
+        let dir = TempDir::new().unwrap();
+        let result = list_dir(dir.path(), "../");
+        assert!(result.is_err());
     }
 
     #[test]

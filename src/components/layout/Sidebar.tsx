@@ -1,14 +1,22 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
+import { History, Settings } from 'lucide-react';
 import { C } from '@/lib/theme';
 import { useUIStore } from '@/stores/uiStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useTaskStore } from '@/stores/taskStore';
+import { SessionHistory } from '@/components/shared/SessionHistory';
 
 /* ── Tooltip ─────────────────────────────────────────────── */
 
 function Tooltip({ label, children }: { label: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(null);
   return (
-    <div className="relative" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+    <div
+      className="relative"
+      onMouseEnter={() => { timerRef.current = setTimeout(() => setShow(true), 150); }}
+      onMouseLeave={() => { if (timerRef.current) clearTimeout(timerRef.current); setShow(false); }}
+    >
       {children}
       {show && (
         <div
@@ -37,39 +45,22 @@ function IconButton({
   active,
   onClick,
   children,
+  'aria-label': ariaLabel,
 }: {
   active?: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  'aria-label'?: string;
 }) {
   return (
     <button
       onClick={onClick}
-      style={{
-        width: 36,
-        height: 36,
-        borderRadius: 10,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: active ? C.accentSoft : 'transparent',
-        color: active ? C.accentText : C.textMuted,
-        border: 'none',
-        cursor: 'pointer',
-        transition: 'all 150ms ease',
-      }}
-      onMouseEnter={(e) => {
-        if (!active) {
-          e.currentTarget.style.background = C.surfaceHover;
-          e.currentTarget.style.color = C.textSecondary;
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!active) {
-          e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.color = C.textMuted;
-        }
-      }}
+      aria-label={ariaLabel}
+      className={`w-9 h-9 rounded-[10px] flex items-center justify-center border-none cursor-pointer transition-all duration-150 ease-out ${
+        active
+          ? 'bg-wc-accent-soft text-wc-accent-text'
+          : 'bg-transparent text-wc-text-muted hover:bg-wc-surface-hover hover:text-wc-text-secondary'
+      }`}
     >
       {children}
     </button>
@@ -93,34 +84,11 @@ function SessionButton({
     <Tooltip label={label}>
       <button
         onClick={onClick}
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: 10,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          position: 'relative',
-          background: active ? C.accentSoft : C.surface,
-          color: active ? C.accentText : C.textSecondary,
-          border: `1px solid ${active ? C.accent : C.border}`,
-          cursor: 'pointer',
-          fontSize: 13,
-          fontWeight: 600,
-          transition: 'all 150ms ease',
-        }}
-        onMouseEnter={(e) => {
-          if (!active) {
-            e.currentTarget.style.borderColor = C.borderStrong;
-            e.currentTarget.style.background = C.surfaceHover;
-          }
-        }}
-        onMouseLeave={(e) => {
-          if (!active) {
-            e.currentTarget.style.borderColor = C.border;
-            e.currentTarget.style.background = C.surface;
-          }
-        }}
+        className={`w-9 h-9 rounded-[10px] flex items-center justify-center relative text-[13px] font-semibold cursor-pointer transition-all duration-150 ease-out ${
+          active
+            ? 'bg-wc-accent-soft text-wc-accent-text border border-wc-accent'
+            : 'bg-wc-surface text-wc-text-secondary border border-wc-border hover:border-wc-border-strong hover:bg-wc-surface-hover'
+        }`}
       >
         {label.charAt(0).toUpperCase()}
         <span
@@ -146,8 +114,15 @@ export function Sidebar() {
   const activeView = useUIStore((s) => s.activeView);
   const setActiveView = useUIStore((s) => s.setActiveView);
   const setShowSetup = useUIStore((s) => s.setShowSetup);
-  const activePlan = useTaskStore((s) => s.activePlan);
-  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
+  const { orchestrationPhase, tasks } = useTaskStore(
+    useShallow((s) => ({ orchestrationPhase: s.orchestrationPhase, tasks: s.tasks })),
+  );
+  const sessionName = useUIStore((s) => s.sessionName);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Session is visible when there are tasks in the current runtime session
+  const hasSession = tasks.size > 0 || orchestrationPhase !== 'idle';
+  const displayLabel = sessionName || 'Session';
 
   const phaseToColor = (phase: string): string => {
     switch (phase) {
@@ -167,8 +142,10 @@ export function Sidebar() {
   };
 
   return (
-    <div
+    <nav
       data-testid="sidebar"
+      role="navigation"
+      aria-label="Main navigation"
       style={{
         width: 56,
         minWidth: 56,
@@ -226,9 +203,9 @@ export function Sidebar() {
           flexShrink: 0,
         }}
       >
-        {activePlan && (
+        {hasSession && (
           <SessionButton
-            label={`Session ${activePlan.task_id.slice(0, 6)}`}
+            label={displayLabel}
             statusColor={phaseToColor(orchestrationPhase)}
             active={activeView === 'kanban' || activeView === 'terminal'}
             onClick={() => setActiveView('kanban')}
@@ -238,33 +215,9 @@ export function Sidebar() {
         {/* New orchestration button */}
         <Tooltip label="New orchestration">
           <button
+            aria-label="New orchestration"
             onClick={() => setShowSetup(true)}
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: 'transparent',
-              color: C.textMuted,
-              border: `1.5px dashed ${C.borderStrong}`,
-              cursor: 'pointer',
-              fontSize: 18,
-              fontWeight: 300,
-              lineHeight: 1,
-              transition: 'all 150ms ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = C.accent;
-              e.currentTarget.style.color = C.accentText;
-              e.currentTarget.style.background = C.accentSoft;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = C.borderStrong;
-              e.currentTarget.style.color = C.textMuted;
-              e.currentTarget.style.background = 'transparent';
-            }}
+            className="w-9 h-9 rounded-[10px] flex items-center justify-center bg-transparent text-wc-text-muted border-[1.5px] border-dashed border-wc-border-strong cursor-pointer text-lg font-light leading-none transition-all duration-150 ease-out hover:border-wc-accent hover:text-wc-accent-text hover:bg-wc-accent-soft"
           >
             +
           </button>
@@ -284,18 +237,27 @@ export function Sidebar() {
           flexShrink: 0,
         }}
       >
-        <Tooltip label="Usage">
-          <IconButton active={activeView === 'usage'} onClick={() => setActiveView('usage')}>
-            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9678;</span>
-          </IconButton>
+        <Tooltip label="History">
+          <div className="flex flex-col items-center">
+            <IconButton active={showHistory} onClick={() => setShowHistory(!showHistory)} aria-label="Session history">
+              <History size={16} />
+            </IconButton>
+            <span className="text-[8px] text-wc-text-muted mt-0.5">History</span>
+          </div>
         </Tooltip>
 
         <Tooltip label="Settings">
-          <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')}>
-            <span style={{ fontSize: 16, lineHeight: 1 }}>&#9881;</span>
-          </IconButton>
+          <div className="flex flex-col items-center">
+            <IconButton active={activeView === 'settings'} onClick={() => setActiveView('settings')} aria-label="Settings">
+              <Settings size={16} />
+            </IconButton>
+            <span className="text-[8px] text-wc-text-muted mt-0.5">Settings</span>
+          </div>
         </Tooltip>
       </div>
-    </div>
+
+      {/* Session History panel */}
+      {showHistory && <SessionHistory onClose={() => setShowHistory(false)} />}
+    </nav>
   );
 }

@@ -6,6 +6,7 @@ import { useUIStore } from '@/stores/uiStore';
 import { commands } from '@/bindings';
 import { TaskHeaderBar, TaskIdentity } from './task-detail/TaskHeader';
 import { TaskActions } from './task-detail/TaskActions';
+import { AgentActivityPanel } from '@/components/shared/AgentActivityPanel';
 import type { TaskDisplayData } from './task-detail/TaskHeader';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -59,6 +60,7 @@ export function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     const st = STATUS[stKey] ?? STATUS.idle;
     return {
       title: task.description || task.prompt.slice(0, 60),
+      prompt: task.prompt,
       id: task.taskId,
       agent: task.toolName,
       status: task.status,
@@ -102,6 +104,9 @@ export function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Task identity: status, title, agent card, result */}
           <TaskIdentity display={display} />
+
+          {/* Real-time agent activity (only for running tasks) */}
+          <AgentActivityPanel taskId={taskId} />
 
           {/* Action sections: retry, branch, progress, diff, merge, reassign */}
           <TaskActions

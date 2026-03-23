@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -87,10 +88,18 @@ pub struct AppStateInner {
     pub orchestration_plans: HashMap<TaskId, crate::router::orchestrator::OrchestrationPlan>,
     pub cached_prompt_context: Option<CachedPromptContext>,
     pub question_queue: Vec<crate::router::orchestrator::PendingQuestion>,
-    /// Tools that have been reserved for dispatch but not yet spawned.
+    /// Dispatch IDs that have been reserved but not yet spawned.
     /// Prevents TOCTOU races where two rapid dispatch calls for the same
-    /// tool both pass the "no running process" check before either spawns.
-    pub reserved_tools: HashSet<String>,
+    /// dispatch_id both pass the reservation check before either spawns.
+    /// Keyed by dispatch_id (unique per task), not by agent name — this
+    /// allows multiple workers of the same agent type to run concurrently.
+    pub reserved_dispatches: HashSet<String>,
+    /// Watch channels for approval notifications. Keyed by plan_id.
+    /// Sender side: approval command sends `true` to wake the orchestrator.
+    /// Receiver side: orchestrator awaits instead of polling.
+    pub approval_signals: HashMap<String, tokio::sync::watch::Sender<bool>>,
+    /// Watch channels for question-answered notifications. Keyed by plan_id.
+    pub question_signals: HashMap<String, tokio::sync::watch::Sender<bool>>,
 }
 
 pub type AppState = Arc<Mutex<AppStateInner>>;
@@ -110,7 +119,7 @@ mod tests {
     #[test]
     fn app_state_initializes_empty() {
         let state = AppState::default();
-        let inner = state.lock().unwrap();
+        let inner = state.lock();
         assert_eq!(inner.tasks.len(), 0);
         assert_eq!(inner.processes.len(), 0);
         assert!(inner.cached_prompt_context.is_none());
@@ -120,7 +129,7 @@ mod tests {
     fn app_state_insert_and_count() {
         let state = AppState::default();
         {
-            let mut inner = state.lock().unwrap();
+            let mut inner = state.lock();
             inner.tasks.insert(
                 "task-1".to_string(),
                 TaskInfo {
@@ -128,7 +137,7 @@ mod tests {
                 },
             );
         }
-        let inner = state.lock().unwrap();
+        let inner = state.lock();
         assert_eq!(inner.tasks.len(), 1);
     }
 
@@ -178,49 +187,49 @@ mod tests {
     }
 
     #[test]
-    fn reserved_tools_starts_empty() {
+    fn reserved_dispatches_starts_empty() {
         let state = AppState::default();
-        let inner = state.lock().unwrap();
-        assert!(inner.reserved_tools.is_empty());
+        let inner = state.lock();
+        assert!(inner.reserved_dispatches.is_empty());
     }
 
     #[test]
-    fn reserved_tools_insert_and_check() {
+    fn reserved_dispatches_insert_and_check() {
         let state = AppState::default();
-        let mut inner = state.lock().unwrap();
+        let mut inner = state.lock();
 
         // First insert succeeds
-        assert!(inner.reserved_tools.insert("claude".to_string()));
+        assert!(inner.reserved_dispatches.insert("dispatch-1".to_string()));
         // Duplicate insert returns false (already reserved)
-        assert!(!inner.reserved_tools.insert("claude".to_string()));
-        // Different tool succeeds
-        assert!(inner.reserved_tools.insert("gemini".to_string()));
+        assert!(!inner.reserved_dispatches.insert("dispatch-1".to_string()));
+        // Different dispatch_id succeeds (even for same agent type)
+        assert!(inner.reserved_dispatches.insert("dispatch-2".to_string()));
     }
 
     #[test]
-    fn reserved_tools_remove_allows_re_reservation() {
+    fn reserved_dispatches_remove_allows_re_reservation() {
         let state = AppState::default();
-        let mut inner = state.lock().unwrap();
+        let mut inner = state.lock();
 
-        inner.reserved_tools.insert("claude".to_string());
-        inner.reserved_tools.remove("claude");
+        inner.reserved_dispatches.insert("dispatch-1".to_string());
+        inner.reserved_dispatches.remove("dispatch-1");
 
         // After removal, can reserve again
-        assert!(inner.reserved_tools.insert("claude".to_string()));
+        assert!(inner.reserved_dispatches.insert("dispatch-1".to_string()));
     }
 
     #[test]
-    fn reserved_tools_independent_of_processes() {
+    fn reserved_dispatches_independent_of_processes() {
         let state = AppState::default();
-        let mut inner = state.lock().unwrap();
+        let mut inner = state.lock();
 
         // Reservation exists even with no matching process
-        inner.reserved_tools.insert("claude".to_string());
-        assert!(inner.reserved_tools.contains("claude"));
+        inner.reserved_dispatches.insert("dispatch-1".to_string());
+        assert!(inner.reserved_dispatches.contains("dispatch-1"));
         assert!(inner.processes.is_empty());
 
         // Process exists without reservation
-        inner.reserved_tools.remove("claude");
+        inner.reserved_dispatches.remove("dispatch-1");
         let (_tx, rx) = tokio::sync::watch::channel(false);
         let (_ltx, lrx) = tokio::sync::watch::channel(0usize);
         inner.processes.insert(
@@ -241,6 +250,6 @@ mod tests {
                 cost_usd: None,
             },
         );
-        assert!(!inner.reserved_tools.contains("claude"));
+        assert!(!inner.reserved_dispatches.contains("dispatch-1"));
     }
 }

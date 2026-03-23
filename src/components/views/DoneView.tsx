@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useTaskStore } from '@/stores/taskStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -45,13 +45,19 @@ export function DoneView({ onNew }: DoneViewProps) {
     });
   }, [projectDir]);
 
-  const allTasks = Array.from(tasks.values());
-  const completedTasks = allTasks.filter(t => t.status === 'completed');
-  const uniqueAgents = new Set(allTasks.map(t => t.toolName));
+  const { allTasks, completedTasks, uniqueAgents, earliestStart } = useMemo(() => {
+    const arr = Array.from(tasks.values());
+    const completed = arr.filter(t => t.status === 'completed');
+    const agents = new Set(arr.map(t => t.toolName));
+    let earliest = Infinity;
+    for (const t of arr) {
+      if (t.startedAt !== null && t.startedAt < earliest) earliest = t.startedAt;
+    }
+    return { allTasks: arr, completedTasks: completed, uniqueAgents: agents, earliestStart: earliest === Infinity ? null : earliest };
+  }, [tasks]);
 
-  const startTimes = allTasks.map(t => t.startedAt).filter((t): t is number => t !== null);
-  const totalDuration = startTimes.length > 0
-    ? Date.now() - Math.min(...startTimes)
+  const totalDuration = earliestStart !== null
+    ? Date.now() - earliestStart
     : 0;
 
   const stats = [

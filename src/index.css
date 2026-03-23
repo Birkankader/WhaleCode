@@ -18,7 +18,7 @@
   --color-wc-accent-text: #a5b4fc;
   --color-wc-text-primary: #e2e8f0;
   --color-wc-text-secondary: #8b8fa8;
-  --color-wc-text-muted: #4b4d66;
+  --color-wc-text-muted: #7b7d96;
   --color-wc-green: #4ade80;
   --color-wc-green-bg: #052e16;
   --color-wc-green-border: #14532d;
@@ -70,6 +70,17 @@
 
 :root {
   --radius: 0.875rem;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -103,39 +114,7 @@
   --sidebar-ring: oklch(0.66 0.19 285);
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.74 0.16 286);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.26 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.26 0 0);
-  --muted-foreground: oklch(0.72 0 0);
-  --accent: oklch(0.26 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.66 0.19 285);
-  --chart-1: oklch(0.58 0.24 286);
-  --chart-2: oklch(0.72 0.16 225);
-  --chart-3: oklch(0.7 0.18 170);
-  --chart-4: oklch(0.77 0.18 80);
-  --chart-5: oklch(0.67 0.23 18);
-  --sidebar: oklch(0.17 0.01 275);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.74 0.16 286);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.24 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.66 0.19 285);
-}
+
 
 @layer base {
   * {
@@ -203,6 +182,123 @@
   animation: kanbanSlideIn 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+/* Decomposition error card fade-in */
+@keyframes decompositionErrorFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.decomposition-error-fade-in {
+  animation: decompositionErrorFadeIn 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Indeterminate shimmer progress bar */
+@keyframes shimmerProgress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+.shimmer-bar {
+  animation: shimmerProgress 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Failed card shake */
+@keyframes failedShake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-4px); }
+  30% { transform: translateX(3px); }
+  45% { transform: translateX(-2px); }
+  60% { transform: translateX(1px); }
+  75% { transform: translateX(-1px); }
+}
+.failed-card-shake {
+  animation: failedShake 500ms ease-out;
+}
+
+/* Status bar heartbeat pulse */
+@keyframes heartbeatPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.6; }
+}
+.heartbeat-pulse {
+  animation: heartbeatPulse 1.5s ease-in-out infinite;
+}
+
+/* ── StagePipeline animations ───────────────────────────── */
+
+/* Subtle pulse on the active stage pill */
+@keyframes stagePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.25); }
+  50% { box-shadow: 0 0 12px 2px rgba(99, 102, 241, 0.15); }
+}
+.stage-pulse {
+  animation: stagePulse 2.4s ease-in-out infinite;
+}
+
+/* Pulsing dot inside the active stage */
+@keyframes stageDotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+.stage-dot-pulse {
+  animation: stageDotPulse 1.6s ease-in-out infinite;
+}
+
+/* ── DecomposingBanner animations ───────────────────────── */
+
+/* Horizontal shimmer sweep */
+@keyframes decomposingShimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.decomposing-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(99, 102, 241, 0.06) 30%,
+    rgba(99, 102, 241, 0.12) 50%,
+    rgba(99, 102, 241, 0.06) 70%,
+    transparent 100%
+  );
+  animation: decomposingShimmer 3s ease-in-out infinite;
+}
+
+/* Animated dots (sequential fade-in) */
+@keyframes decomposingDotFade {
+  0%, 20% { opacity: 0; }
+  40%, 100% { opacity: 1; }
+}
+.decomposing-dot {
+  opacity: 0;
+  animation: decomposingDotFade 1.4s ease-in-out infinite;
+}
+
+/* Banner entrance slide-down */
+@keyframes bannerSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.decomposing-banner {
+  animation: bannerSlideDown 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 ::-webkit-scrollbar {
   width: 11px;
   height: 11px;
@@ -215,6 +311,6 @@
 ::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.38);
   background-clip: padding-box;
 }

@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { C, STATUS, LOG_COLOR } from '@/lib/theme';
 import { AGENTS } from '@/lib/agents';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useShallow } from 'zustand/react/shallow';
 import { useTaskStore, type ToolName } from '@/stores/taskStore';
 import { useProcessStore, registerProcessOutput, unregisterProcessOutput } from '@/hooks/useProcess';
 import type { OutputEvent } from '@/bindings';
@@ -47,11 +48,16 @@ function mergeStatusStyle(status: MergeQueueItem['status']): { bg: string; text:
 /* ── Main Component ────────────────────────────────────── */
 
 export function TerminalView({ devMode }: TerminalViewProps) {
-  const tasks = useTaskStore((s) => s.tasks);
-  const logs = useTaskStore((s) => s.orchestrationLogs);
+  const { tasks, orchestrationLogs: logs, orchestrationPhase, activePlan, orchestrationPlan } = useTaskStore(
+    useShallow((s) => ({
+      tasks: s.tasks,
+      orchestrationLogs: s.orchestrationLogs,
+      orchestrationPhase: s.orchestrationPhase,
+      activePlan: s.activePlan,
+      orchestrationPlan: s.orchestrationPlan,
+    })),
+  );
   const addLog = useTaskStore((s) => s.addOrchestrationLog);
-  const orchestrationPhase = useTaskStore((s) => s.orchestrationPhase);
-  const activePlan = useTaskStore((s) => s.activePlan);
   const [devInput, setDevInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const standaloneScrollRef = useRef<HTMLDivElement>(null);
@@ -141,7 +147,6 @@ export function TerminalView({ devMode }: TerminalViewProps) {
 
   // Derive agent statuses from orchestration phase + tasks
   const isRunning = orchestrationPhase !== 'idle' && orchestrationPhase !== 'failed';
-  const orchestrationPlan = useTaskStore((s) => s.orchestrationPlan);
 
   // Master agent: prefer orchestrationPlan (set at launch) over activePlan (set after completion)
   const masterAgent: ToolName = (orchestrationPlan?.masterAgent as ToolName)
@@ -417,7 +422,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                   cursor: 'pointer',
                   fontSize: 11,
                   fontWeight: 600,
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  fontFamily: 'var(--font-mono)',
                   background: mode === m ? C.accent + '30' : 'transparent',
                   color: mode === m ? C.accentText : C.textMuted,
                   transition: 'all 0.15s',
@@ -428,7 +433,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
             ))}
           </div>
           {mode === 'standalone' && activeProcessId && (
-            <span style={{ fontSize: 10, color: C.textMuted, marginLeft: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+            <span style={{ fontSize: 10, color: C.textMuted, marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
               pid:{activeProcessId.slice(0, 8)}
             </span>
           )}
@@ -456,7 +461,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                       alignItems: 'flex-start',
                       gap: 10,
                       padding: '6px 0',
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontFamily: 'var(--font-mono)',
                       fontSize: 12,
                       lineHeight: '20px',
                     }}
@@ -521,7 +526,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                 <div
                   key={line.id}
                   style={{
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontFamily: 'var(--font-mono)',
                     fontSize: 12,
                     lineHeight: '20px',
                     padding: '1px 0',
@@ -615,7 +620,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                 outline: 'none',
                 color: C.textPrimary,
                 fontSize: 13,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontFamily: 'var(--font-mono)',
               }}
             />
           </div>
@@ -690,7 +695,7 @@ export function TerminalView({ devMode }: TerminalViewProps) {
                     <span
                       style={{
                         fontSize: 11,
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontFamily: 'var(--font-mono)',
                         color: C.textPrimary,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',

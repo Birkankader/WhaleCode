@@ -116,6 +116,30 @@ pub fn build_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
     }
 }
 
+/// Build a single-shot command for decomposition/planning only.
+///
+/// This is truly planning-only with no tool access: `--allowedTools ""`
+/// disables all tools, and `--max-turns 1` caps execution to a single turn.
+/// No `--dangerously-skip-permissions` is needed since tools are disabled.
+pub fn build_single_shot_command(prompt: &str, cwd: &str, api_key: &str) -> ClaudeCommand {
+    ClaudeCommand {
+        cmd: "claude".to_string(),
+        args: vec![
+            "-p".to_string(),
+            prompt.to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--max-turns".to_string(),
+            "1".to_string(),
+            "--allowedTools".to_string(),
+            "".to_string(),
+        ],
+        env: build_env(api_key),
+        cwd: cwd.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // NDJSON Parser
 // ---------------------------------------------------------------------------
@@ -184,56 +208,23 @@ pub fn validate_result(event: &ClaudeStreamEvent) -> Result<(), String> {
 
 /// Information about a detected rate limit.
 #[allow(dead_code)]
-pub struct RateLimitInfo {
-    pub retry_after_secs: Option<u64>,
-}
+// ---------------------------------------------------------------------------
+// Rate Limiting — uses shared RateLimitInfo from adapters::mod
+// ---------------------------------------------------------------------------
 
 /// Detect rate-limit or overload errors in a stderr/stdout line.
-/// Returns `Some(RateLimitInfo)` if the line indicates a rate limit.
-#[allow(dead_code)]
-pub fn detect_rate_limit(line: &str) -> Option<RateLimitInfo> {
+pub(crate) fn detect_rate_limit_claude(line: &str) -> Option<super::RateLimitInfo> {
     if line.contains("rate_limit")
         || line.contains("Rate limit")
         || line.contains("overloaded")
         || line.contains("529")
         || line.contains("429")
     {
-        Some(RateLimitInfo {
+        Some(super::RateLimitInfo {
             retry_after_secs: None,
         })
     } else {
         None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Retry Policy
-// ---------------------------------------------------------------------------
-
-/// Exponential backoff retry policy for rate-limited Claude Code requests.
-#[allow(dead_code)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub base_delay_ms: u64,
-    pub max_delay_ms: u64,
-}
-
-#[allow(dead_code)]
-impl RetryPolicy {
-    /// Default retry policy for Claude Code: 3 retries, 5s base, 60s max.
-    pub fn default_claude() -> Self {
-        Self {
-            max_retries: 3,
-            base_delay_ms: 5_000,
-            max_delay_ms: 60_000,
-        }
-    }
-
-    /// Calculate the delay in milliseconds for a given attempt (0-indexed).
-    /// Delay = base * 2^attempt, capped at max_delay_ms.
-    pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
-        let delay = self.base_delay_ms.saturating_mul(2u64.saturating_pow(attempt));
-        delay.min(self.max_delay_ms)
     }
 }
 
@@ -266,17 +257,14 @@ impl ToolAdapter for ClaudeAdapter {
     }
 
     fn detect_rate_limit(&self, line: &str) -> Option<SharedRateLimitInfo> {
-        detect_rate_limit(line).map(|info| SharedRateLimitInfo {
-            retry_after_secs: info.retry_after_secs,
-        })
+        detect_rate_limit_claude(line)
     }
 
     fn retry_policy(&self) -> SharedRetryPolicy {
-        let p = RetryPolicy::default_claude();
         SharedRetryPolicy {
-            max_retries: p.max_retries,
-            base_delay_ms: p.base_delay_ms,
-            max_delay_ms: p.max_delay_ms,
+            max_retries: 3,
+            base_delay_ms: 5_000,
+            max_delay_ms: 60_000,
         }
     }
 
@@ -559,25 +547,25 @@ mod tests {
 
     #[test]
     fn test_detect_rate_limit_429() {
-        let info = super::detect_rate_limit("Error: 429 Too Many Requests");
+        let info = super::detect_rate_limit_claude("Error: 429 Too Many Requests");
         assert!(info.is_some(), "Expected rate limit detection for 429");
     }
 
     #[test]
     fn test_detect_rate_limit_rate_limit_string() {
-        let info = super::detect_rate_limit("rate_limit exceeded, please retry");
+        let info = super::detect_rate_limit_claude("rate_limit exceeded, please retry");
         assert!(info.is_some(), "Expected rate limit detection for rate_limit");
     }
 
     #[test]
     fn test_detect_rate_limit_overloaded() {
-        let info = super::detect_rate_limit("Server overloaded, try again later");
+        let info = super::detect_rate_limit_claude("Server overloaded, try again later");
         assert!(info.is_some(), "Expected rate limit detection for overloaded");
     }
 
     #[test]
     fn test_detect_rate_limit_normal_line() {
-        let info = super::detect_rate_limit("Processing your request...");
+        let info = super::detect_rate_limit_claude("Processing your request...");
         assert!(info.is_none(), "Expected None for normal line");
     }
 
@@ -601,10 +589,10 @@ mod tests {
 
     #[test]
     fn test_retry_policy_delay_doubles() {
-        let policy = super::RetryPolicy::default_claude();
-        let d0 = policy.delay_for_attempt(0); // 5000
-        let d1 = policy.delay_for_attempt(1); // 10000
-        let d2 = policy.delay_for_attempt(2); // 20000
+        let policy = super::super::RetryPolicy { max_retries: 3, base_delay_ms: 5_000, max_delay_ms: 60_000 };
+        let d0 = policy.delay_for_attempt(0);
+        let d1 = policy.delay_for_attempt(1);
+        let d2 = policy.delay_for_attempt(2);
         assert_eq!(d0, 5_000);
         assert_eq!(d1, 10_000);
         assert_eq!(d2, 20_000);
@@ -612,8 +600,8 @@ mod tests {
 
     #[test]
     fn test_retry_policy_delay_capped_at_max() {
-        let policy = super::RetryPolicy::default_claude();
-        let d10 = policy.delay_for_attempt(10); // would be huge, capped at 60000
+        let policy = super::super::RetryPolicy { max_retries: 3, base_delay_ms: 5_000, max_delay_ms: 60_000 };
+        let d10 = policy.delay_for_attempt(10);
         assert_eq!(d10, 60_000);
     }
 

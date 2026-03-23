@@ -1,4 +1,5 @@
 use crate::fs_explorer::{list, models::*, read, write};
+use crate::utils::validate_project_dir;
 
 #[tauri::command]
 #[specta::specta]
@@ -32,6 +33,7 @@ pub async fn write_file(
     content: String,
 ) -> Result<u32, String> {
     let base = super::expand_tilde(&project_dir);
+    validate_project_dir(&base)?;
     tokio::task::spawn_blocking(move || write::write_file_content(&base, &relative_path, &content))
         .await
         .map_err(|e| format!("Task failed: {}", e))?

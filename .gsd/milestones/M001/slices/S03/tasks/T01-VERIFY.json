@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T01",
+  "unitId": "M001/S03/T01",
+  "timestamp": 1774044647489,
+  "passed": false,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "grep -q '\"dag_id\".*task_assigned' src-tauri/src/commands/orchestrator.rs",
+      "exitCode": 1,
+      "durationMs": 4,
+      "verdict": "fail"
+    }
+  ],
+  "retryAttempt": 1,
+  "maxRetries": 2
+}

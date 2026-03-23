@@ -1,4 +1,5 @@
 /// Configuration for retry behavior.
+#[derive(Clone)]
 pub struct RetryConfig {
     pub max_retries: u32,
     pub base_delay_ms: u64,

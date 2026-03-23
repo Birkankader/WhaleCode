@@ -1,3 +1,5 @@
+// @deprecated — processStore is being phased out. New code should use taskStore.updateTaskProcess() instead.
+// This store remains for OutputConsole/xterm compatibility.
 import { create } from 'zustand';
 import { Channel } from '@tauri-apps/api/core';
 import { commands } from '../bindings';
@@ -61,8 +63,8 @@ export function emitProcessOutput(taskId: string, event: OutputEvent) {
   // Always persist to log so future consumers can replay
   const log = outputLogs.get(taskId) ?? [];
   log.push(event);
-  if (log.length > 5000) {
-    log.splice(0, log.length - 5000);
+  if (log.length > 2000) {
+    log.splice(0, log.length - 2000);
   }
   outputLogs.set(taskId, log);
 
@@ -118,7 +120,9 @@ interface ProcessState {
   pauseProcess: (taskId: string) => Promise<void>;
   resumeProcess: (taskId: string) => Promise<void>;
 
+  /** @internal — called by dispatch hooks, not by UI components directly */
   _updateStatus: (taskId: string, status: ProcessStatus, exitCode?: number) => void;
+  /** @internal — called by dispatch hooks, not by UI components directly */
   _removeProcess: (taskId: string) => void;
 }
 
@@ -132,7 +136,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     let channel: Channel<OutputEvent>;
     try {
       channel = new Channel<OutputEvent>();
-    } catch {
+    } catch (e) {
+      console.error('Failed to create output channel:', e);
       return null;
     }
 
@@ -193,7 +198,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       }
 
       return taskId;
-    } catch {
+    } catch (e) {
+      console.error('Failed to spawn process:', e);
       return null;
     }
   },
@@ -202,8 +208,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       await commands.cancelProcess(taskId);
       get()._updateStatus(taskId, 'failed');
-    } catch {
-      // Non-Tauri environment
+    } catch (e) {
+      console.error('Failed to cancel process:', e);
     }
   },
 
@@ -211,8 +217,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       await commands.pauseProcess(taskId);
       get()._updateStatus(taskId, 'paused');
-    } catch {
-      // Non-Tauri environment
+    } catch (e) {
+      console.error('Failed to pause process:', e);
     }
   },
 
@@ -220,8 +226,8 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     try {
       await commands.resumeProcess(taskId);
       get()._updateStatus(taskId, 'running');
-    } catch {
-      // Non-Tauri environment
+    } catch (e) {
+      console.error('Failed to resume process:', e);
     }
   },
 

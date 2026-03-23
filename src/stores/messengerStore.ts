@@ -59,12 +59,12 @@ export async function initMessengerListener() {
       }
 
       const normalized: MessengerMessage = {
-        id: raw.id as string,
-        timestamp: raw.timestamp as number,
+        id: typeof raw.id === 'string' ? raw.id : String(raw.id ?? ''),
+        timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
         source,
-        content: raw.content as string,
-        messageType: raw.message_type as string,
-        planId: raw.plan_id as string,
+        content: typeof raw.content === 'string' ? raw.content : String(raw.content ?? ''),
+        messageType: typeof raw.message_type === 'string' ? raw.message_type : 'unknown',
+        planId: typeof raw.plan_id === 'string' ? raw.plan_id : '',
       };
       useMessengerStore.getState().addMessage(normalized);
 
@@ -78,7 +78,8 @@ export async function initMessengerListener() {
         });
       }
     });
-  } catch {
+  } catch (e) {
+    console.error('Failed to initialize messenger listener:', e);
     listenerInitialized = false;
     listenerUnavailable = true;
   }

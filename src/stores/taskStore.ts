@@ -1,7 +1,27 @@
 import { create } from 'zustand';
-import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware';
 
 export type ToolName = 'claude' | 'gemini' | 'codex';
+
+export interface WorktreeReviewEntry {
+  dagId: string;
+  branchName: string;
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+// Helper: immutably update a single task entry in the Map
+function updateTask(
+  tasks: Map<string, TaskEntry>,
+  taskId: string,
+  updater: (task: TaskEntry) => TaskEntry,
+): Map<string, TaskEntry> {
+  const task = tasks.get(taskId);
+  if (!task) return tasks;
+  const newTasks = new Map(tasks);
+  newTasks.set(taskId, updater(task));
+  return newTasks;
+}
 export type TaskStatus = 'pending' | 'routing' | 'running' | 'completed' | 'failed' | 'waiting' | 'review' | 'blocked' | 'retrying' | 'falling_back';
 export type OrchestrationPhase = 'idle' | 'decomposing' | 'awaiting_approval' | 'executing' | 'reviewing' | 'completed' | 'failed';
 
@@ -10,11 +30,15 @@ export interface TaskEntry {
   prompt: string;
   toolName: ToolName;
   status: TaskStatus;
-  description: string;       // prompt truncated to 60 chars for display
-  startedAt: number | null;  // Date.now() when dispatched
-  dependsOn: string | null;  // taskId of dependency (optional, manual)
-  role?: 'master' | 'worker'; // Role in orchestration
-  resultSummary?: string;     // Agent's final response/output summary
+  description: string;
+  startedAt: number | null;
+  dependsOn: string | null;
+  role?: 'master' | 'worker';
+  resultSummary?: string;
+  lastOutputLine?: string;
+  // Process info (merged from processStore — single source of truth)
+  exitCode?: number;
+  lastEventAt?: number;
 }
 
 export interface AgentConfig {
@@ -53,6 +77,24 @@ export interface PendingQuestion {
   planId: string;
 }
 
+export interface RateLimitAlert {
+  agent: ToolName;
+  remainingTasks: Array<{ dagId: string; description: string; prompt: string }>;
+  availableAgents: ToolName[];
+  planId: string;
+  resetsAt?: string;
+}
+
+export type OrchestrationLogLevel = 'info' | 'success' | 'warn' | 'cmd' | 'error';
+
+export interface OrchestrationLogEntry {
+  id: string;
+  timestamp: string;
+  agent: ToolName;
+  level: OrchestrationLogLevel;
+  message: string;
+}
+
 interface TaskState {
   tasks: Map<string, TaskEntry>;
   orchestrationPlan: OrchestratorConfig | null;
@@ -61,6 +103,8 @@ interface TaskState {
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   updateTaskAgent: (taskId: string, toolName: ToolName) => void;
   updateTaskResult: (taskId: string, resultSummary: string) => void;
+  updateTaskOutputLine: (taskId: string, line: string) => void;
+  updateTaskProcess: (taskId: string, update: Partial<Pick<TaskEntry, 'exitCode' | 'lastEventAt' | 'status'>>) => void;
   removeTask: (taskId: string) => void;
   getRunningTaskForTool: (toolName: ToolName) => TaskEntry | undefined;
   setOrchestrationPlan: (plan: OrchestratorConfig | null) => void;
@@ -68,72 +112,37 @@ interface TaskState {
   setActivePlan: (plan: { task_id: string; master_agent: string; master_process_id: string | null } | null) => void;
   pendingQuestion: PendingQuestion | null;
   setPendingQuestion: (q: PendingQuestion | null) => void;
+  rateLimitAlert: RateLimitAlert | null;
+  setRateLimitAlert: (alert: RateLimitAlert | null) => void;
   updateAgentContext: (toolName: ToolName, info: AgentContextInfo) => void;
   orchestrationPhase: OrchestrationPhase;
   setOrchestrationPhase: (phase: OrchestrationPhase) => void;
   decomposedTasks: SubTaskEntry[];
   setDecomposedTasks: (tasks: SubTaskEntry[]) => void;
-  orchestrationLogs: Array<{ id: string; timestamp: string; agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }>;
-  addOrchestrationLog: (log: { agent: ToolName; level: 'info' | 'success' | 'warn' | 'cmd' | 'error'; message: string }) => void;
+  orchestrationLogs: OrchestrationLogEntry[];
+  addOrchestrationLog: (log: Omit<OrchestrationLogEntry, 'id' | 'timestamp'>) => void;
   clearOrchestrationLogs: () => void;
+  orchestrationStartedAt: number | null;
+  lastActivityAt: number | null;
+  // Worktree review entries (from @@orch::diffs_ready)
+  worktreeEntries: Map<string, WorktreeReviewEntry>;
+  setWorktreeEntries: (entries: Map<string, WorktreeReviewEntry>) => void;
+  // Session management
+  clearSession: () => void;
 }
 
-// Custom storage that handles Map serialization for the tasks field
-type PersistedTaskSlice = Pick<TaskState, 'tasks' | 'orchestrationPhase' | 'orchestrationLogs'>;
-
-interface SerializedTaskSlice {
-  tasks: [string, TaskEntry][];
-  orchestrationPhase: OrchestrationPhase;
-  orchestrationLogs: TaskState['orchestrationLogs'];
-}
-
-const taskStorage: PersistStorage<PersistedTaskSlice> = {
-  getItem: (name) => {
-    const raw = localStorage.getItem(name);
-    if (!raw) return null;
-    try {
-      const parsed: StorageValue<SerializedTaskSlice> = JSON.parse(raw);
-      return {
-        ...parsed,
-        state: {
-          ...parsed.state,
-          tasks: new Map(parsed.state.tasks),
-        },
-      };
-    } catch {
-      return null;
-    }
-  },
-  setItem: (name, value) => {
-    const serialized: StorageValue<SerializedTaskSlice> = {
-      ...value,
-      state: {
-        ...value.state,
-        tasks: [...value.state.tasks.entries()],
-      },
-    };
-    localStorage.setItem(name, JSON.stringify(serialized));
-  },
-  removeItem: (name) => {
-    localStorage.removeItem(name);
-  },
-};
-
-export const useTaskStore = create<TaskState>()(persist((set, get) => ({
+export const useTaskStore = create<TaskState>()((set, get) => ({
   tasks: new Map(),
   orchestrationPlan: null,
   agentContexts: new Map(),
   activePlan: null,
 
-  setActivePlan: (plan) => {
-    set({ activePlan: plan });
-  },
+  setActivePlan: (plan) => set({ activePlan: plan }),
 
   pendingQuestion: null,
-
-  setPendingQuestion: (q) => {
-    set({ pendingQuestion: q });
-  },
+  setPendingQuestion: (q) => set({ pendingQuestion: q }),
+  rateLimitAlert: null,
+  setRateLimitAlert: (alert) => set({ rateLimitAlert: alert }),
 
   addTask: (entry) => {
     set((state) => {
@@ -144,33 +153,23 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
   },
 
   updateTaskStatus: (taskId, status) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, status });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, status })) }));
   },
 
   updateTaskAgent: (taskId, toolName) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, toolName });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, toolName })) }));
   },
 
   updateTaskResult: (taskId, resultSummary) => {
-    set((state) => {
-      const task = state.tasks.get(taskId);
-      if (!task) return state;
-      const newTasks = new Map(state.tasks);
-      newTasks.set(taskId, { ...task, resultSummary });
-      return { tasks: newTasks };
-    });
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, resultSummary })) }));
+  },
+
+  updateTaskOutputLine: (taskId, line) => {
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, lastOutputLine: line })) }));
+  },
+
+  updateTaskProcess: (taskId, update) => {
+    set((state) => ({ tasks: updateTask(state.tasks, taskId, (t) => ({ ...t, ...update })) }));
   },
 
   removeTask: (taskId) => {
@@ -191,9 +190,7 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
     return undefined;
   },
 
-  setOrchestrationPlan: (plan) => {
-    set({ orchestrationPlan: plan });
-  },
+  setOrchestrationPlan: (plan) => set({ orchestrationPlan: plan }),
 
   updateAgentContext: (toolName, info) => {
     set((state) => {
@@ -205,13 +202,17 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
 
   orchestrationPhase: 'idle',
   setOrchestrationPhase: (phase) => {
-    set({ orchestrationPhase: phase });
+    const updates: Partial<TaskState> = { orchestrationPhase: phase };
+    if (phase === 'decomposing') {
+      updates.orchestrationStartedAt = Date.now();
+    } else if (phase === 'idle') {
+      updates.orchestrationStartedAt = null;
+    }
+    set(updates);
   },
 
   decomposedTasks: [],
-  setDecomposedTasks: (tasks) => {
-    set({ decomposedTasks: tasks });
-  },
+  setDecomposedTasks: (tasks) => set({ decomposedTasks: tasks }),
 
   orchestrationLogs: [],
   addOrchestrationLog: (log) => {
@@ -224,15 +225,31 @@ export const useTaskStore = create<TaskState>()(persist((set, get) => ({
           ...log,
         },
       ],
+      lastActivityAt: Date.now(),
     }));
   },
   clearOrchestrationLogs: () => set({ orchestrationLogs: [] }),
-}), {
-  name: 'whalecode-tasks',
-  storage: taskStorage,
-  partialize: (state) => ({
-    tasks: state.tasks,
-    orchestrationPhase: state.orchestrationPhase,
-    orchestrationLogs: state.orchestrationLogs.slice(-100),
-  }),
+
+  orchestrationStartedAt: null,
+  lastActivityAt: null,
+
+  worktreeEntries: new Map(),
+  setWorktreeEntries: (entries) => set({ worktreeEntries: entries }),
+
+  clearSession: () => {
+    set({
+      tasks: new Map(),
+      orchestrationPlan: null,
+      agentContexts: new Map(),
+      activePlan: null,
+      pendingQuestion: null,
+      rateLimitAlert: null,
+      decomposedTasks: [],
+      orchestrationLogs: [],
+      orchestrationPhase: 'idle',
+      orchestrationStartedAt: null,
+      lastActivityAt: null,
+      worktreeEntries: new Map(),
+    });
+  },
 }));

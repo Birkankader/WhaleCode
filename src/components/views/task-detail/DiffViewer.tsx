@@ -70,7 +70,7 @@ export function InlineDiffView({ files, onClose }: { files: FileDiff[]; onClose:
                 borderBottom: `1px solid ${C.border}`,
                 color: C.textPrimary,
                 fontSize: 11,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontFamily: 'var(--font-mono)',
                 cursor: 'pointer',
                 textAlign: 'left',
               }}
@@ -89,7 +89,7 @@ export function InlineDiffView({ files, onClose }: { files: FileDiff[]; onClose:
         style={{
           maxHeight: 300,
           overflowY: 'auto',
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontFamily: 'var(--font-mono)',
           fontSize: 11,
           lineHeight: '18px',
         }}

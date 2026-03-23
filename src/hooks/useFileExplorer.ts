@@ -53,7 +53,8 @@ export function useFileExplorer(projectDir: string) {
             if (children === null) {
               try {
                 children = await loadDir(path);
-              } catch {
+              } catch (e) {
+                console.error('Failed to load directory:', path, e);
                 children = [];
               }
             }
