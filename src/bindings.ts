@@ -624,6 +624,22 @@ async gitPush(projectDir: string) : Promise<Result<GitPushResult, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async checkGitRepo(projectDir: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_git_repo", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async initGitRepo(projectDir: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("init_git_repo", { projectDir }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listDirectory(projectDir: string, relativePath: string) : Promise<Result<FsEntry[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_directory", { projectDir, relativePath }) };

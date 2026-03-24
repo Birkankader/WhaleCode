@@ -95,11 +95,48 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
     new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' session'
   );
   const [projectDir, setProjectDir] = useState(globalProjectDir || '');
+  const [gitStatus, setGitStatus] = useState<'unchecked' | 'checking' | 'ok' | 'no-repo' | 'initializing'>('unchecked');
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [master, setMaster] = useState<string | null>(null);
   const [workerCounts, setWorkerCounts] = useState<Record<string, number>>({});
   const [taskDescription, setTaskDescription] = useState('');
+
+  // Check git repo status when project directory changes
+  useEffect(() => {
+    if (!projectDir.trim()) {
+      setGitStatus('unchecked');
+      return;
+    }
+    let cancelled = false;
+    setGitStatus('checking');
+    commands.checkGitRepo(projectDir).then((result) => {
+      if (cancelled) return;
+      if (result.status === 'ok') {
+        setGitStatus(result.data ? 'ok' : 'no-repo');
+      } else {
+        setGitStatus('no-repo');
+      }
+    }).catch(() => {
+      if (!cancelled) setGitStatus('no-repo');
+    });
+    return () => { cancelled = true; };
+  }, [projectDir]);
+
+  const handleInitGitRepo = useCallback(async () => {
+    if (!projectDir.trim()) return;
+    setGitStatus('initializing');
+    try {
+      const result = await commands.initGitRepo(projectDir);
+      if (result.status === 'ok') {
+        setGitStatus('ok');
+      } else {
+        setGitStatus('no-repo');
+      }
+    } catch {
+      setGitStatus('no-repo');
+    }
+  }, [projectDir]);
 
   // Fetch agents on mount
   useEffect(() => {
@@ -162,6 +199,7 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
       setStep(0);
       setSessionName(new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' session');
       setProjectDir(globalProjectDir || '');
+      setGitStatus('unchecked');
       setMaster(null);
       setWorkerCounts({});
       setTaskDescription('');
@@ -202,11 +240,11 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
   );
 
   const canContinue = useMemo(() => {
-    if (step === 0) return sessionName.trim().length > 0 && projectDir.trim().length > 0;
+    if (step === 0) return sessionName.trim().length > 0 && projectDir.trim().length > 0 && gitStatus === 'ok';
     if (step === 1) return master !== null;
     if (step === 2) return taskDescription.trim().length > 0;
     return false;
-  }, [step, sessionName, projectDir, master, taskDescription]);
+  }, [step, sessionName, projectDir, gitStatus, master, taskDescription]);
 
   // Handlers
   const close = useCallback(() => setShowSetup(false), [setShowSetup]);
@@ -493,6 +531,71 @@ export function SetupPanel({ onLaunch }: SetupPanelProps) {
               </div>
             )}
           </button>
+
+          {/* Git repo status indicator */}
+          {projectDir && gitStatus !== 'unchecked' && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: '10px 14px',
+                borderRadius: 10,
+                background: gitStatus === 'ok' ? 'rgba(34,197,94,0.08)' : gitStatus === 'checking' || gitStatus === 'initializing' ? C.surface : 'rgba(251,191,36,0.08)',
+                border: `1px solid ${gitStatus === 'ok' ? 'rgba(34,197,94,0.2)' : gitStatus === 'checking' || gitStatus === 'initializing' ? C.border : 'rgba(251,191,36,0.2)'}`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              {gitStatus === 'checking' && (
+                <>
+                  <span style={{ fontSize: 14 }}>⏳</span>
+                  <span style={{ fontSize: 12, color: C.textMuted }}>Checking git repository…</span>
+                </>
+              )}
+              {gitStatus === 'ok' && (
+                <>
+                  <span style={{ fontSize: 14 }}>✓</span>
+                  <span style={{ fontSize: 12, color: 'rgb(34,197,94)' }}>Git repository detected</span>
+                </>
+              )}
+              {gitStatus === 'no-repo' && (
+                <>
+                  <span style={{ fontSize: 14 }}>⚠️</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: 'rgb(251,191,36)', fontWeight: 500 }}>
+                      Not a Git repository
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+                      WhaleCode needs a Git repo for isolated workspaces. Initialize one now?
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleInitGitRepo}
+                    style={{
+                      padding: '6px 14px',
+                      borderRadius: 8,
+                      background: C.accent,
+                      border: 'none',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      flexShrink: 0,
+                      transition: 'opacity 0.15s',
+                    }}
+                  >
+                    Initialize Git
+                  </button>
+                </>
+              )}
+              {gitStatus === 'initializing' && (
+                <>
+                  <span style={{ fontSize: 14 }}>⏳</span>
+                  <span style={{ fontSize: 12, color: C.textMuted }}>Initializing git repository…</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ marginTop: 8 }}>

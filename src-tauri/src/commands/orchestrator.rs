@@ -1043,6 +1043,28 @@ pub async fn dispatch_orchestrated_task(
         MessageType::OrchestrationStarted,
     ));
 
+    // Pre-flight: verify the project directory is a valid git repository.
+    // Worktree isolation requires git — fail early with a clear message
+    // instead of cryptic git2 errors during worker dispatch.
+    {
+        let dir = project_dir.clone();
+        let is_git = tokio::task::spawn_blocking(move || {
+            git2::Repository::open(&dir).is_ok()
+        }).await.unwrap_or(false);
+        if !is_git {
+            let err_msg = format!(
+                "The project directory is not a Git repository: {}. \
+                 Initialize one with 'git init && git add -A && git commit -m \"initial\"' \
+                 in your terminal, then try again.",
+                project_dir
+            );
+            emit_orch(&on_event, "decomposition_failed", serde_json::json!({
+                "error": &err_msg
+            }));
+            return Err(err_msg);
+        }
+    }
+
     // === Phase 1: Decompose (master agent) ===
     emit_orch(&on_event, "phase_changed", serde_json::json!({
         "phase": "decomposing", "detail": "Spawning master agent",

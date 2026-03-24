@@ -69,6 +69,7 @@ pub use stdin::send_to_process;
 pub use cleanup::cleanup_completed_processes;
 pub use detection::{detect_agents, fetch_agent_usage};
 pub use git::{
+    check_git_repo, init_git_repo,
     git_commit, git_diff_file, git_log, git_pull, git_push, git_stage_files, git_status,
     git_unstage_files,
 };

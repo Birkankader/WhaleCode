@@ -28,7 +28,8 @@ const ERROR_PATTERNS: [RegExp, string][] = [
   [/Lock poisoned/i, 'An internal error occurred. Please restart the application.'],
   [/Merge conflict/i, 'Merge conflict detected. Review the changes manually before merging.'],
   [/Orchestration cancelled/i, 'The orchestration was cancelled.'],
-  [/Failed to create worktree/i, 'Could not create an isolated workspace. Check Git repository permissions.'],
+  [/could not find repository/i, 'The selected project directory is not a Git repository. Initialize one with "git init" in your terminal, then try again.'],
+  [/Failed to create worktree/i, 'Could not create an isolated workspace. Check that the project is a Git repository with at least one commit.'],
   [/Failed to remove/i, 'Could not clean up temporary files. You may need to remove them manually.'],
 ];
 

@@ -6,18 +6,35 @@ const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 /// Check if a CLI tool is installed by looking for it in PATH.
 /// Runs `which` in a spawned thread with a 5-second timeout to avoid
 /// blocking the async runtime.
+/// Falls back to checking well-known install locations if `which` fails.
 fn is_installed(name: &str) -> bool {
-    let name = name.to_string();
+    let name_owned = name.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let result = std::process::Command::new("which")
-            .arg(&name)
+        // Try `which` first (uses current PATH)
+        let found = std::process::Command::new("which")
+            .arg(&name_owned)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        let _ = tx.send(result);
+
+        if found {
+            let _ = tx.send(true);
+            return;
+        }
+
+        // Fallback: check well-known install locations directly
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidate_paths = [
+            format!("/opt/homebrew/bin/{}", name_owned),
+            format!("/usr/local/bin/{}", name_owned),
+            format!("{}/.local/bin/{}", home, name_owned),
+            format!("{}/.cargo/bin/{}", home, name_owned),
+        ];
+        let found = candidate_paths.iter().any(|p| std::path::Path::new(p).exists());
+        let _ = tx.send(found);
     });
     rx.recv_timeout(SUBPROCESS_TIMEOUT).unwrap_or(false)
 }
@@ -25,24 +42,48 @@ fn is_installed(name: &str) -> bool {
 /// Get the version string from a CLI tool's `--version` output.
 /// Runs the command in a spawned thread with a 5-second timeout to avoid
 /// blocking the async runtime.
+/// Tries the bare command name first, then well-known install locations.
 fn get_version(name: &str) -> Option<String> {
-    let name = name.to_string();
+    let name_owned = name.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let result = std::process::Command::new(&name)
-            .arg("--version")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .ok()
-            .and_then(|output| {
-                let text = String::from_utf8_lossy(&output.stdout).to_string();
-                let line = text.lines().next().unwrap_or("").trim().to_string();
-                if line.is_empty() { None } else { Some(line) }
-            });
-        let _ = tx.send(result);
+        // Try bare command name first (uses PATH)
+        if let Some(ver) = try_get_version(&name_owned) {
+            let _ = tx.send(Some(ver));
+            return;
+        }
+        // Fallback: try well-known paths
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates = [
+            format!("/opt/homebrew/bin/{}", name_owned),
+            format!("/usr/local/bin/{}", name_owned),
+            format!("{}/.local/bin/{}", home, name_owned),
+        ];
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                if let Some(ver) = try_get_version(path) {
+                    let _ = tx.send(Some(ver));
+                    return;
+                }
+            }
+        }
+        let _ = tx.send(None);
     });
     rx.recv_timeout(SUBPROCESS_TIMEOUT).ok().flatten()
+}
+
+fn try_get_version(cmd: &str) -> Option<String> {
+    std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()
+        .and_then(|output| {
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            let line = text.lines().next().unwrap_or("").trim().to_string();
+            if line.is_empty() { None } else { Some(line) }
+        })
 }
 
 /// Scan for all supported agents.

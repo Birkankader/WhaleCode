@@ -30,6 +30,7 @@ use commands::{
     approve_decomposition, reject_decomposition, approve_orchestration,
     git_status, git_stage_files, git_unstage_files, git_commit,
     git_diff_file, git_log, git_pull, git_push,
+    check_git_repo, init_git_repo,
     list_directory, read_file, write_file,
     get_config, set_config,
 };
@@ -94,6 +95,8 @@ pub fn run() {
         git_log,
         git_pull,
         git_push,
+        check_git_repo,
+        init_git_repo,
         list_directory,
         read_file,
         write_file,
@@ -144,6 +147,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(invoke_handler)
         .setup(|app| {
+            // Expand PATH for GUI-launched apps.
+            // Finder/Dock launches get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
+            // that doesn't include Homebrew, npm globals, or user-local bin dirs where
+            // CLI agents (claude, gemini, codex) are typically installed.
+            expand_path_for_gui();
+
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 Box::<dyn std::error::Error>::from(format!("Failed to get app_data_dir: {}", e))
             })?;
@@ -171,4 +180,74 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Expand the process PATH to include common CLI tool install locations.
+///
+/// When launched from Finder, Dock, or a DMG, macOS gives the app a minimal
+/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`). This misses:
+/// - `/opt/homebrew/bin` (Homebrew on Apple Silicon)
+/// - `/usr/local/bin` (Homebrew on Intel, many installers)
+/// - `~/.local/bin` (Claude Code CLI)
+/// - `~/.cargo/bin` (Rust tools)
+/// - npm/nvm global dirs
+///
+/// We also try `zsh -ilc 'echo $PATH'` to pick up the user's actual shell
+/// PATH (respecting .zshrc, .zprofile, etc). If that fails, we fall back
+/// to appending well-known directories.
+fn expand_path_for_gui() {
+    let current_path = std::env::var("PATH").unwrap_or_default();
+
+    // Try to get the user's real shell PATH
+    if let Ok(output) = std::process::Command::new("/bin/zsh")
+        .args(["-ilc", "echo $PATH"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let shell_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !shell_path.is_empty() && shell_path.contains('/') {
+                // Merge: shell PATH first (has user config), then current PATH
+                let merged = merge_paths(&shell_path, &current_path);
+                std::env::set_var("PATH", &merged);
+                eprintln!("[whalecode] PATH expanded via shell: {} dirs", merged.matches(':').count() + 1);
+                return;
+            }
+        }
+    }
+
+    // Fallback: append well-known directories
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra_dirs = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        &format!("{}/.local/bin", home),
+        &format!("{}/.cargo/bin", home),
+        &format!("{}/.nvm/versions/node/current/bin", home),
+        "/usr/local/share/npm/bin",
+    ];
+
+    let mut parts: Vec<&str> = current_path.split(':').collect();
+    for dir in &extra_dirs {
+        if !parts.contains(dir) && std::path::Path::new(dir).is_dir() {
+            parts.push(dir);
+        }
+    }
+    let expanded = parts.join(":");
+    std::env::set_var("PATH", &expanded);
+    eprintln!("[whalecode] PATH expanded via fallback: {} dirs", parts.len());
+}
+
+/// Merge two PATH strings, deduplicating entries. `primary` entries come first.
+fn merge_paths(primary: &str, secondary: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for dir in primary.split(':').chain(secondary.split(':')) {
+        if !dir.is_empty() && seen.insert(dir.to_string()) {
+            result.push(dir);
+        }
+    }
+    result.join(":")
 }
