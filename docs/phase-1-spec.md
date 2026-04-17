@@ -41,6 +41,7 @@ pnpm install
 - Zustand: `pnpm add zustand`
 - XState: `pnpm add xstate @xstate/react`
 - React Flow: `pnpm add @xyflow/react`
+- Dagre (auto-layout): `pnpm add @dagrejs/dagre` (plus `pnpm add -D @types/dagre` if the types aren't bundled)
 - Framer Motion: `pnpm add framer-motion`
 - Lucide: `pnpm add lucide-react`
 - ESLint + Prettier with TypeScript rules
@@ -167,7 +168,7 @@ Similar structure, plus:
 - Shows aggregate mock diff (just a placeholder list of file names for now)
 - Contains `[Apply to branch]` and `[Discard all]` buttons
 
-### Step 7: Top bar and empty state
+### Step 7: Top bar, empty state, and footer
 
 **File:** `src/components/shell/TopBar.tsx`
 
@@ -182,6 +183,14 @@ Similar structure, plus:
 - Hero input: "What should the team build?" (24px font)
 - Below input: keyboard hint with `Enter` key chip
 - Bottom: keyboard shortcuts row (⌘K, ⌘H, ⌘T, ⌘,)
+
+**File:** `src/components/shell/Footer.tsx`
+
+- Fixed bottom row, 32px tall, `border-subtle` top divider, `fg-tertiary` text at 11px.
+- **Left:** agent status — "3 agents ready · claude-code · gemini-cli · codex-cli". The count reflects detected/available agents; individual names are `Chip` components in `default` variant.
+- **Right:** last-run summary — "Last run: 2h ago · $0.24". Hidden entirely when no prior run exists.
+- Phase 1 uses hard-coded mock values; Phase 2 wires this to real agent-availability checks and the run history store. Do not attempt live data here yet.
+- Never compete with the approval bar: when `ApprovalBar` is mounted (status `awaiting_approval`), the footer hides. They never stack.
 
 ### Step 8: Approval bar
 

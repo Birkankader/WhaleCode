@@ -13,14 +13,15 @@ This is **v2** — a full redesign from the original multi-agent tool into a foc
 ## Tech stack
 
 - **Shell:** Tauri v2 (Rust core + WebView frontend)
-- **Frontend:** React 18 + TypeScript + Vite
-- **Styling:** Tailwind CSS (custom config — **no shadcn**, write custom minimal components)
+- **Frontend:** React 19 + TypeScript + Vite
+- **Styling:** Tailwind CSS v4 (tokens declared via `@theme` CSS directive — **no shadcn**, write custom minimal components)
 - **State:** Zustand (app state) + XState (graph/node state machines)
-- **Graph:** React Flow (xyflow) with custom nodes and Dagre auto-layout
+- **Graph:** React Flow (`@xyflow/react`) with custom nodes and Dagre (`@dagrejs/dagre`) auto-layout
 - **Animation:** Framer Motion (spring-based)
 - **Icons:** Lucide (used minimally)
 - **Storage:** SQLite (via Tauri SQL plugin) for runs, templates, cost logs
 - **Config:** YAML files under `.whalecode/` in the target repo
+- **Package manager:** pnpm (single source of truth; npm/yarn lockfiles must not be committed)
 
 ## The 7 architectural decisions
 
@@ -106,7 +107,7 @@ whalecode/
 - Do not add tabs or multi-page routing. One canvas, one flow.
 - Do not use modals for approval. Use the sticky bottom bar.
 - Do not use gradients, glows, or shadows beyond what `docs/design-system.md` specifies.
-- Do not add 600 or 700 font-weights. Only 400 and 500 (labeled "semibold").
+- Do not add 600 or 700 font-weights. Only 400 (regular) and 500 (medium). The token and prop name is `medium`; never use the label "semibold".
 - Do not hard-code colors. Use Tailwind config tokens.
 - Do not use `unwrap()` or `.expect()` in Rust production paths.
 - Do not expose worktree paths in UI. They are an implementation detail.

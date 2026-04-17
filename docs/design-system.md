@@ -44,7 +44,9 @@ The master color is amber because amber signals leadership and caution simultane
 |-------|-------|-----|-----------|
 | Done / Success | Green | `#10B981` | Keep worker color, add green dot |
 | Retrying / Re-planning | Amber | `#FBBF24` | `#1F1607` |
+| Escalating | Amber | `#FBBF24` | `#1F1607` (reuses retry fill); title gets strikethrough; master node simultaneously reverts to its thinking visual (it is re-planning) |
 | Failed (terminal) | Red | `#EF4444` | `#1F0A0A` |
+| Human escalation | Red | `#EF4444` | `#1F0A0A` (reuses failed fill); node body auto-expands with three inline buttons: `Manual fix`, `Skip`, `Abort` (see `docs/ux-flows.md` Layer 3) |
 | Proposed / Pending | Amber-muted | `#FBBF24` | `#141414` + dashed border |
 | Waiting (blocked) | Gray | `border-default` | `#141414` + dashed border, 0.8 opacity |
 
@@ -99,7 +101,7 @@ Never mix fonts within the same component. The whole UI reads as code-adjacent. 
 
 ### Scale
 
-Only four sizes in v2. Do not add more without explicit approval.
+Only five sizes in v2. Do not add more without explicit approval.
 
 | Size | Use |
 |------|-----|
@@ -114,9 +116,11 @@ Only four sizes in v2. Do not add more without explicit approval.
 Only two weights:
 
 - `400` (regular) for body text
-- `500` (semibold) for emphasis and headings
+- `500` (medium) for emphasis and headings
 
 **Never use 600 or 700.** They read as visual noise in monospace.
+
+**Naming rule:** the token and component prop for `500` is `medium` — e.g. `<Text weight="medium">`, never `weight="semibold"`. The word "semibold" must not appear in code or docs; CSS `font-weight: 600` is reserved by convention and we do not ship it.
 
 ### Casing
 
@@ -228,8 +232,10 @@ Three main types: `MasterNode`, `WorkerNode`, `FinalNode`.
 - **Thinking/Running:** solid border in agent color + glow box-shadow
 - **Proposed:** dashed border in `status-pending`
 - **Retrying:** solid border in `status-retry`, faster pulse
+- **Escalating:** solid border in `status-retry` (same amber as retry), header label `ESCALATING`, subtask title rendered with strikethrough; the master node concurrently reverts to its thinking visual to signal it is drafting a replacement plan
 - **Done:** keep solid agent-color border, add green status dot
 - **Failed:** solid border in `status-failed`, error preview in log area
+- **Human escalation:** solid border in `status-failed`, header label `NEEDS YOU`, node body auto-expands to reveal three inline buttons (`Manual fix`, `Skip`, `Abort`). No modal — the prompt lives inside the node, consistent with the anti-modal rule
 - **Waiting:** dashed border in `border-default`, `0.8` opacity
 
 ### Input
