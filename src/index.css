@@ -75,3 +75,14 @@ body {
     stroke-dashoffset: -16;
   }
 }
+
+/* Node pulse for retrying — slightly faster than the thinking/running glow. */
+@keyframes node-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}

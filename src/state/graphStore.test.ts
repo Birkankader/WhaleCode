@@ -111,7 +111,7 @@ describe('graphStore — approveSubtasks', () => {
     expect(snap('b')?.value).toBe('approved');
     expect(snap('c')?.value).toBe('skipped');
     expect(snap(MASTER_ID)?.value).toBe('approved');
-    expect(s.finalNode).toEqual({ id: FINAL_ID, label: 'Merge' });
+    expect(s.finalNode).toEqual({ id: FINAL_ID, label: 'Merge', files: [] });
     expect(snap(FINAL_ID)?.value).toBe('idle');
   });
 });

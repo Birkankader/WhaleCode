@@ -21,6 +21,7 @@ export type SubtaskNodeData = {
 export type FinalNodeData = {
   id: 'final';
   label: string;
+  files: string[];
 };
 
 export type NodeSnapshot = {
@@ -184,7 +185,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       sendTo(MASTER_ID, { type: 'APPROVE' });
       set({
         status: 'running',
-        finalNode: { id: FINAL_ID, label: 'Merge' },
+        finalNode: { id: FINAL_ID, label: 'Merge', files: [] },
       });
       registerActor(FINAL_ID);
     },

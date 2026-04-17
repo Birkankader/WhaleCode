@@ -5,15 +5,18 @@ import { useMemo } from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import { layoutGraph, type LayoutNodeInput, type LayoutEdgeInput } from '../../lib/layout';
+import { FinalNode, type FinalNodeData } from '../nodes/FinalNode';
+import { MasterNode, type MasterNodeData } from '../nodes/MasterNode';
+import { WorkerNode, type WorkerNodeData } from '../nodes/WorkerNode';
 import { MASTER_ID, FINAL_ID, useGraphStore } from '../../state/graphStore';
+import type { NodeSnapshot } from '../../state/graphStore';
 import type { NodeState } from '../../state/nodeMachine';
 import { FlowEdge } from './edges/FlowEdge';
-import { PlaceholderNode, type PlaceholderNodeData } from './nodes/PlaceholderNode';
 
 const nodeTypes: NodeTypes = {
-  master: PlaceholderNode,
-  worker: PlaceholderNode,
-  final: PlaceholderNode,
+  master: MasterNode,
+  worker: WorkerNode,
+  final: FinalNode,
 };
 
 const edgeTypes: EdgeTypes = {
@@ -69,7 +72,7 @@ type Structure = {
 
 function buildGraph(
   structure: Structure,
-  snapshots: Map<string, { value: NodeState; retries: number }>,
+  snapshots: Map<string, NodeSnapshot>,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
   if (!masterNode) return { nodes: [], edges: [] };
@@ -87,10 +90,7 @@ function buildGraph(
   const positioned = layoutGraph(layoutInputs, layoutEdges);
 
   const nodes: Node[] = positioned.map((p) => {
-    const data: PlaceholderNodeData = {
-      kind: p.kind,
-      label: labelFor(p.id, structure),
-    };
+    const data = dataFor(p.id, p.kind, structure, snapshots);
     return {
       id: p.id,
       type: p.kind,
@@ -112,17 +112,40 @@ function buildGraph(
   return { nodes, edges };
 }
 
-function labelFor(id: string, structure: Structure): string {
-  if (id === MASTER_ID) return structure.masterNode?.agent ?? 'master';
-  if (id === FINAL_ID) return structure.finalNode?.label ?? 'merge';
+function dataFor(
+  id: string,
+  kind: 'master' | 'worker' | 'final',
+  structure: Structure,
+  snapshots: Map<string, NodeSnapshot>,
+): MasterNodeData | WorkerNodeData | FinalNodeData {
+  const snap = snapshots.get(id);
+  const state: NodeState = snap?.value ?? 'idle';
+
+  if (kind === 'master' && id === MASTER_ID && structure.masterNode) {
+    return {
+      state,
+      agent: structure.masterNode.agent,
+      title: structure.masterNode.label,
+    };
+  }
+  if (kind === 'final' && id === FINAL_ID && structure.finalNode) {
+    return {
+      state,
+      label: structure.finalNode.label,
+      files: structure.finalNode.files,
+    };
+  }
+  // Worker
   const st = structure.subtasks.find((s) => s.id === id);
-  return st?.title ?? id;
+  return {
+    state,
+    agent: st?.agent ?? 'claude',
+    title: st?.title ?? id,
+    retries: snap?.retries ?? 0,
+  };
 }
 
-function isRunning(
-  snapshots: Map<string, { value: NodeState; retries: number }>,
-  id: string,
-): boolean {
+function isRunning(snapshots: Map<string, NodeSnapshot>, id: string): boolean {
   const snap = snapshots.get(id);
   return snap ? RUNNING_STATES.has(snap.value) : false;
 }
