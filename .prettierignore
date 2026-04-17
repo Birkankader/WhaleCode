@@ -1,0 +1,15 @@
+dist
+node_modules
+src-tauri/target
+src-tauri/gen
+src/bindings.ts
+pnpm-lock.yaml
+
+# Legacy v1 docs + planning artifacts — left untouched during v2 rewrite
+.gsd
+.planning
+docs/architecture.md
+docs/ux-flows.md
+CHANGELOG.md
+CLAUDE.md
+README.md

@@ -14,41 +14,41 @@ Every visual decision ties back to these three. If something violates them, rewo
 
 ### Base palette
 
-| Token | Hex | Use |
-|-------|-----|-----|
-| `bg-primary` | `#0A0A0A` | Main application background |
-| `bg-elevated` | `#141414` | Nodes, modals, input fields |
-| `bg-subtle` | `#1F1F1F` | Hover states, keyboard key chips |
-| `fg-primary` | `#E8E8E8` | Primary text, active content |
-| `fg-secondary` | `#8A8A8A` | Secondary text, metadata, timestamps |
-| `fg-tertiary` | `#6A6A6A` | Hints, placeholder text, muted |
-| `border-subtle` | `#1F1F1F` | Divider lines, section separators |
-| `border-default` | `#2A2A2A` | Component borders, input outlines |
+| Token            | Hex       | Use                                  |
+| ---------------- | --------- | ------------------------------------ |
+| `bg-primary`     | `#0A0A0A` | Main application background          |
+| `bg-elevated`    | `#141414` | Nodes, modals, input fields          |
+| `bg-subtle`      | `#1F1F1F` | Hover states, keyboard key chips     |
+| `fg-primary`     | `#E8E8E8` | Primary text, active content         |
+| `fg-secondary`   | `#8A8A8A` | Secondary text, metadata, timestamps |
+| `fg-tertiary`    | `#6A6A6A` | Hints, placeholder text, muted       |
+| `border-subtle`  | `#1F1F1F` | Divider lines, section separators    |
+| `border-default` | `#2A2A2A` | Component borders, input outlines    |
 
 ### Agent colors
 
 Each agent has its own color. This is functional, not decorative — users identify work at a glance.
 
-| Agent | Color | Hex | Background tint (node fill) |
-|-------|-------|-----|------------------------------|
-| Master | Amber | `#F59E0B` | `#1A1407` (deep amber) |
-| Claude Code | Cyan | `#7DD3FC` | `#0D1A1F` (deep cyan) |
-| Gemini CLI | Purple | `#C4B5FD` | `#12091F` (deep purple) |
-| Codex CLI | Green | `#86EFAC` | `#0B1A10` (deep green) |
+| Agent       | Color  | Hex       | Background tint (node fill) |
+| ----------- | ------ | --------- | --------------------------- |
+| Master      | Amber  | `#F59E0B` | `#1A1407` (deep amber)      |
+| Claude Code | Cyan   | `#7DD3FC` | `#0D1A1F` (deep cyan)       |
+| Gemini CLI  | Purple | `#C4B5FD` | `#12091F` (deep purple)     |
+| Codex CLI   | Green  | `#86EFAC` | `#0B1A10` (deep green)      |
 
 The master color is amber because amber signals leadership and caution simultaneously — both fitting for a planner. Worker colors are chosen for distinctness in dark mode and accessibility (all pass WCAG AA on `bg-primary`).
 
 ### Status colors
 
-| State | Color | Hex | Node fill |
-|-------|-------|-----|-----------|
-| Done / Success | Green | `#10B981` | Keep worker color, add green dot |
-| Retrying / Re-planning | Amber | `#FBBF24` | `#1F1607` |
-| Escalating | Amber | `#FBBF24` | `#1F1607` (reuses retry fill); title gets strikethrough; master node simultaneously reverts to its thinking visual (it is re-planning) |
-| Failed (terminal) | Red | `#EF4444` | `#1F0A0A` |
-| Human escalation | Red | `#EF4444` | `#1F0A0A` (reuses failed fill); node body auto-expands with three inline buttons: `Manual fix`, `Skip`, `Abort` (see `docs/ux-flows.md` Layer 3) |
-| Proposed / Pending | Amber-muted | `#FBBF24` | `#141414` + dashed border |
-| Waiting (blocked) | Gray | `border-default` | `#141414` + dashed border, 0.8 opacity |
+| State                  | Color       | Hex              | Node fill                                                                                                                                        |
+| ---------------------- | ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Done / Success         | Green       | `#10B981`        | Keep worker color, add green dot                                                                                                                 |
+| Retrying / Re-planning | Amber       | `#FBBF24`        | `#1F1607`                                                                                                                                        |
+| Escalating             | Amber       | `#FBBF24`        | `#1F1607` (reuses retry fill); title gets strikethrough; master node simultaneously reverts to its thinking visual (it is re-planning)           |
+| Failed (terminal)      | Red         | `#EF4444`        | `#1F0A0A`                                                                                                                                        |
+| Human escalation       | Red         | `#EF4444`        | `#1F0A0A` (reuses failed fill); node body auto-expands with three inline buttons: `Manual fix`, `Skip`, `Abort` (see `docs/ux-flows.md` Layer 3) |
+| Proposed / Pending     | Amber-muted | `#FBBF24`        | `#141414` + dashed border                                                                                                                        |
+| Waiting (blocked)      | Gray        | `border-default` | `#141414` + dashed border, 0.8 opacity                                                                                                           |
 
 **Rule:** Don't use alarm-red for cost. Cost is not bad. Red is reserved for actual errors.
 
@@ -103,12 +103,12 @@ Never mix fonts within the same component. The whole UI reads as code-adjacent. 
 
 Only five sizes in v2. Do not add more without explicit approval.
 
-| Size | Use |
-|------|-----|
-| `11px` | Keyboard hints, status badges, fine metadata |
-| `12px` | Timestamps, secondary info, small labels |
-| `14px` | Base — body text, most UI text |
-| `18px` | Node titles, section headings |
+| Size   | Use                                                           |
+| ------ | ------------------------------------------------------------- |
+| `11px` | Keyboard hints, status badges, fine metadata                  |
+| `12px` | Timestamps, secondary info, small labels                      |
+| `14px` | Base — body text, most UI text                                |
+| `18px` | Node titles, section headings                                 |
 | `24px` | Hero prompt only (empty state, "What should the team build?") |
 
 ### Weights
@@ -139,6 +139,7 @@ Strict scale. Any pixel value outside this list is forbidden without justificati
 - `48px` — roomy (outer margins of main canvas)
 
 **Component-specific:**
+
 - Node padding: `16px` (12px vertical acceptable for compact nodes)
 - Node-to-node gap: `24px`
 - Canvas outer margin: `48px`
@@ -156,19 +157,20 @@ Strict scale. Any pixel value outside this list is forbidden without justificati
 
 Every animation encodes information. Decorative motion is prohibited.
 
-| What | Timing | Easing |
-|------|--------|--------|
-| Node state change | `200ms` | `ease-out` |
-| Node expand/collapse | `250ms` | `ease-in-out` |
-| Approval bar slide in/out | `300ms` | `ease-out` |
-| Thinking pulse | `1.5s` loop | `ease-in-out`, opacity 0.6 ↔ 1.0 |
-| Running glow | `2s` loop | box-shadow 0 → 8px soft amber/cyan/purple |
-| Retry pulse | `1s` loop | faster than thinking, signals urgency |
-| Success checkmark | `300ms` | scale 0 → 1 with slight overshoot |
-| Streaming cursor blink | `1s` | hard step (binary) |
-| Text character appearance | `5ms` per char | linear (capped for long outputs) |
+| What                      | Timing         | Easing                                    |
+| ------------------------- | -------------- | ----------------------------------------- |
+| Node state change         | `200ms`        | `ease-out`                                |
+| Node expand/collapse      | `250ms`        | `ease-in-out`                             |
+| Approval bar slide in/out | `300ms`        | `ease-out`                                |
+| Thinking pulse            | `1.5s` loop    | `ease-in-out`, opacity 0.6 ↔ 1.0          |
+| Running glow              | `2s` loop      | box-shadow 0 → 8px soft amber/cyan/purple |
+| Retry pulse               | `1s` loop      | faster than thinking, signals urgency     |
+| Success checkmark         | `300ms`        | scale 0 → 1 with slight overshoot         |
+| Streaming cursor blink    | `1s`           | hard step (binary)                        |
+| Text character appearance | `5ms` per char | linear (capped for long outputs)          |
 
 **No:**
+
 - Decorative float/bob animations
 - Background gradients that shift
 - Particle effects or confetti
@@ -194,6 +196,7 @@ Three variants:
 ```
 
 Specs:
+
 - Font size: `12px`, weight `500`.
 - Padding: `7px 14px`.
 - Radius: `5px`.
@@ -212,6 +215,7 @@ Small rounded-rectangle label. Used for master agent selector, package name, key
 ```
 
 Specs:
+
 - Font size: `11px` (sometimes `10px` for inline chips within a node).
 - Padding: `2px 8px`.
 - Radius: `4px`.
@@ -222,6 +226,7 @@ Specs:
 Three main types: `MasterNode`, `WorkerNode`, `FinalNode`.
 
 **All share:**
+
 - `border-radius: 8px`
 - `padding: 10px 12px` (compact) or `12px 18px` (standard)
 - `background: bg-elevated`
@@ -229,6 +234,7 @@ Three main types: `MasterNode`, `WorkerNode`, `FinalNode`.
 - Body: title (14px) + subtitle (11px, muted) + optional log preview
 
 **State-specific:**
+
 - **Thinking/Running:** solid border in agent color + glow box-shadow
 - **Proposed:** dashed border in `status-pending`
 - **Retrying:** solid border in `status-retry`, faster pulse
@@ -243,6 +249,7 @@ Three main types: `MasterNode`, `WorkerNode`, `FinalNode`.
 Used for the main task input.
 
 Specs:
+
 - Font size: `20px` in empty state (the hero prompt), `14px` after submission (collapsed top bar).
 - Padding: `18px 20px` (empty), `10px 14px` (collapsed).
 - Background: `bg-elevated`.
@@ -255,6 +262,7 @@ Specs:
 Sticky bottom-of-canvas bar that appears when subtasks are proposed.
 
 Specs:
+
 - Height: `56px`.
 - Background: `bg-elevated`.
 - Top border: `1px solid agent-master`.

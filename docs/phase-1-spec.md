@@ -5,6 +5,7 @@
 **Duration estimate:** 1-2 weeks
 
 **Success criteria:**
+
 - Can submit a task (mock input)
 - Master node appears with thinking animation
 - Mock subtask nodes branch from master after 3-5 seconds
@@ -16,6 +17,7 @@
 ## What this phase does NOT include
 
 Defer these to later phases:
+
 - Real agent integration (Phase 2)
 - Git worktree logic (Phase 2)
 - Actual file editing (Phase 2)
@@ -37,6 +39,7 @@ pnpm install
 ```
 
 **Configure:**
+
 - Tailwind CSS with tokens from `docs/design-system.md` (tailwind.config.ts)
 - Zustand: `pnpm add zustand`
 - XState: `pnpm add xstate @xstate/react`
@@ -56,16 +59,19 @@ pnpm install
 Before any components, set up the foundation.
 
 **a) Tailwind config** (`tailwind.config.ts`):
+
 - Define all color tokens from `docs/design-system.md` section "Tailwind config tokens"
 - Configure font families: `mono` → JetBrains Mono, `sans` → Inter
 - Extend spacing scale if needed (default Tailwind scale already covers 4/8/16/24/48)
 
 **b) Global styles** (`src/index.css`):
+
 - Load JetBrains Mono and Inter from Google Fonts or local
 - Body: `bg-bg-primary text-fg-primary font-mono`
 - Set CSS reset basics
 
 **c) Primitive components** (`src/components/primitives/`):
+
 - `Button.tsx` — three variants (primary, secondary, ghost) per design-system spec
 - `Chip.tsx` — default, agent-colored, package variants
 - `Input.tsx` — size variants (hero, compact)
@@ -83,6 +89,7 @@ Model a subtask node as a formal state machine using XState.
 **File:** `src/state/nodeMachine.ts`
 
 **Events the machine responds to:**
+
 - `PROPOSE` → `idle` to `proposed`
 - `APPROVE` → `proposed` to `approved`
 - `SKIP` → `proposed` to `skipped`
@@ -101,6 +108,7 @@ Model a subtask node as a formal state machine using XState.
 **File:** `src/state/graphStore.ts`
 
 Store shape:
+
 ```typescript
 type GraphState = {
   runId: string | null;
@@ -139,6 +147,7 @@ Keep the store lean. UI-specific ephemeral state (hover, expanded) stays in comp
 Visual spec from `docs/design-system.md` section "Node (graph element)".
 
 Structure:
+
 ```tsx
 <NodeContainer agentColor="master" state={state}>
   <Header>
@@ -154,6 +163,7 @@ Structure:
 **File:** `src/components/nodes/WorkerNode.tsx`
 
 Similar structure, plus:
+
 - Agent color variant (passed as prop: claude/gemini/codex)
 - Checkbox in header when state is `proposed`
 - Status label matches state
@@ -208,6 +218,7 @@ Similar structure, plus:
 Simulates the entire lifecycle deterministically. Used only in Phase 1 — will be replaced by real agent calls in Phase 2.
 
 **Flow:**
+
 1. User submits task.
 2. After `2000ms`, master transitions thinking → planning.
 3. After another `4000ms`, master produces 4 mock subtasks. Status → `awaiting_approval`.
@@ -226,7 +237,7 @@ This function controls the entire demo. It's the scripted "play" that validates 
 
 ```tsx
 export default function App() {
-  const status = useGraphStore(s => s.status);
+  const status = useGraphStore((s) => s.status);
   return (
     <div className="h-screen bg-bg-primary text-fg-primary font-mono flex flex-col">
       <TopBar />

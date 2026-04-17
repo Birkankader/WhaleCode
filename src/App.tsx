@@ -9,12 +9,8 @@ export default function App() {
     <main className="flex h-screen items-center justify-center bg-bg-primary text-fg-primary font-mono">
       <div className="space-y-4 text-center">
         <h1 className="text-hero font-medium">WhaleCode</h1>
-        <p className="text-body text-fg-secondary">
-          Your AI team, orchestrated visually
-        </p>
-        <p className="text-meta text-fg-tertiary">
-          v2 scaffold — Phase 1 in progress
-        </p>
+        <p className="text-body text-fg-secondary">Your AI team, orchestrated visually</p>
+        <p className="text-meta text-fg-tertiary">v2 scaffold — Phase 1 in progress</p>
       </div>
     </main>
   );

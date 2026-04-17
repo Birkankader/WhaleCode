@@ -1,6 +1,6 @@
-@import "@fontsource-variable/jetbrains-mono";
-@import "@fontsource-variable/inter";
-@import "tailwindcss";
+@import '@fontsource-variable/jetbrains-mono';
+@import '@fontsource-variable/inter';
+@import 'tailwindcss';
 
 /*
  * Design tokens — the single source of truth for the visual system.
@@ -30,10 +30,8 @@
   --color-status-pending: #fbbf24;
 
   /* Typography */
-  --font-mono:
-    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-sans:
-    "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
 
   /* Semantic text scale — five sizes, nothing else */
   --text-hint: 0.6875rem; /* 11px — keyboard hints, fine metadata */
