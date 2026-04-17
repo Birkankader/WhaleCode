@@ -724,7 +724,7 @@ async fn dispatch_and_await_worker(
     let original_agent = agent.clone();
     let mut attempt = 0u32;
     let mut last_exit_code;
-    let mut last_output_summary;
+    let mut last_output_summary = String::new();
     let mut failure_reason: Option<String> = None;
 
     loop {
@@ -757,6 +757,8 @@ async fn dispatch_and_await_worker(
         ).await {
             Ok(code) => code,
             Err(_) => {
+                // Capture output BEFORE killing — kill_and_remove deletes process from state
+                last_output_summary = get_process_output_summary(&current_task_id, &state);
                 let _ = kill_process(&state, &current_task_id).await;
                 emit_orch(&on_event, "worker_timeout", serde_json::json!({
                     "dag_id": &dag_id, "timeout_minutes": worker_timeout_minutes
@@ -766,7 +768,10 @@ async fn dispatch_and_await_worker(
         };
 
         last_exit_code = exit_code;
-        last_output_summary = get_process_output_summary(&current_task_id, &state);
+        // Only update output summary if not already captured (timeout path sets it above)
+        if last_exit_code != -1 || last_output_summary.is_empty() {
+            last_output_summary = get_process_output_summary(&current_task_id, &state);
+        }
 
         if exit_code == 0 {
             break;
@@ -2446,6 +2451,67 @@ pub async fn approve_decomposition(
         tasks: modified_tasks,
     });
     plan.phase = crate::router::orchestrator::OrchestrationPhase::Executing;
+
+    Ok(())
+}
+
+/// Cancel the orchestration during any phase — kills processes, cleans up state.
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_orchestration(
+    plan_id: String,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    let state_ref: &AppState = &state;
+
+    // Get master process id before mutating
+    let master_task_id = {
+        let inner = state_ref.lock();
+        inner.orchestration_plans.get(&plan_id)
+            .and_then(|p| p.master_process_id.clone())
+    };
+
+    // Set phase to Failed and signal approval channel to unblock
+    {
+        let mut inner = state_ref.lock();
+        if let Some(plan) = inner.orchestration_plans.get_mut(&plan_id) {
+            plan.phase = crate::router::orchestrator::OrchestrationPhase::Failed;
+        }
+        // Signal approval watcher to wake up (it checks phase and will exit)
+        if let Some(tx) = inner.approval_signals.get(&plan_id) {
+            let _ = tx.send(true);
+        }
+        // Signal question watcher too
+        if let Some(tx) = inner.question_signals.get(&plan_id) {
+            let _ = tx.send(true);
+        }
+        // Clean up signals
+        inner.approval_signals.remove(&plan_id);
+        inner.question_signals.remove(&plan_id);
+        inner.question_queue.retain(|q| q.plan_id != plan_id);
+    }
+
+    // Kill master process
+    if let Some(ref mid) = master_task_id {
+        let _ = kill_process(state_ref, mid).await;
+    }
+
+    // Kill any worker processes belonging to this plan
+    let worker_ids: Vec<String> = {
+        let inner = state_ref.lock();
+        inner.orchestration_plans.get(&plan_id)
+            .map(|p| p.sub_tasks.iter().map(|s| s.id.clone()).collect())
+            .unwrap_or_default()
+    };
+    for wid in &worker_ids {
+        let _ = kill_process(state_ref, wid).await;
+    }
+
+    // Remove plan from state
+    {
+        let mut inner = state_ref.lock();
+        inner.orchestration_plans.remove(&plan_id);
+    }
 
     Ok(())
 }

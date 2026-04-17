@@ -23,7 +23,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             master_timeout_minutes: 10,
-            worker_timeout_minutes: 5,
+            worker_timeout_minutes: 15,
             max_rate_limit_retries: 3,
             max_worker_retries: 2,
             plan_cleanup_delay_secs: 60,

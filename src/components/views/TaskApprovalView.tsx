@@ -195,6 +195,24 @@ export function TaskApprovalView() {
     toast.success('Sub-task added');
   }, [newTaskPrompt, newTaskAgent]);
 
+  const handleCancel = useCallback(async () => {
+    if (!activePlan) return;
+    try {
+      await commands.cancelOrchestration(activePlan.task_id);
+      // Clean up frontend state
+      useTaskStore.getState().setOrchestrationPhase('idle');
+      useTaskStore.getState().setActivePlan(null);
+      // Remove all worker tasks from this session
+      for (const t of displayTasks) {
+        useTaskStore.getState().removeTask(t.id);
+      }
+      toast('Orchestration cancelled');
+    } catch (e) {
+      console.error('Cancel failed:', e);
+      toast.error('Cancel failed');
+    }
+  }, [activePlan, displayTasks]);
+
   const handleApprove = useCallback(async () => {
     if (!activePlan || approving) return;
     setApproving(true);
@@ -628,21 +646,35 @@ export function TaskApprovalView() {
           className="py-4 px-6 flex items-center justify-between"
           style={{ borderTop: `1px solid ${C.border}` }}
         >
-          <span className="text-xs" style={{ color: C.textMuted }}>
-            {activeCount} task{activeCount !== 1 ? 's' : ''} will execute
-          </span>
           <button
             type="button"
-            disabled={approving || activeCount === 0}
-            onClick={handleApprove}
-            className="py-2.5 px-7 rounded-xl border-none text-white text-[13px] font-bold font-[Inter,sans-serif] transition-all duration-150 ease-in-out"
+            onClick={handleCancel}
+            className="py-2.5 px-5 rounded-xl text-[13px] font-semibold font-[Inter,sans-serif] cursor-pointer transition-all duration-150 ease-in-out"
             style={{
-              background: approving || activeCount === 0 ? C.borderStrong : C.accent,
-              cursor: approving || activeCount === 0 ? 'not-allowed' : 'pointer',
+              background: 'transparent',
+              border: `1px solid ${C.border}`,
+              color: C.textMuted,
             }}
           >
-            {approving ? 'Approving...' : countdown !== null && countdown > 0 ? `Auto-starting in ${countdown}s...` : `Approve & Start (${activeCount})`}
+            Cancel
           </button>
+          <div className="flex items-center gap-3">
+            <span className="text-xs" style={{ color: C.textMuted }}>
+              {activeCount} task{activeCount !== 1 ? 's' : ''} will execute
+            </span>
+            <button
+              type="button"
+              disabled={approving || activeCount === 0}
+              onClick={handleApprove}
+              className="py-2.5 px-7 rounded-xl border-none text-white text-[13px] font-bold font-[Inter,sans-serif] transition-all duration-150 ease-in-out"
+              style={{
+                background: approving || activeCount === 0 ? C.borderStrong : C.accent,
+                cursor: approving || activeCount === 0 ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {approving ? 'Approving...' : countdown !== null && countdown > 0 ? `Auto-starting in ${countdown}s...` : `Approve & Start (${activeCount})`}
+            </button>
+          </div>
         </div>
       </div>
     </div>

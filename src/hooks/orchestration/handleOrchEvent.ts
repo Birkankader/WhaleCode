@@ -301,6 +301,12 @@ export function handleOrchEvent(
           break;
         }
       }
+      // Notify user about the fallback
+      emitOrchestrationNotification(
+        'warning',
+        'Decomposition Failed',
+        ev.error.slice(0, 120),
+      );
       break;
     }
   }

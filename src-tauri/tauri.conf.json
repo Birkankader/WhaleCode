@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WhaleCode",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "identifier": "com.whalecode.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -27,7 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg"],
     "category": "DeveloperTool",
     "icon": [
       "icons/32x32.png",
@@ -37,7 +37,13 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": false,
+      "dmg": {
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "height": 400, "width": 660 }
+      }
     }
   }
 }

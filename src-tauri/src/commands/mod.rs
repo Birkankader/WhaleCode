@@ -58,7 +58,7 @@ pub use orchestrator::{
     dispatch_orchestrated_task, get_agent_context_info,
     clear_orchestration_context, answer_user_question,
     approve_decomposition, reject_decomposition,
-    approve_orchestration,
+    approve_orchestration, cancel_orchestration,
 };
 pub use router::{dispatch_task, suggest_tool};
 pub use worktree::{

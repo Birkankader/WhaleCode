@@ -1,6 +1,6 @@
 [package]
 name = "whalecode"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-agent AI coding orchestrator — run Claude, Gemini, and Codex simultaneously"
 authors = ["WhaleCode Team"]
 edition = "2021"
