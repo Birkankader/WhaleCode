@@ -1,0 +1,72 @@
+@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/inter";
+@import "tailwindcss";
+
+/*
+ * Design tokens — the single source of truth for the visual system.
+ * Mirrors docs/design-system.md. Any change here must be reflected there.
+ */
+@theme {
+  /* Base palette (dark-only in v2) */
+  --color-bg-primary: #0a0a0a;
+  --color-bg-elevated: #141414;
+  --color-bg-subtle: #1f1f1f;
+  --color-fg-primary: #e8e8e8;
+  --color-fg-secondary: #8a8a8a;
+  --color-fg-tertiary: #6a6a6a;
+  --color-border-subtle: #1f1f1f;
+  --color-border-default: #2a2a2a;
+
+  /* Agent colors — functional, not decorative */
+  --color-agent-master: #f59e0b;
+  --color-agent-claude: #7dd3fc;
+  --color-agent-gemini: #c4b5fd;
+  --color-agent-codex: #86efac;
+
+  /* Status colors */
+  --color-status-success: #10b981;
+  --color-status-retry: #fbbf24;
+  --color-status-failed: #ef4444;
+  --color-status-pending: #fbbf24;
+
+  /* Typography */
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans:
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Semantic text scale — five sizes, nothing else */
+  --text-hint: 0.6875rem; /* 11px — keyboard hints, fine metadata */
+  --text-meta: 0.75rem; /* 12px — timestamps, secondary info */
+  --text-body: 0.875rem; /* 14px — base */
+  --text-title: 1.125rem; /* 18px — node titles, section headings */
+  --text-hero: 1.5rem; /* 24px — empty-state prompt only */
+
+  /* Font weights — only regular and medium. Never use 600/700. */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+
+  /* Radii */
+  --radius-sm: 4px; /* chips, keyboard key backgrounds */
+  --radius-md: 8px; /* nodes, buttons, cards */
+  --radius-lg: 10px; /* primary inputs and containers */
+  --radius-full: 9999px; /* pill badges, avatars */
+}
+
+/* Base body + root sizing — mono everywhere, dark canvas */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-primary);
+  color: var(--color-fg-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  font-weight: var(--font-weight-regular);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
