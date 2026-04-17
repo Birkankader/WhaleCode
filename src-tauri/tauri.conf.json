@@ -1,49 +1,37 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WhaleCode",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "identifier": "com.whalecode.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
     "windows": [
       {
         "title": "WhaleCode",
         "width": 1200,
         "height": 800,
-        "minWidth": 800,
-        "minHeight": 600,
-        "resizable": true
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'self'"
+      "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg"],
-    "category": "DeveloperTool",
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "macOS": {
-      "minimumSystemVersion": "13.0",
-      "hardenedRuntime": false,
-      "dmg": {
-        "appPosition": { "x": 180, "y": 170 },
-        "applicationFolderPosition": { "x": 480, "y": 170 },
-        "windowSize": { "height": 400, "width": 660 }
-      }
-    }
+    ]
   }
 }
