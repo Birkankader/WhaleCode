@@ -1,17 +1,31 @@
-/*
- * Placeholder scaffold. Step 10 of docs/phase-1-spec.md will replace this
- * with the real App shell (TopBar, EmptyState/GraphCanvas switch, ApprovalBar,
- * Footer). For now we render a minimal dark-canvas smoke test so we can
- * verify Tailwind v4 tokens load correctly.
+import { useEffect } from 'react';
+
+import { GraphCanvas } from './components/graph/GraphCanvas';
+import { useGraphStore } from './state/graphStore';
+
+/**
+ * Step 5 shell: just the canvas, full viewport. A dev-only mock seed puts
+ * master + three workers + final on screen so Dagre placement is verifiable.
+ * Steps 7–10 replace this with the real TopBar / EmptyState / ApprovalBar /
+ * Footer and drop the seed.
  */
 export default function App() {
+  useEffect(() => {
+    const { status, submitTask, proposeSubtasks, approveSubtasks } = useGraphStore.getState();
+    if (status !== 'idle') return;
+    submitTask('Scaffold a TODO app with tests and docs', 'master');
+    proposeSubtasks([
+      { id: 'auth', title: 'Auth scaffold', agent: 'claude', dependsOn: [] },
+      { id: 'tests', title: 'Write tests', agent: 'gemini', dependsOn: ['auth'] },
+      { id: 'docs', title: 'Docs', agent: 'codex', dependsOn: [] },
+    ]);
+    approveSubtasks(['auth', 'tests', 'docs']);
+    useGraphStore.getState().updateSubtaskState('auth', { type: 'START' });
+  }, []);
+
   return (
-    <main className="flex h-screen items-center justify-center bg-bg-primary text-fg-primary font-mono">
-      <div className="space-y-4 text-center">
-        <h1 className="text-hero font-medium">WhaleCode</h1>
-        <p className="text-body text-fg-secondary">Your AI team, orchestrated visually</p>
-        <p className="text-meta text-fg-tertiary">v2 scaffold — Phase 1 in progress</p>
-      </div>
+    <main className="h-screen w-screen bg-bg-primary text-fg-primary">
+      <GraphCanvas />
     </main>
   );
 }

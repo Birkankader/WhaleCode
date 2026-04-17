@@ -68,3 +68,10 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* Dashed edge travel — used by FlowEdge when the downstream node is running. */
+@keyframes flow-edge-dash {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
