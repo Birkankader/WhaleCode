@@ -9,7 +9,6 @@ export type MasterNodeData = {
   id: 'master';
   agent: AgentKind;
   label: string;
-  logs: string[];
 };
 
 export type SubtaskNodeData = {
@@ -17,13 +16,11 @@ export type SubtaskNodeData = {
   title: string;
   agent: AgentKind;
   dependsOn: string[];
-  logs: string[];
 };
 
 export type FinalNodeData = {
   id: 'final';
   label: string;
-  logs: string[];
 };
 
 export type NodeSnapshot = {
@@ -52,6 +49,7 @@ export type GraphState = {
   selectedSubtaskIds: Set<string>;
   nodeActors: Map<string, NodeActorRef>;
   nodeSnapshots: Map<string, NodeSnapshot>;
+  nodeLogs: Map<string, string[]>;
 
   submitTask: (input: string, masterAgent?: AgentKind) => void;
   proposeSubtasks: (subtasks: Array<Omit<SubtaskNodeData, 'logs'>>) => void;
@@ -79,6 +77,7 @@ const initial: Pick<
   | 'selectedSubtaskIds'
   | 'nodeActors'
   | 'nodeSnapshots'
+  | 'nodeLogs'
 > = {
   runId: null,
   taskInput: '',
@@ -89,6 +88,7 @@ const initial: Pick<
   selectedSubtaskIds: new Set(),
   nodeActors: new Map(),
   nodeSnapshots: new Map(),
+  nodeLogs: new Map(),
 };
 
 function newRunId(): string {
@@ -138,13 +138,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set({
         runId: newRunId(),
         taskInput: input,
-        masterNode: { id: MASTER_ID, agent: masterAgent, label: 'Master', logs: [] },
+        masterNode: { id: MASTER_ID, agent: masterAgent, label: 'Master' },
         status: 'planning',
       });
     },
 
     proposeSubtasks(defs) {
-      const subtasks: SubtaskNodeData[] = defs.map((d) => ({ ...d, logs: [] }));
+      const subtasks: SubtaskNodeData[] = defs.map((d) => ({ ...d }));
       for (const st of subtasks) {
         const actor = registerActor(st.id);
         actor.send({ type: 'PROPOSE' });
@@ -184,7 +184,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       sendTo(MASTER_ID, { type: 'APPROVE' });
       set({
         status: 'running',
-        finalNode: { id: FINAL_ID, label: 'Merge', logs: [] },
+        finalNode: { id: FINAL_ID, label: 'Merge' },
       });
       registerActor(FINAL_ID);
     },
@@ -200,18 +200,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
     },
 
     appendLogToNode(id, line) {
+      if (!get().nodeActors.has(id)) return;
       set((state) => {
-        if (state.masterNode?.id === id) {
-          return { masterNode: { ...state.masterNode, logs: [...state.masterNode.logs, line] } };
-        }
-        if (state.finalNode?.id === id) {
-          return { finalNode: { ...state.finalNode, logs: [...state.finalNode.logs, line] } };
-        }
-        const idx = state.subtasks.findIndex((s) => s.id === id);
-        if (idx < 0) return state;
-        const nextSubtasks = state.subtasks.slice();
-        nextSubtasks[idx] = { ...nextSubtasks[idx], logs: [...nextSubtasks[idx].logs, line] };
-        return { subtasks: nextSubtasks };
+        const next = new Map(state.nodeLogs);
+        next.set(id, [...(next.get(id) ?? []), line]);
+        return { nodeLogs: next };
       });
     },
 
@@ -219,7 +212,12 @@ export const useGraphStore = create<GraphState>((set, get) => {
       for (const actor of get().nodeActors.values()) {
         actor.stop();
       }
-      set({ ...initial, nodeActors: new Map(), nodeSnapshots: new Map() });
+      set({
+        ...initial,
+        nodeActors: new Map(),
+        nodeSnapshots: new Map(),
+        nodeLogs: new Map(),
+      });
     },
   };
 });

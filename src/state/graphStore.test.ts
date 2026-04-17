@@ -36,6 +36,7 @@ describe('graphStore — initial', () => {
     expect(s.selectedSubtaskIds.size).toBe(0);
     expect(s.nodeActors.size).toBe(0);
     expect(s.nodeSnapshots.size).toBe(0);
+    expect(s.nodeLogs.size).toBe(0);
   });
 });
 
@@ -50,7 +51,6 @@ describe('graphStore — submitTask', () => {
       id: MASTER_ID,
       agent: 'claude',
       label: 'Master',
-      logs: [],
     });
     expect(snap(MASTER_ID)?.value).toBe('thinking');
   });
@@ -68,7 +68,6 @@ describe('graphStore — proposeSubtasks', () => {
     const s = state();
     expect(s.status).toBe('awaiting_approval');
     expect(s.subtasks).toHaveLength(3);
-    expect(s.subtasks[0].logs).toEqual([]);
     expect(s.selectedSubtaskIds).toEqual(new Set(['a', 'b', 'c']));
     expect(snap('a')?.value).toBe('proposed');
     expect(snap('b')?.value).toBe('proposed');
@@ -112,7 +111,7 @@ describe('graphStore — approveSubtasks', () => {
     expect(snap('b')?.value).toBe('approved');
     expect(snap('c')?.value).toBe('skipped');
     expect(snap(MASTER_ID)?.value).toBe('approved');
-    expect(s.finalNode).toEqual({ id: FINAL_ID, label: 'Merge', logs: [] });
+    expect(s.finalNode).toEqual({ id: FINAL_ID, label: 'Merge' });
     expect(snap(FINAL_ID)?.value).toBe('idle');
   });
 });
@@ -170,24 +169,34 @@ describe('graphStore — appendLogToNode', () => {
 
   it('appends to master logs', () => {
     state().appendLogToNode(MASTER_ID, 'hello');
-    expect(state().masterNode?.logs).toEqual(['hello']);
+    expect(state().nodeLogs.get(MASTER_ID)).toEqual(['hello']);
   });
 
   it('appends to subtask logs', () => {
     state().appendLogToNode('a', 'line 1');
     state().appendLogToNode('a', 'line 2');
-    expect(state().subtasks.find((s) => s.id === 'a')?.logs).toEqual(['line 1', 'line 2']);
+    expect(state().nodeLogs.get('a')).toEqual(['line 1', 'line 2']);
   });
 
   it('appends to final node logs', () => {
     state().appendLogToNode(FINAL_ID, 'merged');
-    expect(state().finalNode?.logs).toEqual(['merged']);
+    expect(state().nodeLogs.get(FINAL_ID)).toEqual(['merged']);
   });
 
   it('is a no-op for unknown id', () => {
     const before = state();
     state().appendLogToNode('ghost', 'x');
-    expect(state().subtasks).toBe(before.subtasks);
+    expect(state().nodeLogs).toBe(before.nodeLogs);
+  });
+
+  it('log appends do not change structural references (subtasks array, masterNode)', () => {
+    const before = state();
+    state().appendLogToNode('a', 'line 1');
+    state().appendLogToNode(MASTER_ID, 'line 1');
+    const after = state();
+    expect(after.subtasks).toBe(before.subtasks);
+    expect(after.masterNode).toBe(before.masterNode);
+    expect(after.finalNode).toBe(before.finalNode);
   });
 });
 
@@ -207,6 +216,7 @@ describe('graphStore — reset', () => {
     expect(s.finalNode).toBeNull();
     expect(s.nodeActors.size).toBe(0);
     expect(s.nodeSnapshots.size).toBe(0);
+    expect(s.nodeLogs.size).toBe(0);
     expect(s.selectedSubtaskIds.size).toBe(0);
     // Stopped actors keep their final snapshot but no longer accept events.
     for (const a of actors) {
