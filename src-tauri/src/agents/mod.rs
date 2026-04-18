@@ -29,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 use crate::ipc::AgentKind;
 use crate::storage::models::Subtask;
 
+pub mod claude;
 pub mod plan_parser;
 pub mod process;
 pub mod prompts;
