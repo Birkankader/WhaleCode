@@ -112,6 +112,14 @@ pub async fn run_lifecycle(
     approval_rx: oneshot::Receiver<ApprovalDecision>,
     apply_rx: oneshot::Receiver<ApplyDecision>,
 ) {
+    // Yield before the first emit so `submit_task` (which spawned us)
+    // has a chance to return `RunId` to its caller before any event
+    // hits the wire. See the INVARIANT comment on `Orchestrator::
+    // submit_task` — the frontend's RunSubscription cannot attach
+    // until it has the RunId, so the backend must not emit anything
+    // inside `submit_task`'s synchronous body.
+    tokio::task::yield_now().await;
+
     let (run_id, repo_root, cancel, notes, task_text, master_kind) = {
         let r = run.read().await;
         (
@@ -125,6 +133,15 @@ pub async fn run_lifecycle(
     };
 
     // -- Planning phase ---------------------------------------------
+    // Emit the initial status transition now that we're past the
+    // yield point. This used to live in `submit_task`; moved here to
+    // preserve the attach-before-first-event invariant.
+    deps.event_sink
+        .emit(RunEvent::StatusChanged {
+            run_id: run_id.clone(),
+            status: RunStatus::Planning,
+        })
+        .await;
     deps.event_sink
         .emit(RunEvent::MasterLog {
             run_id: run_id.clone(),

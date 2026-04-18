@@ -222,6 +222,16 @@ impl Orchestrator {
     /// for the target repo, persists the initial run row, and spawns
     /// the per-run tokio task. Returns as soon as the task is
     /// spawned — all heavy work happens asynchronously.
+    ///
+    /// INVARIANT: `submit_task` emits no `run:*` events before
+    /// returning `RunId`. The frontend relies on this to avoid a race
+    /// between the IPC response and event-subscription attach — see
+    /// `src/lib/runSubscription.ts` for the consuming side. The first
+    /// event (`StatusChanged{Planning}`) is emitted from the spawned
+    /// `run_lifecycle` task after a `yield_now().await`, so the
+    /// scheduler has a chance to complete this function's return
+    /// before any event hits the wire. Enforced by the test
+    /// `submit_task_emits_nothing_before_returning_run_id`.
     pub async fn submit_task(
         &self,
         task: String,
@@ -273,12 +283,9 @@ impl Orchestrator {
             .await
             .insert(run_id.clone(), run_arc.clone());
 
-        self.event_sink
-            .emit(RunEvent::StatusChanged {
-                run_id: run_id.clone(),
-                status: RunStatus::Planning,
-            })
-            .await;
+        // NOTE: the initial `StatusChanged{Planning}` emit lives at the
+        // top of `run_lifecycle`. See the invariant comment above — do
+        // not emit from this function.
 
         let (approval_tx, approval_rx) = oneshot::channel();
         self.approval_senders

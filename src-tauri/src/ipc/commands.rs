@@ -27,13 +27,23 @@ pub fn submit_task(app: AppHandle, input: String, repo_path: String) -> Result<R
         "[ipc] submit_task: input={:?} repo_path={:?} → run_id={}",
         input, repo_path, run_id
     );
-    let _ = events::emit_status_changed(
-        &app,
-        &StatusChanged {
-            run_id: run_id.clone(),
-            status: RunStatus::Planning,
-        },
-    );
+    // INVARIANT: emit nothing before returning `run_id`. The frontend
+    // attaches its RunSubscription after `submit_task` returns; any
+    // event fired before that point would be dropped. Mirror the real
+    // orchestrator (see `Orchestrator::submit_task`) by deferring the
+    // first emit to a spawned task that yields before emitting.
+    let emit_run_id = run_id.clone();
+    let emit_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::task::yield_now().await;
+        let _ = events::emit_status_changed(
+            &emit_app,
+            &StatusChanged {
+                run_id: emit_run_id,
+                status: RunStatus::Planning,
+            },
+        );
+    });
     Ok(run_id)
 }
 

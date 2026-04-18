@@ -1352,3 +1352,75 @@ async fn unapproved_parent_cascades_skip_to_children() {
         );
     }
 }
+
+/// Enforces the `submit_task` no-emit-before-return invariant.
+///
+/// The frontend attaches its `RunSubscription` after it receives the
+/// `RunId` from `submit_task`. If any event fires during the sync body
+/// of `submit_task`, the frontend misses it. This test runs on a
+/// current-thread runtime so the spawned `run_lifecycle` cannot start
+/// until we explicitly yield; that lets us assert exact event counts
+/// at the moment `submit_task.await` returns.
+///
+/// A regression here means someone added an emit inside `submit_task`
+/// — move it into `run_lifecycle` (or a task spawned from there), past
+/// the `yield_now().await` at the top of that function.
+#[tokio::test(flavor = "current_thread")]
+async fn submit_task_emits_nothing_before_returning_run_id() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        // Keep planning hanging so the test window only observes the
+        // pre-plan events (StatusChanged{Planning} + the first
+        // MasterLog). Cancel on the way out.
+        .with_plan_delay(Duration::from_secs(60));
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("check invariant".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // IMMEDIATE assertion: `submit_task` has returned, but the spawned
+    // lifecycle task hasn't been polled yet (current-thread runtime,
+    // no explicit yield between here and the submit_task above). The
+    // sink must be empty.
+    let immediate = h.sink.snapshot().await;
+    assert!(
+        immediate.is_empty(),
+        "submit_task emitted {} event(s) before returning RunId — the \
+         attach-before-first-event invariant is broken. Events: {:#?}",
+        immediate.len(),
+        immediate
+    );
+
+    // Now let the lifecycle task run. Its first act is
+    // `yield_now().await` followed by `emit StatusChanged{Planning}`.
+    // `await_status` polls with sleeps, giving the scheduler room.
+    h.await_status(&run_id, RunStatus::Planning).await;
+
+    // The very first event on the sink must be StatusChanged{Planning}
+    // for this run — nothing else is allowed to slip in front of it.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        !snap.is_empty(),
+        "no events after awaiting Planning transition"
+    );
+    match &snap[0] {
+        RunEvent::StatusChanged {
+            run_id: r,
+            status: RunStatus::Planning,
+        } => {
+            assert_eq!(r, &run_id);
+        }
+        other => panic!(
+            "first event should be StatusChanged{{Planning}}, got {:#?}. Full: {:#?}",
+            other, snap
+        ),
+    }
+
+    // Clean up the pending run so the harness doesn't leave a 60-second
+    // planner hanging after the test body returns.
+    h.orch.cancel_run(&run_id).await.ok();
+}
