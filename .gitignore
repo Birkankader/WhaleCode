@@ -21,6 +21,7 @@ dist-ssr
 output/
 .bg-shell/
 .whalecode-worktrees/
+.claude/
 
 # Editor directories and files
 .vscode/*
