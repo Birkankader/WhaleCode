@@ -1,3 +1,4 @@
+mod agents;
 mod detection;
 mod ipc;
 mod repo;
