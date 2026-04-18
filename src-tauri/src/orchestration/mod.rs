@@ -31,6 +31,7 @@ use crate::storage::models::NewRun;
 use crate::storage::Storage;
 
 pub mod context;
+pub mod dispatcher;
 pub mod events;
 pub mod lifecycle;
 pub mod notes;

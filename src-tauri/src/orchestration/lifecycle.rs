@@ -41,11 +41,12 @@ use tokio_util::sync::CancellationToken;
 use crate::agents::{AgentError, AgentImpl, Plan};
 use crate::ipc::{RunId, RunStatus, SubtaskData, SubtaskId, SubtaskState};
 use crate::orchestration::context::build_planning_context;
+use crate::orchestration::dispatcher::{run_dispatcher, DispatchOutcome, DispatcherDeps};
 use crate::orchestration::events::{EventSink, RunEvent};
 use crate::orchestration::notes::{RunContext, SharedNotes};
 use crate::orchestration::registry::AgentRegistry;
 use crate::orchestration::run::{Run, SubtaskRuntime};
-use crate::orchestration::APPROVAL_TIMEOUT;
+use crate::orchestration::{APPROVAL_TIMEOUT, MAX_CONCURRENT_WORKERS};
 use crate::storage::models::NewSubtask;
 use crate::storage::Storage;
 
@@ -161,20 +162,63 @@ pub async fn run_lifecycle(
             finalize_rejected(&deps, &run).await;
         }
         ApprovalDecision::Approve { subtask_ids } => {
-            // Dispatch + merge land in 8c/8d. For now the approve
-            // branch records the approval, marks un-picked subtasks
-            // Skipped, and parks the run in Running without
-            // executing anything. This is visible in tests as
-            // "stayed in Running"; we'll replace with the real
-            // dispatcher in the next commit.
             if let Err(e) = record_approval(&deps, &run, &subtask_ids).await {
                 finalize_failed(&deps, &run, format!("recording approval failed: {e}")).await;
                 return;
             }
-            // Intentionally leave the run in Running for now; commit
-            // 8c replaces this tail with the dispatcher loop.
+            let dispatcher_deps = DispatcherDeps {
+                storage: deps.storage.clone(),
+                event_sink: deps.event_sink.clone(),
+                registry: deps.registry.clone(),
+            };
+            let outcome = run_dispatcher(
+                &dispatcher_deps,
+                run.clone(),
+                master.clone(),
+                MAX_CONCURRENT_WORKERS,
+            )
+            .await;
+            match outcome {
+                DispatchOutcome::AllDone => {
+                    if let Err(e) = transition_to_merging(&deps, &run).await {
+                        finalize_failed(&deps, &run, e).await;
+                    }
+                    // Actual merge/apply/discard lands in 8d; the run
+                    // parks in Merging until that ships.
+                }
+                DispatchOutcome::Failed { error } => {
+                    finalize_failed(&deps, &run, error).await;
+                }
+                DispatchOutcome::Cancelled => {
+                    finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
+                }
+            }
         }
     }
+}
+
+/// Flip the run to Merging. 8d's merge logic reads this as its cue to
+/// start.
+async fn transition_to_merging(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+) -> Result<(), String> {
+    let run_id = {
+        let mut guard = run.write().await;
+        guard.status = RunStatus::Merging;
+        guard.id.clone()
+    };
+    deps.storage
+        .update_run_status(&run_id, RunStatus::Merging)
+        .await
+        .map_err(|e| format!("update_run_status(merging): {e}"))?;
+    deps.event_sink
+        .emit(RunEvent::StatusChanged {
+            run_id,
+            status: RunStatus::Merging,
+        })
+        .await;
+    Ok(())
 }
 
 /// Hydrate [`Run::subtasks`], persist to SQLite, init shared notes

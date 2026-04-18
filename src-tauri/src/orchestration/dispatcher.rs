@@ -1,0 +1,611 @@
+//! Worker scheduling for an approved [`Run`].
+//!
+//! The dispatcher owns the "execute" phase end-to-end: from the moment
+//! approved subtasks should start running through to every one of them
+//! reaching a terminal state. It is called once per run and returns a
+//! [`DispatchOutcome`] that the lifecycle turns into the next status
+//! transition (Merging / Failed / Cancelled).
+//!
+//! Shape:
+//! 1. Cascade-skip any subtask whose deps were already Skipped/Failed
+//!    (e.g. an approved child of an un-approved parent).
+//! 2. Pre-resolve one [`AgentImpl`] per unique worker kind so each
+//!    spawn is just an `Arc::clone`.
+//! 3. Flip approved subtasks Proposed → Waiting (persisted + emitted).
+//! 4. Main loop:
+//!      - Pick ready subtasks (`Waiting`, all deps `Done`, not in
+//!        flight), spawn up to `max_concurrent` workers.
+//!      - `tokio::select!` on `join_set.join_next()` vs
+//!        `cancel.cancelled()`.
+//!      - Worker `Done` → persist, emit, append notes, maybe consolidate.
+//!      - Worker `Failed` → fail-fast the whole run.
+//!      - Worker `Cancelled` → drain the rest and return `Cancelled`.
+//!      - Re-cascade between iterations so a newly failed/skipped
+//!        subtask propagates to its waiting dependents.
+//! 5. Exit when every subtask is terminal.
+//!
+//! Locking discipline mirrors the rest of the orchestration module:
+//! the per-run `RwLock` is acquired only to read or mutate the `Run`
+//! struct; every `await` on storage, event emission, worker execution,
+//! or notes I/O happens with the lock released. This keeps workers
+//! progressing in parallel — a slow storage write can't freeze the
+//! other workers' state transitions.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
+use crate::agents::{AgentError, AgentImpl, ExecutionResult};
+use crate::ipc::{AgentKind, RunId, SubtaskId, SubtaskState};
+use crate::orchestration::events::{EventSink, RunEvent};
+use crate::orchestration::notes::{SharedNotes, CONSOLIDATE_THRESHOLD_BYTES};
+use crate::orchestration::registry::AgentRegistry;
+use crate::orchestration::run::{Run, SubtaskRuntime};
+use crate::storage::models::Subtask;
+use crate::storage::Storage;
+use crate::worktree::WorktreeManager;
+
+/// Terminal outcome of a dispatch attempt.
+#[derive(Debug)]
+pub enum DispatchOutcome {
+    /// Every approved subtask ended in `Done` (or was validly
+    /// Skipped). Lifecycle should transition to Merging.
+    AllDone,
+    /// At least one subtask failed and we aborted the rest. The run
+    /// should transition to Failed.
+    Failed { error: String },
+    /// The run's cancel token fired; any in-flight workers have been
+    /// awaited out. Lifecycle finalizes to Cancelled.
+    Cancelled,
+}
+
+/// Bundle the dispatcher pulls state + sinks from. Mirrors
+/// [`crate::orchestration::lifecycle::LifecycleDeps`] deliberately —
+/// the lifecycle hands its own fields straight through.
+pub struct DispatcherDeps {
+    pub storage: Arc<Storage>,
+    pub event_sink: Arc<dyn EventSink>,
+    pub registry: Arc<dyn AgentRegistry>,
+}
+
+#[derive(Debug)]
+enum WorkerOutcome {
+    Done(ExecutionResult),
+    Failed(String),
+    Cancelled,
+}
+
+/// Entry point. Blocks until every subtask is terminal, the run is
+/// cancelled, or the first subtask fails (fail-fast).
+pub async fn run_dispatcher(
+    deps: &DispatcherDeps,
+    run: Arc<RwLock<Run>>,
+    master: Arc<dyn AgentImpl>,
+    max_concurrent: usize,
+) -> DispatchOutcome {
+    let (run_id, cancel, worktree_mgr, notes) = {
+        let r = run.read().await;
+        (
+            r.id.clone(),
+            r.cancel_token.clone(),
+            r.worktree_mgr.clone(),
+            r.notes.clone(),
+        )
+    };
+
+    // Cascade over any un-approved-parent situations before we pick
+    // work. The approval step leaves un-approved subtasks as Skipped;
+    // approved children of those need to cascade before they'd
+    // otherwise be eligible.
+    cascade_skip(deps, &run, &run_id).await;
+
+    let worker_cache = match resolve_workers(deps, &run).await {
+        Ok(c) => c,
+        Err(e) => return DispatchOutcome::Failed { error: e },
+    };
+
+    if let Err(e) = transition_approved_to_waiting(deps, &run, &run_id).await {
+        return DispatchOutcome::Failed {
+            error: format!("waiting transition failed: {e}"),
+        };
+    }
+
+    let mut join_set: JoinSet<(SubtaskId, WorkerOutcome)> = JoinSet::new();
+    let mut in_flight: HashSet<SubtaskId> = HashSet::new();
+
+    loop {
+        cascade_skip(deps, &run, &run_id).await;
+
+        let (all_terminal, ready) = {
+            let r = run.read().await;
+            (
+                r.subtasks.iter().all(SubtaskRuntime::is_terminal),
+                pick_ready(&r.subtasks, &in_flight),
+            )
+        };
+
+        for sub_id in ready {
+            if join_set.len() >= max_concurrent {
+                break;
+            }
+            match dispatch_one(
+                deps,
+                &run,
+                &run_id,
+                &sub_id,
+                &worktree_mgr,
+                &notes,
+                &worker_cache,
+                &cancel,
+                &mut join_set,
+            )
+            .await
+            {
+                Ok(()) => {
+                    in_flight.insert(sub_id);
+                }
+                Err(err) => {
+                    // Couldn't even spawn: treat as a subtask failure
+                    // and fail-fast the run.
+                    mark_failed(deps, &run, &run_id, &sub_id, err.clone()).await;
+                    cancel.cancel();
+                    drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                    return DispatchOutcome::Failed {
+                        error: format!("subtask {sub_id} setup failed: {err}"),
+                    };
+                }
+            }
+        }
+
+        if join_set.is_empty() {
+            if all_terminal {
+                return DispatchOutcome::AllDone;
+            }
+            // Defensive: with no work in flight and nothing ready,
+            // every non-terminal subtask is blocked on deps the
+            // cascade should already have handled. Surface as failure
+            // rather than spinning forever.
+            let stuck = {
+                let r = run.read().await;
+                r.subtasks.iter().any(|s| !s.is_terminal())
+            };
+            if !stuck {
+                return DispatchOutcome::AllDone;
+            }
+            return DispatchOutcome::Failed {
+                error: "dispatch deadlock: non-terminal subtasks with unsatisfiable dependencies"
+                    .into(),
+            };
+        }
+
+        tokio::select! {
+            Some(joined) = join_set.join_next() => {
+                let (sub_id, outcome) = match joined {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        cancel.cancel();
+                        drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                        return DispatchOutcome::Failed {
+                            error: format!("worker task panicked: {e}"),
+                        };
+                    }
+                };
+                in_flight.remove(&sub_id);
+                match outcome {
+                    WorkerOutcome::Done(res) => {
+                        on_worker_done(deps, &run, &run_id, &sub_id, &res, &notes).await;
+                        maybe_consolidate(
+                            &notes,
+                            master.as_ref(),
+                            &cancel,
+                            &deps.event_sink,
+                            &run_id,
+                        )
+                        .await;
+                    }
+                    WorkerOutcome::Failed(err) => {
+                        mark_failed(deps, &run, &run_id, &sub_id, err.clone()).await;
+                        cancel.cancel();
+                        drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                        return DispatchOutcome::Failed {
+                            error: format!("subtask {sub_id} failed: {err}"),
+                        };
+                    }
+                    WorkerOutcome::Cancelled => {
+                        mark_skipped(deps, &run, &run_id, &sub_id).await;
+                        drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                        return DispatchOutcome::Cancelled;
+                    }
+                }
+            }
+            _ = cancel.cancelled() => {
+                drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                return DispatchOutcome::Cancelled;
+            }
+        }
+    }
+}
+
+// -- State transitions ----------------------------------------------
+
+async fn transition_approved_to_waiting(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+) -> Result<(), String> {
+    let moved: Vec<SubtaskId> = {
+        let mut guard = run.write().await;
+        let mut ids = Vec::new();
+        for s in guard.subtasks.iter_mut() {
+            if matches!(s.state, SubtaskState::Proposed) {
+                s.state = SubtaskState::Waiting;
+                ids.push(s.id.clone());
+            }
+        }
+        ids
+    };
+    for id in &moved {
+        deps.storage
+            .update_subtask_state(id, SubtaskState::Waiting, None)
+            .await
+            .map_err(|e| format!("update_subtask_state(waiting, {id}): {e}"))?;
+        deps.event_sink
+            .emit(RunEvent::SubtaskStateChanged {
+                run_id: run_id.clone(),
+                subtask_id: id.clone(),
+                state: SubtaskState::Waiting,
+            })
+            .await;
+    }
+    Ok(())
+}
+
+async fn cascade_skip(deps: &DispatcherDeps, run: &Arc<RwLock<Run>>, run_id: &RunId) {
+    // Iterate to a fixed point: a newly-skipped subtask may in turn
+    // cascade to its own dependents. Small graphs (≤~10 nodes), so
+    // the O(n·changes) cost is irrelevant.
+    loop {
+        let to_skip: Vec<SubtaskId> = {
+            let guard = run.read().await;
+            let state_of: HashMap<&SubtaskId, SubtaskState> =
+                guard.subtasks.iter().map(|s| (&s.id, s.state)).collect();
+            guard
+                .subtasks
+                .iter()
+                .filter(|s| matches!(s.state, SubtaskState::Waiting | SubtaskState::Proposed))
+                .filter(|s| {
+                    s.dependency_ids.iter().any(|d| {
+                        matches!(
+                            state_of.get(d).copied(),
+                            Some(SubtaskState::Skipped | SubtaskState::Failed)
+                        )
+                    })
+                })
+                .map(|s| s.id.clone())
+                .collect()
+        };
+        if to_skip.is_empty() {
+            return;
+        }
+        for id in to_skip {
+            mark_skipped(deps, run, run_id, &id).await;
+        }
+    }
+}
+
+// -- Readiness + spawn ----------------------------------------------
+
+fn pick_ready(subs: &[SubtaskRuntime], in_flight: &HashSet<SubtaskId>) -> Vec<SubtaskId> {
+    let done: HashSet<&SubtaskId> = subs
+        .iter()
+        .filter(|s| s.is_done())
+        .map(|s| &s.id)
+        .collect();
+    subs.iter()
+        .filter(|s| matches!(s.state, SubtaskState::Waiting))
+        .filter(|s| !in_flight.contains(&s.id))
+        .filter(|s| s.dependency_ids.iter().all(|d| done.contains(d)))
+        .map(|s| s.id.clone())
+        .collect()
+}
+
+async fn resolve_workers(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+) -> Result<HashMap<AgentKind, Arc<dyn AgentImpl>>, String> {
+    let kinds: HashSet<AgentKind> = {
+        let r = run.read().await;
+        r.subtasks
+            .iter()
+            .filter(|s| matches!(s.state, SubtaskState::Proposed | SubtaskState::Waiting))
+            .map(|s| s.data.assigned_worker)
+            .collect()
+    };
+    let mut cache = HashMap::with_capacity(kinds.len());
+    for k in kinds {
+        let agent = deps
+            .registry
+            .get(k)
+            .await
+            .map_err(|e| format!("worker {k:?} unavailable: {e}"))?;
+        cache.insert(k, agent);
+    }
+    Ok(cache)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_one(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sub_id: &SubtaskId,
+    worktree_mgr: &Arc<WorktreeManager>,
+    notes: &Arc<SharedNotes>,
+    worker_cache: &HashMap<AgentKind, Arc<dyn AgentImpl>>,
+    cancel: &CancellationToken,
+    join_set: &mut JoinSet<(SubtaskId, WorkerOutcome)>,
+) -> Result<(), String> {
+    let worktree_path = worktree_mgr
+        .create(run_id, sub_id)
+        .await
+        .map_err(|e| format!("worktree create: {e}"))?;
+
+    let (subtask_row, worker_kind) = {
+        let mut guard = run.write().await;
+        let s = guard
+            .find_subtask_mut(sub_id)
+            .ok_or_else(|| "subtask vanished mid-dispatch".to_string())?;
+        s.mark_running(worktree_path.clone());
+        (to_storage_subtask(s, run_id), s.data.assigned_worker)
+    };
+
+    deps.storage
+        .update_subtask_state(sub_id, SubtaskState::Running, None)
+        .await
+        .map_err(|e| format!("update_subtask_state(running): {e}"))?;
+    deps.event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: sub_id.clone(),
+            state: SubtaskState::Running,
+        })
+        .await;
+
+    let notes_snapshot = notes.read().await.unwrap_or_default();
+    let worker = worker_cache
+        .get(&worker_kind)
+        .cloned()
+        .ok_or_else(|| "worker adapter missing from cache".to_string())?;
+
+    let (log_tx, log_rx) = mpsc::channel::<String>(64);
+    tokio::spawn(forward_logs(
+        deps.storage.clone(),
+        deps.event_sink.clone(),
+        run_id.clone(),
+        sub_id.clone(),
+        log_rx,
+    ));
+
+    let sub_cancel = cancel.clone();
+    let sub_id_owned = sub_id.clone();
+    join_set.spawn(async move {
+        let outcome = match worker
+            .execute(&subtask_row, &worktree_path, &notes_snapshot, log_tx, sub_cancel)
+            .await
+        {
+            Ok(r) => WorkerOutcome::Done(r),
+            Err(AgentError::Cancelled) => WorkerOutcome::Cancelled,
+            Err(e) => WorkerOutcome::Failed(format!("{e}")),
+        };
+        (sub_id_owned, outcome)
+    });
+    Ok(())
+}
+
+async fn forward_logs(
+    storage: Arc<Storage>,
+    sink: Arc<dyn EventSink>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+    mut rx: mpsc::Receiver<String>,
+) {
+    while let Some(line) = rx.recv().await {
+        // Best-effort persistence: a log line dropped on the floor is
+        // not worth failing the subtask. The event still goes out.
+        let _ = storage.append_log(&subtask_id, &line).await;
+        sink.emit(RunEvent::SubtaskLog {
+            run_id: run_id.clone(),
+            subtask_id: subtask_id.clone(),
+            line,
+        })
+        .await;
+    }
+}
+
+// -- Completion handlers --------------------------------------------
+
+async fn on_worker_done(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sub_id: &SubtaskId,
+    res: &ExecutionResult,
+    notes: &Arc<SharedNotes>,
+) {
+    let (worker_kind, title) = {
+        let mut guard = run.write().await;
+        let Some(s) = guard.find_subtask_mut(sub_id) else {
+            return;
+        };
+        s.mark_done();
+        (s.data.assigned_worker, s.data.title.clone())
+    };
+    if let Err(e) = deps
+        .storage
+        .update_subtask_state(sub_id, SubtaskState::Done, None)
+        .await
+    {
+        eprintln!("[dispatcher] update_subtask_state(done, {sub_id}) failed: {e}");
+    }
+    deps.event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: sub_id.clone(),
+            state: SubtaskState::Done,
+        })
+        .await;
+    if let Err(e) = notes
+        .append_subtask_summary(sub_id, &title, worker_kind, &res.summary)
+        .await
+    {
+        eprintln!("[dispatcher] append_subtask_summary({sub_id}) failed: {e}");
+    }
+}
+
+async fn maybe_consolidate(
+    notes: &Arc<SharedNotes>,
+    master: &dyn AgentImpl,
+    cancel: &CancellationToken,
+    event_sink: &Arc<dyn EventSink>,
+    run_id: &RunId,
+) {
+    let size = notes.size_bytes().unwrap_or(0);
+    if size < CONSOLIDATE_THRESHOLD_BYTES {
+        return;
+    }
+    event_sink
+        .emit(RunEvent::MasterLog {
+            run_id: run_id.clone(),
+            line: format!("consolidating shared notes ({size} bytes)…"),
+        })
+        .await;
+    // `notes.consolidate` currently opens its own cancel token; wrap
+    // in select! so the dispatcher doesn't hang if the run is
+    // cancelled mid-consolidate. Dropping the future cancels the
+    // master call via normal async-drop semantics.
+    tokio::select! {
+        res = notes.consolidate(master) => {
+            if let Err(e) = res {
+                event_sink
+                    .emit(RunEvent::MasterLog {
+                        run_id: run_id.clone(),
+                        line: format!("notes consolidation failed: {e}"),
+                    })
+                    .await;
+            }
+        }
+        _ = cancel.cancelled() => {}
+    }
+}
+
+async fn mark_failed(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sub_id: &SubtaskId,
+    error: String,
+) {
+    {
+        let mut guard = run.write().await;
+        if let Some(s) = guard.find_subtask_mut(sub_id) {
+            s.mark_failed(error.clone());
+        }
+    }
+    if let Err(e) = deps
+        .storage
+        .update_subtask_state(sub_id, SubtaskState::Failed, Some(&error))
+        .await
+    {
+        eprintln!("[dispatcher] update_subtask_state(failed, {sub_id}) failed: {e}");
+    }
+    deps.event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: sub_id.clone(),
+            state: SubtaskState::Failed,
+        })
+        .await;
+}
+
+async fn mark_skipped(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sub_id: &SubtaskId,
+) {
+    let changed = {
+        let mut guard = run.write().await;
+        match guard.find_subtask_mut(sub_id) {
+            Some(s) if !s.is_terminal() => {
+                s.mark_skipped();
+                true
+            }
+            _ => false,
+        }
+    };
+    if !changed {
+        return;
+    }
+    if let Err(e) = deps
+        .storage
+        .update_subtask_state(sub_id, SubtaskState::Skipped, None)
+        .await
+    {
+        eprintln!("[dispatcher] update_subtask_state(skipped, {sub_id}) failed: {e}");
+    }
+    deps.event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: sub_id.clone(),
+            state: SubtaskState::Skipped,
+        })
+        .await;
+}
+
+async fn drain_as_skipped(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    join_set: &mut JoinSet<(SubtaskId, WorkerOutcome)>,
+    in_flight: &mut HashSet<SubtaskId>,
+) {
+    while let Some(joined) = join_set.join_next().await {
+        if let Ok((sub_id, _)) = joined {
+            in_flight.remove(&sub_id);
+            mark_skipped(deps, run, run_id, &sub_id).await;
+        }
+    }
+    // Mark every still-waiting subtask as skipped so the persisted
+    // state reflects "did not run". Without this they'd stay as
+    // Waiting in SQLite even though the run is over.
+    let waiting: Vec<SubtaskId> = {
+        let r = run.read().await;
+        r.subtasks
+            .iter()
+            .filter(|s| matches!(s.state, SubtaskState::Waiting | SubtaskState::Proposed))
+            .map(|s| s.id.clone())
+            .collect()
+    };
+    for id in waiting {
+        mark_skipped(deps, run, run_id, &id).await;
+    }
+}
+
+// -- Helpers ---------------------------------------------------------
+
+fn to_storage_subtask(rt: &SubtaskRuntime, run_id: &RunId) -> Subtask {
+    Subtask {
+        id: rt.id.clone(),
+        run_id: run_id.clone(),
+        title: rt.data.title.clone(),
+        why: Some(rt.data.why.clone()).filter(|w| !w.is_empty()),
+        assigned_worker: rt.data.assigned_worker,
+        state: rt.state,
+        started_at: rt.started_at.map(|d| d.to_rfc3339()),
+        finished_at: rt.finished_at.map(|d| d.to_rfc3339()),
+        error: rt.error.clone(),
+    }
+}
