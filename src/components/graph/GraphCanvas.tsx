@@ -107,8 +107,14 @@ function GraphCanvasInner() {
   // Ref the latest nodes so the recenter callback identity doesn't churn on
   // every snapshot update. Effects that depend on recenter would otherwise
   // cancel their pending rAFs before the structural frame got a chance to fit.
+  // The ref is synced in a layout effect (not during render) so the write is
+  // observable and ordered — React runs layout effects in declaration order,
+  // so this one fires before the recenter effect below and every call to
+  // `recenter` reads the nodes value from the same render cycle.
   const nodesRef = useRef(nodes);
-  nodesRef.current = nodes;
+  useLayoutEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
 
   const recenter = useCallback(
     (duration = 300) => {
