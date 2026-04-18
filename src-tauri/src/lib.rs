@@ -4,6 +4,7 @@ mod ipc;
 mod repo;
 mod settings;
 mod storage;
+mod worktree;
 
 use std::sync::Arc;
 
