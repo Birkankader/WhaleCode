@@ -13,3 +13,11 @@ export const AGENT_LABEL: Record<AgentKind, string> = {
   gemini: 'Gemini',
   codex: 'Codex',
 };
+
+/** Full CLI names — used in TopBar and Footer where space is not constrained. */
+export const AGENT_FULL_LABEL: Record<AgentKind, string> = {
+  master: 'Master',
+  claude: 'Claude Code',
+  gemini: 'Gemini CLI',
+  codex: 'Codex CLI',
+};

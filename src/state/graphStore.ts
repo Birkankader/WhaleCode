@@ -47,11 +47,13 @@ export type GraphState = {
   subtasks: SubtaskNodeData[];
   finalNode: FinalNodeData | null;
   status: GraphStatus;
+  selectedMasterAgent: AgentKind;
   selectedSubtaskIds: Set<string>;
   nodeActors: Map<string, NodeActorRef>;
   nodeSnapshots: Map<string, NodeSnapshot>;
   nodeLogs: Map<string, string[]>;
 
+  setMasterAgent: (agent: AgentKind) => void;
   submitTask: (input: string, masterAgent?: AgentKind) => void;
   proposeSubtasks: (subtasks: Array<Omit<SubtaskNodeData, 'logs'>>) => void;
   toggleSubtaskSelection: (id: string) => void;
@@ -75,6 +77,7 @@ const initial: Pick<
   | 'subtasks'
   | 'finalNode'
   | 'status'
+  | 'selectedMasterAgent'
   | 'selectedSubtaskIds'
   | 'nodeActors'
   | 'nodeSnapshots'
@@ -86,6 +89,7 @@ const initial: Pick<
   subtasks: [],
   finalNode: null,
   status: 'idle',
+  selectedMasterAgent: 'claude',
   selectedSubtaskIds: new Set(),
   nodeActors: new Map(),
   nodeSnapshots: new Map(),
@@ -132,14 +136,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
   return {
     ...initial,
 
-    submitTask(input, masterAgent = 'master') {
+    setMasterAgent(agent) {
+      set({ selectedMasterAgent: agent });
+    },
+
+    submitTask(input, masterAgent) {
+      const agent = masterAgent ?? get().selectedMasterAgent;
       get().reset();
       const masterActor = registerActor(MASTER_ID);
       masterActor.send({ type: 'THINK' });
       set({
         runId: newRunId(),
         taskInput: input,
-        masterNode: { id: MASTER_ID, agent: masterAgent, label: 'Master' },
+        masterNode: { id: MASTER_ID, agent, label: 'Master' },
+        selectedMasterAgent: agent,
         status: 'planning',
       });
     },

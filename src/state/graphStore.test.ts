@@ -55,9 +55,15 @@ describe('graphStore — submitTask', () => {
     expect(snap(MASTER_ID)?.value).toBe('thinking');
   });
 
-  it('defaults masterAgent to "master"', () => {
+  it('defaults masterAgent to the store-selected master ("claude" initially)', () => {
     state().submitTask('x');
-    expect(state().masterNode?.agent).toBe('master');
+    expect(state().masterNode?.agent).toBe('claude');
+  });
+
+  it('setMasterAgent updates the pre-submit default picked up by submitTask', () => {
+    state().setMasterAgent('gemini');
+    state().submitTask('x');
+    expect(state().masterNode?.agent).toBe('gemini');
   });
 });
 
