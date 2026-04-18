@@ -4,6 +4,7 @@ import { ApprovalBar } from './components/approval/ApprovalBar';
 import { GraphCanvas } from './components/graph/GraphCanvas';
 import { AgentSetupState } from './components/setup/AgentSetupState';
 import { EmptyState } from './components/shell/EmptyState';
+import { ErrorBanner } from './components/shell/ErrorBanner';
 import { Footer } from './components/shell/Footer';
 import { RepoPicker } from './components/shell/RepoPicker';
 import { TopBar } from './components/shell/TopBar';
@@ -51,8 +52,9 @@ export default function App() {
     <WindowTooSmall>
       <div className="flex h-screen w-screen flex-col bg-bg-primary text-fg-primary">
         <TopBar />
-        <main className="relative flex-1 overflow-hidden">
-          {body}
+        <main className="relative flex flex-1 flex-col overflow-hidden">
+          <ErrorBanner />
+          <div className="relative flex-1 overflow-hidden">{body}</div>
           <ApprovalBar />
         </main>
         <Footer />

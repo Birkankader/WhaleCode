@@ -272,6 +272,7 @@ function dataFor(
       state,
       label: structure.finalNode.label,
       files: structure.finalNode.files,
+      conflictFiles: structure.finalNode.conflictFiles,
     };
   }
   const st = structure.subtasks.find((s) => s.id === id);

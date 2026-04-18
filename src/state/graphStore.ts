@@ -133,6 +133,7 @@ export type GraphState = {
   applyRun: () => Promise<void>;
   discardRun: () => Promise<void>;
   cancelRun: () => Promise<void>;
+  dismissError: () => void;
   reset: () => void;
 };
 
@@ -583,6 +584,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
         set({ currentError: `Cancel failed: ${String(err)}` });
         throw err;
       }
+    },
+
+    dismissError() {
+      set({ currentError: null });
     },
 
     reset() {
