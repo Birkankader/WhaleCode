@@ -1,5 +1,6 @@
 mod agents;
 mod detection;
+mod gitignore;
 mod ipc;
 mod repo;
 mod settings;

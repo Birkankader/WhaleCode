@@ -202,6 +202,20 @@ impl WorktreeManager {
         }
         let base_branch = current_branch(&repo_root).await?;
         let worktrees_dir = repo_root.join(WORKTREES_DIRNAME);
+
+        // Teach the repo to ignore everything WhaleCode writes to disk.
+        // We do this at manager construction (not create()) so even a
+        // dry `list()` before any worktree exists leaves the repo in
+        // the right state. Failure here is advisory — if we can't
+        // write to `.git/info/exclude` (permissions, unusual git
+        // layout) the worktree still functions; the user just sees
+        // `.whalecode-worktrees/` in `git status`.
+        let _ = crate::gitignore::ensure_local_gitignore(
+            &repo_root,
+            &[".whalecode-worktrees/", ".whalecode/"],
+        )
+        .await;
+
         Ok(Self {
             repo_root,
             base_branch,
