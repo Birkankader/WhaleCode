@@ -28,7 +28,7 @@ export type LayoutNodeOutput = {
  */
 export const NODE_DIMENSIONS: Record<LayoutNodeKind, { width: number; height: number }> = {
   master: { width: 240, height: 80 },
-  worker: { width: 200, height: 72 },
+  worker: { width: 200, height: 140 },
   final: { width: 280, height: 148 },
 };
 

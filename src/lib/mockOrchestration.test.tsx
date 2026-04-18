@@ -1,5 +1,8 @@
+import { ReactFlowProvider } from '@xyflow/react';
+import { render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { WorkerNode, type WorkerNodeData } from '../components/nodes/WorkerNode';
 import { FINAL_ID, MASTER_ID, useGraphStore } from '../state/graphStore';
 import { runMockOrchestration } from './mockOrchestration';
 
@@ -83,6 +86,39 @@ describe('runMockOrchestration — integration', () => {
     expect(snap('tests')).toBe('done');
     // Master concluded the run in approved — no further actions pending.
     expect(snap(MASTER_ID)).toBe('approved');
+  });
+
+  it('renders streaming log lines inside the running subtask node', async () => {
+    useGraphStore.getState().submitTask('Scaffold settings page with dark mode');
+    const orch = runMockOrchestration('Scaffold settings page with dark mode', useGraphStore);
+
+    await vi.advanceTimersByTimeAsync(6500);
+    useGraphStore.getState().approveSubtasks(useGraphStore.getState().subtasks.map((s) => s.id));
+    // Auth starts +500 ms, first log written immediately on START → +500 ms.
+    await vi.advanceTimersByTimeAsync(800);
+
+    const authSnap = useGraphStore.getState().nodeSnapshots.get('auth');
+    expect(authSnap?.value).toBe('running');
+
+    // WorkerNode only reads { id, data } from NodeProps — cast keeps the test
+    // free of the full xyflow NodeProps surface area.
+    const NodeAsTest = WorkerNode as unknown as (props: {
+      id: string;
+      data: WorkerNodeData;
+    }) => ReturnType<typeof WorkerNode>;
+    const { getByText } = render(
+      <ReactFlowProvider>
+        <NodeAsTest
+          id="auth"
+          data={{ state: 'running', agent: 'claude', title: 'Settings page scaffold', retries: 0 }}
+        />
+      </ReactFlowProvider>,
+    );
+
+    expect(getByText(/Creating src\/pages\/Settings\.tsx/)).toBeInTheDocument();
+
+    orch.cancel();
+    await orch.done;
   });
 
   it('cancel() aborts the run: no further store transitions after cancel', async () => {

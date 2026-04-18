@@ -239,17 +239,19 @@ This function controls the entire demo. It's the scripted "play" that validates 
 export default function App() {
   const status = useGraphStore((s) => s.status);
   return (
-    <div className="h-screen bg-bg-primary text-fg-primary font-mono flex flex-col">
+    <div className="flex h-screen w-screen flex-col bg-bg-primary text-fg-primary">
       <TopBar />
-      <main className="flex-1 relative">
-        {status === 'idle' ? <EmptyState /> : <GraphCanvas />}
+      <main className="relative flex-1 overflow-hidden">
+        {status === 'idle' || status === 'applied' ? <EmptyState /> : <GraphCanvas />}
+        <ApprovalBar />
       </main>
-      {status === 'awaiting_approval' && <ApprovalBar />}
       <Footer />
     </div>
   );
 }
 ```
+
+ApprovalBar is an **overlay inside `<main>`**, not a sibling of `<Footer>`. That way the slide-up animation rides over the graph without reflowing the page when it appears/disappears, and `AnimatePresence` inside the bar can own its own visibility based on `status === 'awaiting_approval'`. EmptyState also renders on `applied` so the Apply-to-branch flow loops cleanly back to a fresh prompt.
 
 ### Step 11: Polish pass
 

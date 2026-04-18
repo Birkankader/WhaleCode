@@ -182,6 +182,17 @@ export function runMockOrchestration(_taskInput: string, store: GraphStore): Orc
     await runHappySubtask(id, durationMs, logs);
   }
 
+  // Dispatch IIFEs are consumed by Promise.all below, but cancel() can reject
+  // them before Promise.all attaches. Swallow here so the CANCELLED rejection
+  // doesn't surface as an unhandled-rejection — Promise.all still sees it via
+  // the original promise handles.
+  const swallowCancel = (p: Promise<void>) => {
+    p.catch((err) => {
+      if (err !== CANCELLED) throw err;
+    });
+    return p;
+  };
+
   const done = (async () => {
     try {
       // ─── Planning phase: master streams logs, then proposes 4 subtasks. ───
@@ -196,31 +207,39 @@ export function runMockOrchestration(_taskInput: string, store: GraphStore): Orc
       await awaitApproval();
 
       // ─── Dispatch: staggered starts, one dep-aware. ───
-      const authRun = (async () => {
-        await schedule(500);
-        await runHappySubtask('auth', 2000, LOGS.auth);
-      })();
+      const authRun = swallowCancel(
+        (async () => {
+          await schedule(500);
+          await runHappySubtask('auth', 2000, LOGS.auth);
+        })(),
+      );
 
-      const toggleRun = (async () => {
-        await schedule(1000);
-        await runRetrySubtask('toggle-ui', 2000, 1500, LOGS.toggleUiFirst, LOGS.toggleUiRetry);
-      })();
+      const toggleRun = swallowCancel(
+        (async () => {
+          await schedule(1000);
+          await runRetrySubtask('toggle-ui', 2000, 1500, LOGS.toggleUiFirst, LOGS.toggleUiRetry);
+        })(),
+      );
 
-      const wireRun = (async () => {
-        await schedule(1500);
-        await runDoubleFailSubtask(
-          'wire-toggle',
-          2000,
-          1500,
-          LOGS.wireToggleFirst,
-          LOGS.wireToggleRetry,
-        );
-      })();
+      const wireRun = swallowCancel(
+        (async () => {
+          await schedule(1500);
+          await runDoubleFailSubtask(
+            'wire-toggle',
+            2000,
+            1500,
+            LOGS.wireToggleFirst,
+            LOGS.wireToggleRetry,
+          );
+        })(),
+      );
 
-      const testsRun = (async () => {
-        await schedule(2000);
-        await runDependentHappy('tests', 'auth', 2000, LOGS.tests);
-      })();
+      const testsRun = swallowCancel(
+        (async () => {
+          await schedule(2000);
+          await runDependentHappy('tests', 'auth', 2000, LOGS.tests);
+        })(),
+      );
 
       // ─── Layer 2 re-plan: wait for wire-toggle to escalate. ───
       await awaitNodeState('wire-toggle', 'escalating');
@@ -234,10 +253,12 @@ export function runMockOrchestration(_taskInput: string, store: GraphStore): Orc
       // ─── Approval gate 2. ───
       await awaitApproval();
 
-      const replacementRun = (async () => {
-        await schedule(500);
-        await runHappySubtask('retheme', 2000, LOGS.retheme);
-      })();
+      const replacementRun = swallowCancel(
+        (async () => {
+          await schedule(500);
+          await runHappySubtask('retheme', 2000, LOGS.retheme);
+        })(),
+      );
 
       await Promise.all([authRun, toggleRun, wireRun, testsRun, replacementRun]);
 
@@ -289,48 +310,48 @@ const REPLACEMENT_SUBTASKS: readonly SubtaskDef[] = [
 ];
 
 const PLANNING_LOGS = [
-  'Reading project structure...',
-  'Detected mono-repo (4 packages)...',
-  'Identifying settings page components...',
-  'Planning subtasks...',
+  '→ Reading project structure...',
+  '→ Detected mono-repo (4 packages)...',
+  '→ Identifying settings page components...',
+  '✓ Planning subtasks...',
 ] as const;
 
 const REPLAN_LOGS = [
-  'Reviewing failure on wire-toggle...',
-  'Theme dispatch contract changed — adjusting plan...',
-  'Drafting replacement subtask...',
+  '→ Reviewing failure on wire-toggle...',
+  '⚠ Theme dispatch contract changed — adjusting plan...',
+  '✓ Drafting replacement subtask...',
 ] as const;
 
 const LOGS = {
   auth: [
-    'Creating src/pages/Settings.tsx...',
-    'Wiring route in App.tsx...',
-    'Adding session guard...',
+    '→ Creating src/pages/Settings.tsx...',
+    '→ Wiring route in App.tsx...',
+    '✓ Adding session guard...',
   ],
   toggleUiFirst: [
-    'Reading existing theme components...',
-    'Drafting DarkModeToggle.tsx...',
-    'Type mismatch on useTheme() — aborting.',
+    '→ Reading existing theme components...',
+    '→ Drafting DarkModeToggle.tsx...',
+    '⚠ Type mismatch on useTheme() — aborting.',
   ],
   toggleUiRetry: [
-    'Regenerating component against theme typings...',
-    'Rendering toggle in Settings page...',
+    '→ Regenerating component against theme typings...',
+    '✓ Rendering toggle in Settings page...',
   ],
   wireToggleFirst: [
-    'Reading theme store interface...',
-    'Attempting dispatch wiring...',
-    'Runtime error: setTheme is not a function.',
+    '→ Reading theme store interface...',
+    '→ Attempting dispatch wiring...',
+    '✗ Runtime error: setTheme is not a function.',
   ],
-  wireToggleRetry: ['Patching import path...', 'Retrying dispatch — still failing.'],
+  wireToggleRetry: ['→ Patching import path...', '✗ Retrying dispatch — still failing.'],
   tests: [
-    'Scaffolding settings.spec.tsx...',
-    'Rendering Settings with MemoryRouter...',
-    'Asserting toggle persists theme...',
+    '→ Scaffolding settings.spec.tsx...',
+    '→ Rendering Settings with MemoryRouter...',
+    '✓ Asserting toggle persists theme...',
   ],
   retheme: [
-    'Adopting useTheme() hook contract...',
-    'Wiring toggle through hook instead of store...',
-    'Verifying persistence layer...',
+    '→ Adopting useTheme() hook contract...',
+    '→ Wiring toggle through hook instead of store...',
+    '✓ Verifying persistence layer...',
   ],
 } as const;
 
