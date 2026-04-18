@@ -1,6 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 
-import { runMockOrchestration } from '../../lib/mockOrchestration';
 import { useGraphStore } from '../../state/graphStore';
 
 const TITLE = 'WhaleCode';
@@ -10,20 +9,28 @@ const SHORTCUTS: readonly string[] = ['⌘K', '⌘H', '⌘T', '⌘,'];
 
 export function EmptyState() {
   const submitTask = useGraphStore((s) => s.submitTask);
-  const setOrchestrationCancel = useGraphStore((s) => s.setOrchestrationCancel);
   const [value, setValue] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  function launch(trimmed: string) {
-    submitTask(trimmed);
-    const handle = runMockOrchestration(trimmed, useGraphStore);
-    setOrchestrationCancel(handle.cancel);
+  async function launch(trimmed: string) {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await submitTask(trimmed);
+    } catch (err) {
+      // `submitTask` has already surfaced the error via `currentError`; the
+      // banner (Commit 3) renders it. Swallow to avoid an unhandled rejection.
+      console.error('[EmptyState] submitTask failed', err);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = value.trim();
     if (!trimmed) return;
-    launch(trimmed);
+    void launch(trimmed);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
@@ -31,7 +38,7 @@ export function EmptyState() {
       e.preventDefault();
       const trimmed = value.trim();
       if (!trimmed) return;
-      launch(trimmed);
+      void launch(trimmed);
     }
   }
 
@@ -50,7 +57,8 @@ export function EmptyState() {
           onKeyDown={handleKeyDown}
           placeholder={PLACEHOLDER}
           autoFocus
-          className="mt-12 w-full rounded-lg border border-border-default bg-bg-elevated px-5 py-[18px] text-[20px] text-fg-primary placeholder:text-fg-secondary focus:border-[var(--color-agent-master)] focus:outline-none"
+          disabled={submitting}
+          className="mt-12 w-full rounded-lg border border-border-default bg-bg-elevated px-5 py-[18px] text-[20px] text-fg-primary placeholder:text-fg-secondary focus:border-[var(--color-agent-master)] focus:outline-none disabled:opacity-60"
           aria-label={PLACEHOLDER}
         />
 

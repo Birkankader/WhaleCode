@@ -51,39 +51,26 @@ describe('nodeMachine — waiting / blocked', () => {
   });
 });
 
-describe('nodeMachine — retry path', () => {
-  it('first FAIL in running → retrying, retries becomes 1', () => {
+describe('nodeMachine — failure path', () => {
+  // Phase 2: MAX_RETRIES = 0, so FAIL from running routes directly to failed
+  // via the second transition branch (canRetry guard is always false). The
+  // `retrying` state is reserved for Phase 3's backend-driven retry ladder
+  // and is unreachable from the default context.
+  it('FAIL from running → failed, retries stays at 0', () => {
     const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL']);
-    expect(snap.value).toBe('retrying');
-    expect(snap.context.retries).toBe(1);
-  });
-
-  it('RETRY_SUCCESS from retrying → running, then COMPLETE → done', () => {
-    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'RETRY_SUCCESS', 'COMPLETE']);
-    expect(snap.value).toBe('done');
-    expect(snap.context.retries).toBe(1);
-  });
-
-  it('FAIL after retry → failed (guard blocks second retry)', () => {
-    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'RETRY_SUCCESS', 'FAIL']);
     expect(snap.value).toBe('failed');
-    expect(snap.context.retries).toBe(1);
-  });
-
-  it('FAIL from retrying (before retry attempt completes) → failed', () => {
-    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'FAIL']);
-    expect(snap.value).toBe('failed');
+    expect(snap.context.retries).toBe(0);
   });
 });
 
 describe('nodeMachine — escalation path', () => {
   it('failed → escalating → done via REPLAN_DONE', () => {
-    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'FAIL', 'ESCALATE', 'REPLAN_DONE']);
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'ESCALATE', 'REPLAN_DONE']);
     expect(snap.value).toBe('done');
   });
 
   it('failed → escalating → human_escalation via HUMAN_NEEDED', () => {
-    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'FAIL', 'ESCALATE', 'HUMAN_NEEDED']);
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'ESCALATE', 'HUMAN_NEEDED']);
     expect(snap.value).toBe('human_escalation');
   });
 
@@ -92,7 +79,6 @@ describe('nodeMachine — escalation path', () => {
       'PROPOSE',
       'APPROVE',
       'START',
-      'FAIL',
       'FAIL',
       'ESCALATE',
       'HUMAN_NEEDED',
@@ -106,7 +92,6 @@ describe('nodeMachine — escalation path', () => {
       'PROPOSE',
       'APPROVE',
       'START',
-      'FAIL',
       'FAIL',
       'ESCALATE',
       'HUMAN_NEEDED',

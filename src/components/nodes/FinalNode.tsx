@@ -19,7 +19,7 @@ export function FinalNode({ data }: NodeProps) {
   const activated = d.state === 'done' || d.state === 'running';
   const dotColor = activated ? 'var(--color-status-success)' : 'var(--color-fg-tertiary)';
   const applyRun = useGraphStore((s) => s.applyRun);
-  const reset = useGraphStore((s) => s.reset);
+  const discardRun = useGraphStore((s) => s.discardRun);
 
   return (
     <NodeContainer
@@ -50,10 +50,10 @@ export function FinalNode({ data }: NodeProps) {
         ) : null}
       </ul>
       <footer className="mt-auto flex items-center justify-end gap-2">
-        <Button variant="ghost" disabled={!activated} onClick={reset}>
+        <Button variant="ghost" disabled={!activated} onClick={() => void discardRun()}>
           Discard all
         </Button>
-        <Button variant="primary" disabled={!activated} onClick={applyRun}>
+        <Button variant="primary" disabled={!activated} onClick={() => void applyRun()}>
           Apply to branch
         </Button>
       </footer>

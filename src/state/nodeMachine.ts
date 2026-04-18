@@ -37,7 +37,13 @@ export type NodeContext = {
   maxRetries: number;
 };
 
-export const MAX_RETRIES = 1;
+// Phase 2: retry decisions live in the backend, not the frontend machine.
+// The `retrying` state is currently unreachable — backend's `failed` means
+// terminal, so FAIL from `running` routes directly to `failed` via the
+// second transition branch. Phase 3 will refactor this to be backend-driven
+// (entered on backend SubtaskState::Retrying, exited on backend Done/Failed),
+// at which point this constant becomes obsolete.
+export const MAX_RETRIES = 0;
 
 export const nodeMachine = setup({
   types: {
