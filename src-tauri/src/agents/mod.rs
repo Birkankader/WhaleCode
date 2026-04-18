@@ -160,4 +160,20 @@ pub trait AgentImpl: Send + Sync {
         log_tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError>;
+
+    /// Free-form prompt → response. Used by the notes module to ask
+    /// the master to rewrite shared notes when they grow large, but
+    /// the method is general: anywhere we want the CLI to read text
+    /// and produce text without planning or writing files. Runs in
+    /// read-only permission mode — no tool use should occur.
+    ///
+    /// Return value: the model's raw response body, stripped of any
+    /// CLI-specific envelope. Empty-string on valid-but-empty
+    /// response (e.g. if the model produced only whitespace). Caller
+    /// decides what "too short" means.
+    async fn summarize(
+        &self,
+        prompt: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, AgentError>;
 }

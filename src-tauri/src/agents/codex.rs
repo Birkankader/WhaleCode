@@ -157,6 +157,39 @@ impl AgentImpl for CodexAdapter {
             files_changed,
         })
     }
+
+    async fn summarize(
+        &self,
+        prompt: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, AgentError> {
+        // Read-only sandbox — no files should change during a notes
+        // consolidation.
+        let args = vec![
+            "exec".into(),
+            "--json".into(),
+            "--skip-git-repo-check".into(),
+            "--sandbox".into(),
+            "read-only".into(),
+        ];
+        let spec = RunSpec {
+            binary: &self.binary,
+            args,
+            cwd: None,
+            stdin: Some(prompt.to_string()),
+            timeout: DEFAULT_PLAN_TIMEOUT,
+            log_tx: None,
+            cancel,
+        };
+        let out = run_streaming(spec).await?;
+        if out.exit_code != Some(0) {
+            return Err(classify_nonzero(out.exit_code, out.signal, &out.stderr));
+        }
+        last_agent_message(&out.stdout).ok_or_else(|| AgentError::ParseFailed {
+            reason: "no `item.completed` agent_message event in Codex JSONL stream".to_string(),
+            raw_output: out.stdout.clone(),
+        })
+    }
 }
 
 // -- JSONL envelope parsing ------------------------------------------

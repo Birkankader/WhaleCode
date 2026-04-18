@@ -159,6 +159,33 @@ impl AgentImpl for ClaudeAdapter {
             files_changed,
         })
     }
+
+    async fn summarize(
+        &self,
+        prompt: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, AgentError> {
+        // Same envelope as plan, same read-only permission mode — we
+        // want Claude to think and emit text, not touch any files.
+        let args = vec![
+            "--print".into(),
+            "--output-format".into(),
+            "json".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+        ];
+        let spec = RunSpec {
+            binary: &self.binary,
+            args,
+            cwd: None,
+            stdin: Some(prompt.to_string()),
+            timeout: DEFAULT_PLAN_TIMEOUT,
+            log_tx: None,
+            cancel,
+        };
+        let out = run_streaming(spec).await?;
+        handle_summarize_output(out)
+    }
 }
 
 // -- Envelope parsing -----------------------------------------------
@@ -208,6 +235,27 @@ fn handle_plan_output(
         raw_output: out.stdout.clone(),
     })?;
     parse_and_validate(&body, available_workers)
+}
+
+/// Same envelope shape as the plan path, but no fenced-JSON extraction
+/// — the `result` field *is* the model's free-form text response.
+fn handle_summarize_output(out: ChildOutput) -> Result<String, AgentError> {
+    if out.exit_code != Some(0) {
+        return Err(classify_nonzero(out.exit_code, out.signal, &out.stderr));
+    }
+    let envelope: ClaudeEnvelope =
+        serde_json::from_str(out.stdout.trim()).map_err(|e| AgentError::ParseFailed {
+            reason: format!("envelope didn't match Claude's --output-format json shape: {e}"),
+            raw_output: out.stdout.clone(),
+        })?;
+    if envelope.is_error {
+        return Err(AgentError::TaskFailed {
+            reason: envelope
+                .subtype
+                .unwrap_or_else(|| "claude reported is_error=true".to_string()),
+        });
+    }
+    Ok(envelope.result.unwrap_or_default())
 }
 
 // -- Formatting helpers ----------------------------------------------

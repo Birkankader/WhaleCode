@@ -162,6 +162,41 @@ impl AgentImpl for GeminiAdapter {
             files_changed,
         })
     }
+
+    async fn summarize(
+        &self,
+        prompt: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, AgentError> {
+        let args = vec![
+            "--output-format".into(),
+            "json".into(),
+            "--approval-mode".into(),
+            "plan".into(),
+        ];
+        let spec = RunSpec {
+            binary: &self.binary,
+            args,
+            cwd: None,
+            stdin: Some(prompt.to_string()),
+            timeout: DEFAULT_PLAN_TIMEOUT,
+            log_tx: None,
+            cancel,
+        };
+        let out = run_streaming(spec).await?;
+        if out.exit_code != Some(0) {
+            return Err(classify_nonzero(out.exit_code, out.signal, &out.stderr));
+        }
+        let envelope: GeminiEnvelope =
+            serde_json::from_str(out.stdout.trim()).map_err(|e| AgentError::ParseFailed {
+                reason: format!("envelope didn't match Gemini's --output-format json shape: {e}"),
+                raw_output: out.stdout.clone(),
+            })?;
+        if let Some(err) = envelope.error {
+            return Err(AgentError::TaskFailed { reason: err });
+        }
+        Ok(envelope.response.unwrap_or_default())
+    }
 }
 
 // -- Envelope parsing -----------------------------------------------

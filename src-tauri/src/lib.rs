@@ -2,6 +2,7 @@ mod agents;
 mod detection;
 mod gitignore;
 mod ipc;
+mod orchestration;
 mod repo;
 mod settings;
 mod storage;
