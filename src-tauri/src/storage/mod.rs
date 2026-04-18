@@ -121,8 +121,10 @@ impl Storage {
     /// populated (a) when the run finalizes to `Failed` with the
     /// failure reason, and (b) while the run is in `Merging` with
     /// the last merge attempt's conflict summary. Consumers
-    /// disambiguate by reading `status` alongside. Phase 6 may split
-    /// this into a dedicated `conflict_files` column.
+    /// disambiguate by reading `status` alongside. Writes are
+    /// last-write-wins — a retry-then-cancel sequence leaves the last
+    /// conflict summary on the Cancelled row. Phase 4 will revisit by
+    /// splitting this into a dedicated `conflict_files` column.
     pub async fn update_run_error(&self, id: &str, error: Option<&str>) -> StorageResult<()> {
         let res = sqlx::query("UPDATE runs SET error = ? WHERE id = ?")
             .bind(error)
@@ -178,6 +180,22 @@ impl Storage {
              FROM runs ORDER BY started_at DESC LIMIT ?",
         )
         .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(row_to_run).collect()
+    }
+
+    /// Runs whose status is non-terminal: anything the orchestrator
+    /// would own if the app hadn't crashed. Used by startup recovery
+    /// to mark them `Failed` and sweep any worktrees they left behind.
+    pub async fn list_active_runs(&self) -> StorageResult<Vec<Run>> {
+        let rows = sqlx::query(
+            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error \
+             FROM runs \
+             WHERE status IN ('planning', 'awaiting-approval', 'running', 'merging') \
+             ORDER BY started_at ASC",
+        )
         .fetch_all(&self.pool)
         .await?;
 

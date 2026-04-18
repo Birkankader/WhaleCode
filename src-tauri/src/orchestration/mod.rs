@@ -145,6 +145,67 @@ impl Orchestrator {
         self.apply_timeout = d;
     }
 
+    /// Sweep storage + disk for runs that were active when the app
+    /// last exited. Each is marked `Failed` with a crash-recovery
+    /// error message; its worktree directory is pruned; its shared
+    /// notes file is cleared. Returns the number of runs recovered.
+    ///
+    /// Contract: boot must not fail on recovery errors. A dead or
+    /// moved repo, a dropped SD card, a permissions glitch — we log
+    /// and carry on. Full state-restore-and-resume is out of scope for
+    /// Phase 2 (see phase-2-spec.md); this only prevents silent disk
+    /// accumulation and stale `Running` rows across restarts.
+    pub async fn recover_active_runs(&self) -> usize {
+        let active = match self.storage.list_active_runs().await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[orchestrator] recovery: list_active_runs failed: {e}");
+                return 0;
+            }
+        };
+        let count = active.len();
+        for run in active {
+            let now = chrono::Utc::now();
+            let err_msg = "App restarted while run was active";
+            if let Err(e) = self
+                .storage
+                .finish_run(&run.id, RunStatus::Failed, now, Some(err_msg))
+                .await
+            {
+                eprintln!("[orchestrator] recovery: finish_run({}) failed: {e}", run.id);
+            }
+            let repo_path = PathBuf::from(&run.repo_path);
+            match crate::worktree::WorktreeManager::new(repo_path.clone()).await {
+                Ok(mgr) => {
+                    if let Err(e) = mgr.cleanup_orphans_on_startup().await {
+                        eprintln!(
+                            "[orchestrator] recovery: cleanup_orphans_on_startup({}) failed: {e}",
+                            run.repo_path
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Dead repo, moved directory, detached HEAD — log
+                    // and move on. Nothing we can clean anyway.
+                    eprintln!(
+                        "[orchestrator] recovery: WorktreeManager::new({}) failed: {e}",
+                        run.repo_path
+                    );
+                }
+            }
+            // SharedNotes::new is infallible (doesn't touch disk until
+            // init/append/clear); clear is idempotent wrt missing file.
+            let notes = notes::SharedNotes::new(&repo_path);
+            if let Err(e) = notes.clear().await {
+                eprintln!(
+                    "[orchestrator] recovery: notes.clear({}) failed: {e}",
+                    run.repo_path
+                );
+            }
+        }
+        count
+    }
+
     // -- Read APIs -------------------------------------------------------
 
     pub async fn get_run(&self, id: &RunId) -> Option<Arc<RwLock<RunState>>> {
@@ -364,6 +425,10 @@ mod init_tests {
     use super::*;
     use crate::detection::Detector;
     use crate::orchestration::events::RecordingEventSink;
+    use crate::storage::models::NewRun;
+    use chrono::Utc;
+    use tempfile::TempDir;
+    use tokio::process::Command as TokioCommand;
 
     async fn make() -> Orchestrator {
         let settings = Arc::new(SettingsStore::load_at(PathBuf::from(
@@ -377,10 +442,165 @@ mod init_tests {
         Orchestrator::new(settings, storage, sink, registry)
     }
 
+    /// Orchestrator + in-memory Storage + recording sink, plus a real
+    /// git repo in a `TempDir` so worktree ops work. Returns the repo
+    /// path so tests can seed disk state before calling recovery.
+    async fn make_with_repo() -> (Orchestrator, Arc<Storage>, TempDir, PathBuf) {
+        let repo = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "--initial-branch=main"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            TokioCommand::new("git")
+                .args(&args)
+                .current_dir(repo.path())
+                .output()
+                .await
+                .unwrap();
+        }
+        tokio::fs::write(repo.path().join("seed.txt"), "x").await.unwrap();
+        TokioCommand::new("git")
+            .args(["add", "."])
+            .current_dir(repo.path())
+            .output()
+            .await
+            .unwrap();
+        TokioCommand::new("git")
+            .args(["commit", "-m", "seed"])
+            .current_dir(repo.path())
+            .output()
+            .await
+            .unwrap();
+
+        let settings = Arc::new(SettingsStore::load_at(repo.path().join("settings.json")));
+        let storage = Arc::new(Storage::in_memory().await.unwrap());
+        let sink = Arc::new(RecordingEventSink::default());
+        let registry = Arc::new(DefaultAgentRegistry::new(Arc::new(Detector::new(
+            settings.clone(),
+        ))));
+        let orch = Orchestrator::new(settings, storage.clone(), sink, registry);
+        let repo_path = repo.path().to_path_buf();
+        (orch, storage, repo, repo_path)
+    }
+
+    async fn seed_active_run(
+        storage: &Storage,
+        id: &str,
+        repo_path: &str,
+        status: RunStatus,
+    ) {
+        storage
+            .insert_run(&NewRun {
+                id: id.into(),
+                task: "seeded".into(),
+                repo_path: repo_path.into(),
+                master_agent: AgentKind::Claude,
+                status,
+                started_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn new_orchestrator_starts_empty() {
         let orch = make().await;
         assert_eq!(orch.active_run_count().await, 0);
         assert!(orch.get_run(&"nope".into()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn recover_active_runs_marks_failed_and_cleans_disk() {
+        let (orch, storage, _repo, repo_path) = make_with_repo().await;
+        seed_active_run(
+            &storage,
+            "01RUNNING",
+            &repo_path.to_string_lossy(),
+            RunStatus::Running,
+        )
+        .await;
+
+        // Simulate a crashed run's residue: an orphan worktree dir and
+        // a shared-notes file.
+        let wt_dir = repo_path.join(".whalecode-worktrees").join("01RUNNING").join("sub1");
+        tokio::fs::create_dir_all(&wt_dir).await.unwrap();
+        tokio::fs::write(wt_dir.join("marker"), "x").await.unwrap();
+        let notes_dir = repo_path.join(".whalecode");
+        tokio::fs::create_dir_all(&notes_dir).await.unwrap();
+        let notes_file = notes_dir.join("notes.md");
+        tokio::fs::write(&notes_file, "stale notes\n").await.unwrap();
+
+        let recovered = orch.recover_active_runs().await;
+        assert_eq!(recovered, 1);
+
+        let row = storage.get_run("01RUNNING").await.unwrap().unwrap();
+        assert_eq!(row.status, RunStatus::Failed);
+        assert_eq!(
+            row.error.as_deref(),
+            Some("App restarted while run was active")
+        );
+        assert!(row.finished_at.is_some());
+        assert!(
+            !repo_path.join(".whalecode-worktrees").exists(),
+            "worktrees dir should be swept by recovery"
+        );
+        assert!(!notes_file.exists(), "notes file should be cleared");
+    }
+
+    #[tokio::test]
+    async fn recover_tolerates_dead_repo_path() {
+        // No repo on disk — the path in `repo_path` doesn't exist.
+        let settings = Arc::new(SettingsStore::load_at(PathBuf::from(
+            "/tmp/whalecode-settings-never-written.json",
+        )));
+        let storage = Arc::new(Storage::in_memory().await.unwrap());
+        let sink = Arc::new(RecordingEventSink::default());
+        let registry = Arc::new(DefaultAgentRegistry::new(Arc::new(Detector::new(
+            settings.clone(),
+        ))));
+        let orch = Orchestrator::new(settings, storage.clone(), sink, registry);
+
+        seed_active_run(
+            &storage,
+            "01DEADPATH",
+            "/nonexistent/path/that/does/not/exist",
+            RunStatus::Merging,
+        )
+        .await;
+
+        // Must not panic or propagate error.
+        let recovered = orch.recover_active_runs().await;
+        assert_eq!(recovered, 1);
+
+        let row = storage.get_run("01DEADPATH").await.unwrap().unwrap();
+        assert_eq!(row.status, RunStatus::Failed);
+        assert_eq!(
+            row.error.as_deref(),
+            Some("App restarted while run was active")
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_handles_multiple_active_runs_in_same_repo() {
+        let (orch, storage, _repo, repo_path) = make_with_repo().await;
+        let repo_str = repo_path.to_string_lossy().to_string();
+        seed_active_run(&storage, "01PLANNING", &repo_str, RunStatus::Planning).await;
+        seed_active_run(&storage, "02AWAITING", &repo_str, RunStatus::AwaitingApproval).await;
+        seed_active_run(&storage, "03MERGING", &repo_str, RunStatus::Merging).await;
+
+        // Orphan worktree from one of them.
+        let wt = repo_path.join(".whalecode-worktrees").join("03MERGING").join("sub1");
+        tokio::fs::create_dir_all(&wt).await.unwrap();
+
+        let recovered = orch.recover_active_runs().await;
+        assert_eq!(recovered, 3);
+
+        for id in ["01PLANNING", "02AWAITING", "03MERGING"] {
+            let row = storage.get_run(id).await.unwrap().unwrap();
+            assert_eq!(row.status, RunStatus::Failed, "{id} should be Failed");
+        }
+        // Cleanup ran (idempotent across repeated calls for the same repo).
+        assert!(!repo_path.join(".whalecode-worktrees").exists());
     }
 }
