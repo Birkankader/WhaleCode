@@ -377,22 +377,15 @@ async fn merge_phase(
                         return;
                     }
                     MergeStepOutcome::Failed(err) => {
-                        // Non-conflict merge failure — clean up, fail.
-                        let _ = notes.clear().await;
-                        if let Err(e) = worktree_mgr.cleanup_all().await {
-                            eprintln!("[orchestrator] cleanup_all after merge failure: {e}");
-                        }
+                        // Non-conflict merge failure. `finalize_failed`
+                        // owns the notes + worktree cleanup.
                         finalize_failed(deps, run, err).await;
                         return;
                     }
                     MergeStepOutcome::Cancelled => {
                         // Cancel observed during merge itself: per
                         // spec, let git finish (already did) then
-                        // clean up as Cancelled.
-                        let _ = notes.clear().await;
-                        if let Err(e) = worktree_mgr.cleanup_all().await {
-                            eprintln!("[orchestrator] cleanup_all after cancel: {e}");
-                        }
+                        // finalize. `finalize_cancelled` owns cleanup.
                         finalize_cancelled(deps, run, CancelReason::UserCancelled).await;
                         return;
                     }
@@ -844,15 +837,23 @@ async fn finalize_rejected(deps: &LifecycleDeps, run: &Arc<RwLock<Run>>) {
 }
 
 async fn finalize_cancelled(deps: &LifecycleDeps, run: &Arc<RwLock<Run>>, reason: CancelReason) {
-    let (run_id, notes) = {
+    let (run_id, notes, worktree_mgr) = {
         let mut guard = run.write().await;
         guard.status = RunStatus::Cancelled;
         guard.finished_at = Some(Utc::now());
-        (guard.id.clone(), guard.notes.clone())
+        (
+            guard.id.clone(),
+            guard.notes.clone(),
+            guard.worktree_mgr.clone(),
+        )
     };
-    // The notes file may not exist if we cancelled mid-planning —
-    // `clear()` is idempotent, NotInitialized is ignored here.
+    // Every terminal path clears notes + worktrees so disk state
+    // doesn't silently accumulate. Both are best-effort: a cleanup
+    // failure is logged but must not block the terminal transition.
     let _ = notes.clear().await;
+    if let Err(e) = worktree_mgr.cleanup_all().await {
+        eprintln!("[orchestrator] cleanup_all on cancel: {e}");
+    }
     let log_line = match reason {
         CancelReason::UserCancelled => "run cancelled by user".to_string(),
         CancelReason::ApprovalTimeout => "approval timed out; auto-cancelled".to_string(),
@@ -879,12 +880,23 @@ async fn finalize_cancelled(deps: &LifecycleDeps, run: &Arc<RwLock<Run>>, reason
 }
 
 async fn finalize_failed(deps: &LifecycleDeps, run: &Arc<RwLock<Run>>, error: String) {
-    let run_id = {
+    let (run_id, notes, worktree_mgr) = {
         let mut guard = run.write().await;
         guard.status = RunStatus::Failed;
         guard.finished_at = Some(Utc::now());
-        guard.id.clone()
+        (
+            guard.id.clone(),
+            guard.notes.clone(),
+            guard.worktree_mgr.clone(),
+        )
     };
+    // Same cleanup discipline as finalize_cancelled: always try to
+    // tear down notes + worktrees, log on failure, proceed with the
+    // terminal transition regardless.
+    let _ = notes.clear().await;
+    if let Err(e) = worktree_mgr.cleanup_all().await {
+        eprintln!("[orchestrator] cleanup_all on failure: {e}");
+    }
     if let Err(e) = deps
         .storage
         .finish_run(&run_id, RunStatus::Failed, Utc::now(), Some(&error))

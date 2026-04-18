@@ -826,6 +826,79 @@ async fn cancel_during_dispatch_transitions_to_cancelled() {
     assert_eq!(stored.status, RunStatus::Cancelled);
 }
 
+#[tokio::test]
+async fn cancel_during_running_cleans_up_worktrees() {
+    // Regression: finalize_cancelled must tear down the worktrees the
+    // dispatcher created between approval and cancel. Before the fix
+    // these leaked on disk silently.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(2)))
+        .await
+        .with_execute_default(ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cancel-during-running".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+
+    // Let the dispatcher spawn at least one worker so a worktree is
+    // actually on disk — otherwise the assertion below is a tautology.
+    let wt_dir = h.repo_path.join(".whalecode-worktrees");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !wt_dir.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(wt_dir.exists(), "dispatcher should have created a worktree");
+
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    assert!(!wt_dir.exists(), "worktrees must be cleaned after cancel");
+    assert!(!h.repo_path.join(".whalecode/notes.md").exists());
+}
+
+#[tokio::test]
+async fn worker_failure_cleans_up_worktrees() {
+    // Regression: finalize_failed must tear down worktrees the
+    // dispatcher created for the failing (and any in-flight) subtask.
+    // Before the fix these leaked on disk.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom".into()))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("worker-fail".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+
+    h.await_status(&run_id, RunStatus::Failed).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Failed);
+    assert!(stored.error.as_deref().unwrap_or_default().contains("boom"));
+    assert!(
+        !h.repo_path.join(".whalecode-worktrees").exists(),
+        "worktrees must be cleaned after worker failure"
+    );
+    assert!(!h.repo_path.join(".whalecode/notes.md").exists());
+}
+
 // -- 8d: merge / apply / discard / cancel paths ------------------------
 //
 // These tests drive the run through to Merging and then exercise
