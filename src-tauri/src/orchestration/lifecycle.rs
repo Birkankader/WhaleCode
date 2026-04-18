@@ -32,14 +32,18 @@
 //!   orchestrator's active map so a subsequent lookup returns
 //!   `None`. SQLite retains the record.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::{AgentError, AgentImpl, Plan};
-use crate::ipc::{RunId, RunStatus, SubtaskData, SubtaskId, SubtaskState};
+use crate::ipc::{
+    FileDiff as IpcFileDiff, RunId, RunStatus, RunSummary, SubtaskData, SubtaskId, SubtaskState,
+};
 use crate::orchestration::context::build_planning_context;
 use crate::orchestration::dispatcher::{run_dispatcher, DispatchOutcome, DispatcherDeps};
 use crate::orchestration::events::{EventSink, RunEvent};
@@ -49,6 +53,7 @@ use crate::orchestration::run::{Run, SubtaskRuntime};
 use crate::orchestration::{APPROVAL_TIMEOUT, MAX_CONCURRENT_WORKERS};
 use crate::storage::models::NewSubtask;
 use crate::storage::Storage;
+use crate::worktree::{DependencyGraph, FileDiff, MergeResult, WorktreeError, WorktreeManager};
 
 /// What `approve_subtasks`/`reject_run` send into the waiting task.
 #[derive(Debug)]
@@ -58,6 +63,17 @@ pub enum ApprovalDecision {
     Approve { subtask_ids: Vec<SubtaskId> },
     /// User rejected the plan outright.
     Reject,
+}
+
+/// What `apply_run`/`discard_run` send into the merge-phase waiter.
+#[derive(Debug)]
+pub enum ApplyDecision {
+    /// User accepted the aggregated diff — merge branches into
+    /// `base_branch`, clean up, transition to `Done`.
+    Apply,
+    /// User rejected the diff (or walked away) — no merge, drop
+    /// branches + worktrees, transition to `Rejected`.
+    Discard,
 }
 
 /// Why the run ended up cancelled. Shapes the final event so the UI
@@ -75,16 +91,26 @@ pub struct LifecycleDeps {
     pub storage: Arc<Storage>,
     pub event_sink: Arc<dyn EventSink>,
     pub registry: Arc<dyn AgentRegistry>,
+    /// Shared back-reference to the Orchestrator's apply-decision
+    /// sender map. On conflict the merge phase reinstalls a fresh
+    /// sender here so the next `apply_run`/`discard_run` has somewhere
+    /// to land.
+    pub apply_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<ApplyDecision>>>>,
+    /// How long to wait on the apply/discard decision before auto-
+    /// discarding. Plumbed through from the orchestrator so tests can
+    /// shrink it without changing the global constant.
+    pub apply_timeout: std::time::Duration,
 }
 
 /// Entry point for the per-run background task. Consumes the
-/// `approval_rx` it was spawned with; returns nothing (errors are
-/// converted into events + persisted status).
+/// `approval_rx` and `apply_rx` it was spawned with; returns nothing
+/// (errors are converted into events + persisted status).
 pub async fn run_lifecycle(
     deps: LifecycleDeps,
     run: Arc<RwLock<Run>>,
     master: Arc<dyn AgentImpl>,
     approval_rx: oneshot::Receiver<ApprovalDecision>,
+    apply_rx: oneshot::Receiver<ApplyDecision>,
 ) {
     let (run_id, repo_root, cancel, notes, task_text, master_kind) = {
         let r = run.read().await;
@@ -182,9 +208,9 @@ pub async fn run_lifecycle(
                 DispatchOutcome::AllDone => {
                     if let Err(e) = transition_to_merging(&deps, &run).await {
                         finalize_failed(&deps, &run, e).await;
+                        return;
                     }
-                    // Actual merge/apply/discard lands in 8d; the run
-                    // parks in Merging until that ships.
+                    merge_phase(&deps, &run, apply_rx).await;
                 }
                 DispatchOutcome::Failed { error } => {
                     finalize_failed(&deps, &run, error).await;
@@ -195,6 +221,417 @@ pub async fn run_lifecycle(
             }
         }
     }
+}
+
+// -- Merge phase -----------------------------------------------------
+
+/// Outcome of one pass through the apply/discard loop. `Retry` means
+/// we hit a conflict, emitted `MergeConflict`, and are waiting for the
+/// user's next click.
+enum MergeStepOutcome {
+    Applied(MergeResult),
+    Discarded,
+    Cancelled,
+    Failed(String),
+    /// Apply hit a conflict; worktrees and notes preserved, apply
+    /// oneshot reinstalled. Loop again to wait for the next click.
+    Retry,
+}
+
+/// Drive the run from `Merging` to its terminal state.
+///
+/// Flow:
+/// 1. Aggregate diffs across all `Done` subtasks (dedupe by path,
+///    last-wins). Emit `DiffReady`.
+/// 2. Wait on the apply oneshot (or cancel / timeout).
+/// 3. On Apply: call `merge_all`. `Ok` → clean up + Done + `Completed`;
+///    `MergeConflict` → reinstall oneshot, keep Merging, emit
+///    `MergeConflict`, loop; other `Err` → clean up + Failed.
+/// 4. On Discard or timeout: clean up, no merge, → Rejected.
+/// 5. On cancel while waiting: behave like Discard but terminal state
+///    is Cancelled.
+async fn merge_phase(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    apply_rx: oneshot::Receiver<ApplyDecision>,
+) {
+    let (run_id, cancel, worktree_mgr, notes, started_at) = {
+        let r = run.read().await;
+        (
+            r.id.clone(),
+            r.cancel_token.clone(),
+            r.worktree_mgr.clone(),
+            r.notes.clone(),
+            r.started_at,
+        )
+    };
+
+    // -- Aggregate diffs across Done subtasks ------------------------
+    // "Last-in-iteration-order wins" — iterate the subtask vec in
+    // insertion order (plan order) and overwrite.
+    let done_ids: Vec<SubtaskId> = {
+        let r = run.read().await;
+        r.subtasks
+            .iter()
+            .filter(|s| s.is_done())
+            .map(|s| s.id.clone())
+            .collect()
+    };
+
+    let mut by_path: HashMap<PathBuf, FileDiff> = HashMap::new();
+    let mut order: Vec<PathBuf> = Vec::new();
+    for sub_id in &done_ids {
+        let diffs = match worktree_mgr.diff(sub_id).await {
+            Ok(d) => d,
+            Err(e) => {
+                // A single subtask's diff failing is logged and skipped
+                // rather than failing the whole merge — the other
+                // subtasks may still merge cleanly. If everything
+                // failed the user sees an empty DiffReady and can
+                // discard.
+                deps.event_sink
+                    .emit(RunEvent::MasterLog {
+                        run_id: run_id.clone(),
+                        line: format!("diff for {sub_id} failed: {e}"),
+                    })
+                    .await;
+                continue;
+            }
+        };
+        for fd in diffs {
+            if !by_path.contains_key(&fd.path) {
+                order.push(fd.path.clone());
+            }
+            by_path.insert(fd.path.clone(), fd);
+        }
+    }
+    let wire_files: Vec<IpcFileDiff> = order
+        .iter()
+        .filter_map(|p| by_path.get(p).map(worktree_to_ipc_diff))
+        .collect();
+
+    deps.event_sink
+        .emit(RunEvent::DiffReady {
+            run_id: run_id.clone(),
+            files: wire_files,
+        })
+        .await;
+
+    // -- Wait loop. On MergeConflict we reinstall a fresh oneshot ----
+    // and wait again for the user's next click.
+    let mut current_rx = apply_rx;
+    loop {
+        let decision = tokio::select! {
+            d = &mut current_rx => match d {
+                Ok(d) => d,
+                // Sender dropped mid-flight (shouldn't happen outside
+                // of shutdown); treat as Discard so we don't hang.
+                Err(_) => ApplyDecision::Discard,
+            },
+            _ = cancel.cancelled() => {
+                // Cancel while waiting: discard path with Cancelled
+                // terminal state.
+                finalize_discard(deps, run, run_id.clone(), worktree_mgr.clone(), notes.clone(), TerminalOnDiscard::Cancelled).await;
+                return;
+            }
+            _ = tokio::time::sleep(deps.apply_timeout) => {
+                deps.event_sink.emit(RunEvent::MasterLog {
+                    run_id: run_id.clone(),
+                    line: format!(
+                        "apply timed out after {}s; auto-discarding.",
+                        deps.apply_timeout.as_secs()
+                    ),
+                }).await;
+                finalize_discard(deps, run, run_id.clone(), worktree_mgr.clone(), notes.clone(), TerminalOnDiscard::Rejected).await;
+                return;
+            }
+        };
+
+        match decision {
+            ApplyDecision::Discard => {
+                finalize_discard(
+                    deps,
+                    run,
+                    run_id.clone(),
+                    worktree_mgr.clone(),
+                    notes.clone(),
+                    TerminalOnDiscard::Rejected,
+                )
+                .await;
+                return;
+            }
+            ApplyDecision::Apply => {
+                match apply_step(deps, run, &run_id, &worktree_mgr).await {
+                    MergeStepOutcome::Applied(res) => {
+                        finalize_applied(
+                            deps,
+                            run,
+                            &run_id,
+                            &worktree_mgr,
+                            &notes,
+                            &done_ids,
+                            &res,
+                            started_at,
+                        )
+                        .await;
+                        return;
+                    }
+                    MergeStepOutcome::Failed(err) => {
+                        // Non-conflict merge failure — clean up, fail.
+                        let _ = notes.clear().await;
+                        if let Err(e) = worktree_mgr.cleanup_all().await {
+                            eprintln!("[orchestrator] cleanup_all after merge failure: {e}");
+                        }
+                        finalize_failed(deps, run, err).await;
+                        return;
+                    }
+                    MergeStepOutcome::Cancelled => {
+                        // Cancel observed during merge itself: per
+                        // spec, let git finish (already did) then
+                        // clean up as Cancelled.
+                        let _ = notes.clear().await;
+                        if let Err(e) = worktree_mgr.cleanup_all().await {
+                            eprintln!("[orchestrator] cleanup_all after cancel: {e}");
+                        }
+                        finalize_cancelled(deps, run, CancelReason::UserCancelled).await;
+                        return;
+                    }
+                    MergeStepOutcome::Retry => {
+                        // Conflict: reinstall a fresh oneshot sender
+                        // into the shared map so the UI's next click
+                        // has somewhere to land. `apply_senders` is
+                        // on the Orchestrator, which we don't hold a
+                        // handle to — but `submit_task` already stored
+                        // one for us; that sender was consumed when
+                        // the user clicked Apply. Reinstall.
+                        let (new_tx, new_rx) = oneshot::channel();
+                        install_apply_sender(deps, &run_id, new_tx).await;
+                        current_rx = new_rx;
+                        // Loop back to wait on the new receiver.
+                        continue;
+                    }
+                    MergeStepOutcome::Discarded => {
+                        // Unreachable from apply_step, but keeps the
+                        // match exhaustive for future changes.
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Perform one `merge_all` attempt. Returns `Applied` on success,
+/// `Retry` on MergeConflict (conflict is emitted + error persisted),
+/// `Failed` on other git errors, `Cancelled` if the run's cancel token
+/// fired mid-merge.
+async fn apply_step(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    worktree_mgr: &Arc<WorktreeManager>,
+) -> MergeStepOutcome {
+    // Collect ids + dep graph of the Done subtasks.
+    let (ids, graph) = build_merge_inputs(run).await;
+
+    // merge_all itself is not cancel-aware (the whole op is a handful
+    // of git commands). Per spec: let it finish, then decide.
+    let res = worktree_mgr.merge_all(&ids, &graph).await;
+    match res {
+        Ok(r) => {
+            // If cancel fired while git was running, treat as cancel
+            // and clean up accordingly.
+            if run.read().await.cancel_token.is_cancelled() {
+                return MergeStepOutcome::Cancelled;
+            }
+            MergeStepOutcome::Applied(r)
+        }
+        Err(WorktreeError::MergeConflict { files }) => {
+            let summary = conflict_summary(&files);
+            // Record conflict on the run row. Storage semantics for
+            // `error` when `status == Merging` are "last merge
+            // attempt's conflict summary". Phase 6 may split this
+            // into its own column.
+            if let Err(e) = deps
+                .storage
+                .update_run_error(run_id, Some(&summary))
+                .await
+            {
+                eprintln!("[orchestrator] update_run_error(conflict) failed: {e}");
+            }
+            deps.event_sink
+                .emit(RunEvent::MergeConflict {
+                    run_id: run_id.clone(),
+                    files,
+                })
+                .await;
+            MergeStepOutcome::Retry
+        }
+        Err(e) => MergeStepOutcome::Failed(format!("merge_all: {e}")),
+    }
+}
+
+/// Finalize a successful Apply: cleanup, mark Done, emit Completed.
+#[allow(clippy::too_many_arguments)]
+async fn finalize_applied(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    worktree_mgr: &Arc<WorktreeManager>,
+    notes: &Arc<SharedNotes>,
+    done_ids: &[SubtaskId],
+    res: &MergeResult,
+    started_at: chrono::DateTime<Utc>,
+) {
+    let _ = notes.clear().await;
+    if let Err(e) = worktree_mgr.cleanup_all().await {
+        // Log but continue — the run succeeded; cleanup failure is
+        // advisory. `cleanup_orphans_on_startup` sweeps leftovers.
+        deps.event_sink
+            .emit(RunEvent::MasterLog {
+                run_id: run_id.clone(),
+                line: format!("cleanup_all: {e}"),
+            })
+            .await;
+    }
+    let now = Utc::now();
+    {
+        let mut guard = run.write().await;
+        guard.status = RunStatus::Done;
+        guard.finished_at = Some(now);
+    }
+    if let Err(e) = deps
+        .storage
+        // `Done` overwrites any prior conflict summary in `error`.
+        .finish_run(run_id, RunStatus::Done, now, None)
+        .await
+    {
+        eprintln!("[orchestrator] finish_run(done) failed: {e}");
+    }
+    let summary = RunSummary {
+        run_id: run_id.clone(),
+        subtask_count: done_ids.len() as u32,
+        files_changed: res.files_changed.len() as u32,
+        duration_secs: (now - started_at).num_seconds().max(0) as u64,
+        commits_created: res.commits_created as u32,
+    };
+    deps.event_sink
+        .emit(RunEvent::Completed {
+            run_id: run_id.clone(),
+            summary,
+        })
+        .await;
+    deps.event_sink
+        .emit(RunEvent::StatusChanged {
+            run_id: run_id.clone(),
+            status: RunStatus::Done,
+        })
+        .await;
+}
+
+/// Finalize a Discard / timeout / cancel-while-waiting. Same cleanup
+/// steps; terminal status and emitted event differ by `mode`.
+enum TerminalOnDiscard {
+    Rejected,
+    Cancelled,
+}
+
+async fn finalize_discard(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: RunId,
+    worktree_mgr: Arc<WorktreeManager>,
+    notes: Arc<SharedNotes>,
+    mode: TerminalOnDiscard,
+) {
+    let _ = notes.clear().await;
+    if let Err(e) = worktree_mgr.cleanup_all().await {
+        deps.event_sink
+            .emit(RunEvent::MasterLog {
+                run_id: run_id.clone(),
+                line: format!("cleanup_all on discard: {e}"),
+            })
+            .await;
+    }
+    match mode {
+        TerminalOnDiscard::Rejected => {
+            let now = Utc::now();
+            {
+                let mut guard = run.write().await;
+                guard.status = RunStatus::Rejected;
+                guard.finished_at = Some(now);
+            }
+            if let Err(e) = deps
+                .storage
+                .finish_run(&run_id, RunStatus::Rejected, now, None)
+                .await
+            {
+                eprintln!("[orchestrator] finish_run(rejected-discard) failed: {e}");
+            }
+            deps.event_sink
+                .emit(RunEvent::StatusChanged {
+                    run_id,
+                    status: RunStatus::Rejected,
+                })
+                .await;
+        }
+        TerminalOnDiscard::Cancelled => {
+            finalize_cancelled(deps, run, CancelReason::UserCancelled).await;
+        }
+    }
+}
+
+async fn build_merge_inputs(run: &Arc<RwLock<Run>>) -> (Vec<String>, DependencyGraph) {
+    let guard = run.read().await;
+    let ids: Vec<String> = guard
+        .subtasks
+        .iter()
+        .filter(|s| s.is_done())
+        .map(|s| s.id.clone())
+        .collect();
+    let done_set: std::collections::HashSet<&String> = ids.iter().collect();
+    let mut graph = DependencyGraph::new();
+    for s in guard.subtasks.iter().filter(|s| s.is_done()) {
+        // Only keep deps that also ended in Done — a skipped/failed
+        // dependency has no branch to merge first.
+        let deps: Vec<String> = s
+            .dependency_ids
+            .iter()
+            .filter(|d| done_set.contains(*d))
+            .cloned()
+            .collect();
+        graph.insert(s.id.clone(), deps);
+    }
+    (ids, graph)
+}
+
+fn worktree_to_ipc_diff(fd: &FileDiff) -> IpcFileDiff {
+    IpcFileDiff {
+        path: fd.path.to_string_lossy().into_owned(),
+        additions: fd.additions as u32,
+        deletions: fd.deletions as u32,
+    }
+}
+
+fn conflict_summary(files: &[PathBuf]) -> String {
+    let joined = files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("merge conflict in {} file(s): {joined}", files.len())
+}
+
+/// Store a fresh apply-decision sender so the next `apply_run` /
+/// `discard_run` click has somewhere to land. The Orchestrator's
+/// `apply_senders` map is shared through [`LifecycleDeps`]; this is a
+/// simple insert into it, replacing any stale sender.
+async fn install_apply_sender(
+    deps: &LifecycleDeps,
+    run_id: &RunId,
+    tx: oneshot::Sender<ApplyDecision>,
+) {
+    deps.apply_senders.lock().await.insert(run_id.clone(), tx);
 }
 
 /// Flip the run to Merging. 8d's merge logic reads this as its cue to

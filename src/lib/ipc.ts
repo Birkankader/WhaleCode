@@ -89,10 +89,10 @@ export type FileDiff = z.infer<typeof fileDiffSchema>;
 
 export const runSummarySchema = z.object({
   runId: runIdSchema,
-  subtasksTotal: z.number().int().nonnegative(),
-  subtasksDone: z.number().int().nonnegative(),
-  subtasksFailed: z.number().int().nonnegative(),
+  subtaskCount: z.number().int().nonnegative(),
   filesChanged: z.number().int().nonnegative(),
+  durationSecs: z.number().int().nonnegative(),
+  commitsCreated: z.number().int().nonnegative(),
 });
 export type RunSummary = z.infer<typeof runSummarySchema>;
 

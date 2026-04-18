@@ -99,14 +99,20 @@ pub struct FileDiff {
     pub deletions: u32,
 }
 
+/// What the frontend sees on `run:completed`. Intentionally lean:
+/// Phase 6 adds cost tracking, Phase 3 will add retry stats.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     pub run_id: RunId,
-    pub subtasks_total: u32,
-    pub subtasks_done: u32,
-    pub subtasks_failed: u32,
+    /// Subtasks that actually ran (approved minus cascade-skipped).
+    pub subtask_count: u32,
+    /// Unique file paths touched by the merged result.
     pub files_changed: u32,
+    /// Wall-clock `finished_at - started_at` in whole seconds.
+    pub duration_secs: u64,
+    /// One commit per merged subtask (from `MergeResult::commits_created`).
+    pub commits_created: u32,
 }
 

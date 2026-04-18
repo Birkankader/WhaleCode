@@ -43,7 +43,7 @@ mod tests;
 
 #[allow(unused_imports)]
 pub use events::{EventSink, RunEvent, TauriEventSink};
-pub use lifecycle::ApprovalDecision;
+pub use lifecycle::{ApplyDecision, ApprovalDecision};
 #[allow(unused_imports)]
 pub use registry::{AgentRegistry, DefaultAgentRegistry, RegistryError};
 #[allow(unused_imports)]
@@ -60,6 +60,11 @@ pub const MAX_CONCURRENT_WORKERS: usize = 4;
 /// How long to wait for the user to approve or reject a plan before
 /// auto-rejecting.
 pub const APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// How long to wait for the user to apply or discard the aggregated
+/// diff before auto-discarding. Matches [`APPROVAL_TIMEOUT`] — same
+/// "user walked away" semantics, same budget.
+pub const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Errors the orchestrator surfaces to IPC command callers. Each
 /// carries a human-readable message so the frontend can show an
@@ -101,7 +106,15 @@ pub struct Orchestrator {
     /// the lifecycle task's own cleanup — the sender just stops being
     /// reachable without ever having fired.
     pub(crate) approval_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<ApprovalDecision>>>>,
+    /// Pending apply/discard channels. Created just before the merge
+    /// phase starts; `apply_run` / `discard_run` take and `send()` on
+    /// the sender. Same drop semantics as `approval_senders`.
+    pub(crate) apply_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<ApplyDecision>>>>,
     pub(crate) max_concurrent_workers: usize,
+    /// How long the merge phase waits on the apply/discard decision
+    /// before auto-discarding. Defaults to [`APPLY_TIMEOUT`]; tests
+    /// override this so the timeout path is observable in seconds.
+    pub(crate) apply_timeout: std::time::Duration,
 }
 
 impl Orchestrator {
@@ -118,8 +131,18 @@ impl Orchestrator {
             registry,
             runs: Arc::new(Mutex::new(HashMap::new())),
             approval_senders: Arc::new(Mutex::new(HashMap::new())),
+            apply_senders: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_workers: MAX_CONCURRENT_WORKERS,
+            apply_timeout: APPLY_TIMEOUT,
         }
+    }
+
+    /// Test-only knob: shrink the apply-decision timeout so the
+    /// auto-discard path is reachable without actually sleeping for
+    /// 30 minutes. Not exposed outside the crate.
+    #[cfg(test)]
+    pub(crate) fn set_apply_timeout(&mut self, d: std::time::Duration) {
+        self.apply_timeout = d;
     }
 
     // -- Read APIs -------------------------------------------------------
@@ -202,23 +225,33 @@ impl Orchestrator {
             .await
             .insert(run_id.clone(), approval_tx);
 
+        let (apply_tx, apply_rx) = oneshot::channel();
+        self.apply_senders
+            .lock()
+            .await
+            .insert(run_id.clone(), apply_tx);
+
         let deps = LifecycleDeps {
             storage: self.storage.clone(),
             event_sink: self.event_sink.clone(),
             registry: self.registry.clone(),
+            apply_senders: self.apply_senders.clone(),
+            apply_timeout: self.apply_timeout,
         };
         let runs_map = self.runs.clone();
         let approval_senders = self.approval_senders.clone();
+        let apply_senders = self.apply_senders.clone();
         let task_run_id = run_id.clone();
         tokio::spawn(async move {
-            run_lifecycle(deps, run_arc, master, approval_rx).await;
+            run_lifecycle(deps, run_arc, master, approval_rx, apply_rx).await;
             // Lifecycle is finished (whatever the outcome); remove
             // from the active map so lookups surface None. The
-            // sender map may or may not still contain an entry
-            // depending on how we exited — drop it too for good
+            // sender maps may or may not still contain entries
+            // depending on how we exited — drop them too for good
             // measure.
             runs_map.lock().await.remove(&task_run_id);
             approval_senders.lock().await.remove(&task_run_id);
+            apply_senders.lock().await.remove(&task_run_id);
         });
 
         Ok(run_id)
@@ -265,6 +298,48 @@ impl Orchestrator {
                 run_id: run_id.clone(),
                 state: RunStatus::AwaitingApproval,
                 expected: "awaiting-approval",
+            })?;
+        Ok(())
+    }
+
+    /// User clicked Apply on the aggregated diff. The lifecycle is
+    /// parked in `Merging`; we send `Apply` to its waiter so it starts
+    /// the merge. Errors surface `RunNotFound` (no such in-flight run)
+    /// or `WrongState` (run moved past Merging before the click
+    /// landed — e.g. timed out into auto-discard).
+    pub async fn apply_run(&self, run_id: &RunId) -> Result<(), OrchestratorError> {
+        let sender = self
+            .apply_senders
+            .lock()
+            .await
+            .remove(run_id)
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        sender
+            .send(ApplyDecision::Apply)
+            .map_err(|_| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::Merging,
+                expected: "merging",
+            })?;
+        Ok(())
+    }
+
+    /// User clicked Discard on the aggregated diff. Same plumbing as
+    /// [`apply_run`]; lifecycle cleans up worktrees and finalizes to
+    /// Rejected without merging.
+    pub async fn discard_run(&self, run_id: &RunId) -> Result<(), OrchestratorError> {
+        let sender = self
+            .apply_senders
+            .lock()
+            .await
+            .remove(run_id)
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        sender
+            .send(ApplyDecision::Discard)
+            .map_err(|_| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::Merging,
+                expected: "merging",
             })?;
         Ok(())
     }

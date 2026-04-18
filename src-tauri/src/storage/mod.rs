@@ -111,6 +111,30 @@ impl Storage {
         Ok(())
     }
 
+    /// Overwrite the `error` column on a run row without changing
+    /// status or timestamps. Used by the orchestrator's merge phase
+    /// to record a conflict summary while the run is still in
+    /// `Merging` (it hasn't failed yet — the user may retry or
+    /// discard).
+    ///
+    /// Semantics note: the `error` column is dual-purpose. It is
+    /// populated (a) when the run finalizes to `Failed` with the
+    /// failure reason, and (b) while the run is in `Merging` with
+    /// the last merge attempt's conflict summary. Consumers
+    /// disambiguate by reading `status` alongside. Phase 6 may split
+    /// this into a dedicated `conflict_files` column.
+    pub async fn update_run_error(&self, id: &str, error: Option<&str>) -> StorageResult<()> {
+        let res = sqlx::query("UPDATE runs SET error = ? WHERE id = ?")
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(StorageError::NotFound(format!("run {id}")));
+        }
+        Ok(())
+    }
+
     /// Marks the run terminal: sets `status`, `finished_at`, and (optionally)
     /// `error`. Use for `done`, `failed`, `rejected`.
     pub async fn finish_run(

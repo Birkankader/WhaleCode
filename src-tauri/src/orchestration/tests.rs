@@ -36,6 +36,13 @@ use crate::storage::Storage;
 enum ExecuteScript {
     /// Succeed after `delay`, with this summary.
     Ok { summary: String, delay: Duration },
+    /// Write `files` (path relative to worktree → content) into the
+    /// worktree, `git add` + `git commit`, then succeed. Lets merge-
+    /// phase tests exercise real git branches with real commits on them.
+    OkWrite {
+        summary: String,
+        files: Vec<(PathBuf, String)>,
+    },
     /// Fail synchronously with this error string.
     Fail(String),
     /// Block on `cancel` forever; only returns [`AgentError::Cancelled`]
@@ -221,6 +228,47 @@ impl AgentImpl for ScriptedAgent {
                     files_changed: vec![],
                 })
             }
+            ExecuteScript::OkWrite { summary, files } => {
+                // Write each file under the worktree and commit the
+                // result. `merge_all` needs a real branch with real
+                // commits to merge; without this the worktree branch
+                // stays at base and merge becomes a no-op.
+                for (rel, content) in &files {
+                    let abs = _worktree_path.join(rel);
+                    if let Some(parent) = abs.parent() {
+                        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                            AgentError::TaskFailed {
+                                reason: format!("mkdir {}: {e}", parent.display()),
+                            }
+                        })?;
+                    }
+                    tokio::fs::write(&abs, content).await.map_err(|e| {
+                        AgentError::TaskFailed {
+                            reason: format!("write {}: {e}", abs.display()),
+                        }
+                    })?;
+                }
+                TokioCommand::new("git")
+                    .args(["add", "."])
+                    .current_dir(_worktree_path)
+                    .output()
+                    .await
+                    .map_err(|e| AgentError::TaskFailed {
+                        reason: format!("git add: {e}"),
+                    })?;
+                TokioCommand::new("git")
+                    .args(["commit", "-m", &format!("scripted: {}", subtask.title)])
+                    .current_dir(_worktree_path)
+                    .output()
+                    .await
+                    .map_err(|e| AgentError::TaskFailed {
+                        reason: format!("git commit: {e}"),
+                    })?;
+                Ok(ExecutionResult {
+                    summary,
+                    files_changed: files.iter().map(|(p, _)| p.clone()).collect(),
+                })
+            }
             ExecuteScript::Fail(msg) => Err(AgentError::TaskFailed { reason: msg }),
             ExecuteScript::Block => {
                 cancel.cancelled().await;
@@ -278,6 +326,13 @@ struct Harness {
 
 impl Harness {
     async fn new(agent: ScriptedAgent) -> Self {
+        Self::new_with_apply_timeout(agent, None).await
+    }
+
+    async fn new_with_apply_timeout(
+        agent: ScriptedAgent,
+        apply_timeout: Option<Duration>,
+    ) -> Self {
         let repo = tempfile::tempdir().unwrap();
         // Initialize a real git repo so WorktreeManager::new succeeds.
         for args in [
@@ -314,12 +369,15 @@ impl Harness {
             agent,
             vec![AgentKind::Claude, AgentKind::Codex],
         ));
-        let orch = Orchestrator::new(
+        let mut orch = Orchestrator::new(
             settings,
             storage.clone(),
             sink.clone() as Arc<dyn EventSink>,
             registry,
         );
+        if let Some(t) = apply_timeout {
+            orch.set_apply_timeout(t);
+        }
         // macOS /var → /private/var symlink; canonicalize so
         // assertions against `repo_path` match what the orchestrator
         // sees after `WorktreeManager` normalizes it.
@@ -651,8 +709,11 @@ async fn dispatcher_respects_dependency_order() {
 
 #[tokio::test]
 async fn dispatcher_respects_concurrency_cap() {
-    // 6 independent subtasks, each sleeping 50ms. Cap is 4 (constant
-    // in mod.rs). Probe should observe a peak of at most 4.
+    // 6 independent subtasks, each sleeping 250ms. Cap is 4 (constant
+    // in mod.rs). Probe should observe a peak of at most 4. Delay is
+    // generous because the full suite spawns git subprocesses on every
+    // merge-phase test — if the scheduler is starved the probe can see
+    // serialized execution otherwise.
     let probe = Arc::new(ConcurrencyProbe::default());
     let empty: &[usize] = &[];
     let titles: Vec<(&str, &[usize])> = vec![
@@ -674,7 +735,7 @@ async fn dispatcher_respects_concurrency_cap() {
                 t,
                 ExecuteScript::Ok {
                     summary: format!("{t} done"),
-                    delay: Duration::from_millis(50),
+                    delay: Duration::from_millis(250),
                 },
             )
             .await;
@@ -763,6 +824,412 @@ async fn cancel_during_dispatch_transitions_to_cancelled() {
 
     let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
     assert_eq!(stored.status, RunStatus::Cancelled);
+}
+
+// -- 8d: merge / apply / discard / cancel paths ------------------------
+//
+// These tests drive the run through to Merging and then exercise
+// apply/discard/cancel/timeout. Each uses `ExecuteScript::OkWrite` so
+// every subtask has a real branch with real commits for `merge_all` to
+// walk. Assertions target terminal storage state, event transcript, and
+// on-disk cleanup.
+
+/// Approve every proposed subtask, then wait for Merging. Waits for
+/// AwaitingApproval first so we query storage after the lifecycle task
+/// has persisted the subtasks.
+async fn approve_all(h: &Harness, run_id: &RunId) {
+    h.await_status(run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(run_id, ids).await.unwrap();
+    h.await_status(run_id, RunStatus::Merging).await;
+}
+
+/// Build a scripted agent whose execute for `title` writes `files`
+/// into the worktree and commits.
+async fn agent_writing(specs: &[(&str, Vec<(&str, &str)>)]) -> ScriptedAgent {
+    let titles: Vec<(&str, &[usize])> = specs.iter().map(|(t, _)| (*t, &[][..])).collect();
+    let mut agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&titles)))
+        .await;
+    for (title, files) in specs {
+        agent = agent
+            .with_execute(
+                title,
+                ExecuteScript::OkWrite {
+                    summary: format!("{title} done"),
+                    files: files
+                        .iter()
+                        .map(|(p, c)| (PathBuf::from(*p), (*c).to_string()))
+                        .collect(),
+                },
+            )
+            .await;
+    }
+    agent
+}
+
+/// Extract a single event matching the closure, `panic!`-ing with the
+/// full transcript if none is present. Used to hunt for DiffReady /
+/// Completed payloads.
+async fn expect_event<F, T>(h: &Harness, run_id: &RunId, matcher: F) -> T
+where
+    F: Fn(&RunEvent) -> Option<T>,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let snap = h.sink.snapshot().await;
+        if let Some(found) = snap
+            .iter()
+            .filter(|e| e.run_id() == run_id)
+            .find_map(&matcher)
+        {
+            return found;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("event not found on {run_id}. Transcript: {snap:#?}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn apply_happy_path_reaches_done_with_summary() {
+    let agent = agent_writing(&[
+        ("t0", vec![("a.txt", "hello\n")]),
+        ("t1", vec![("b.txt", "world\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("two writes".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+
+    // Apply once DiffReady has been emitted.
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { files, .. } => Some(files.clone()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // Completed event payload.
+    let summary = expect_event(&h, &run_id, |e| match e {
+        RunEvent::Completed { summary, .. } => Some(summary.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(summary.subtask_count, 2);
+    assert_eq!(summary.commits_created, 2);
+    assert_eq!(summary.files_changed, 2);
+
+    // Storage terminal state.
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Done);
+    assert!(stored.finished_at.is_some());
+    assert!(stored.error.is_none());
+
+    // Worktrees cleaned up.
+    let wt_dir = h.repo_path.join(".whalecode-worktrees");
+    assert!(!wt_dir.exists(), "worktrees dir should be gone after Done");
+    // Notes file gone.
+    assert!(!h.repo_path.join(".whalecode/notes.md").exists());
+    // Active runs map cleared.
+    assert!(h.orch.get_run(&run_id).await.is_none());
+
+    // Base branch actually contains the merged content.
+    assert_eq!(
+        tokio::fs::read_to_string(h.repo_path.join("a.txt"))
+            .await
+            .unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(h.repo_path.join("b.txt"))
+            .await
+            .unwrap(),
+        "world\n"
+    );
+}
+
+#[tokio::test]
+async fn apply_conflict_keeps_run_in_merging_and_emits_merge_conflict() {
+    // Two subtasks write the SAME file with DIFFERENT content →
+    // merge of the second branch conflicts.
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "line-from-t0\n")]),
+        ("t1", vec![("shared.txt", "line-from-t1\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("conflict".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+
+    // MergeConflict event fires.
+    let files = expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { files, .. } => Some(files.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(files.iter().any(|p| p.to_string_lossy() == "shared.txt"));
+
+    // Run is NOT terminal — stays in Merging, awaiting the user's next
+    // click. Give the lifecycle a beat to settle before asserting.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(h.orch.get_run(&run_id).await.is_some(), "run should still be active");
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Merging);
+    // Conflict summary persisted on the `error` column (dual-purpose
+    // for Merging-with-conflict, documented on Storage::update_run_error).
+    assert!(
+        stored
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("shared.txt"),
+        "error column should carry conflict summary, got {:?}",
+        stored.error
+    );
+
+    // Worktrees preserved so the user can inspect.
+    let wt_dir = h.repo_path.join(".whalecode-worktrees");
+    assert!(wt_dir.exists(), "worktrees should stay on conflict");
+
+    // Clean up: discard to let the task shut down.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn discard_after_conflict_reaches_rejected_and_cleans_up() {
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("conflict then discard".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Now discard. The merge phase reinstalled a fresh oneshot after
+    // the conflict, so this click lands cleanly.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Rejected);
+    let wt_dir = h.repo_path.join(".whalecode-worktrees");
+    assert!(!wt_dir.exists(), "worktrees should be cleaned on discard");
+    assert!(!h.repo_path.join(".whalecode/notes.md").exists());
+}
+
+#[tokio::test]
+async fn discard_before_merge_reaches_rejected() {
+    let agent = agent_writing(&[("t0", vec![("a.txt", "a\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("discard no merge".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Never call apply. Go straight to discard.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Rejected);
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+}
+
+#[tokio::test]
+async fn cancel_while_awaiting_apply_decision_reaches_cancelled() {
+    let agent = agent_writing(&[("t0", vec![("a.txt", "a\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cancel in merging".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Cancelled);
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+}
+
+#[tokio::test]
+async fn cancel_after_apply_click_still_reaches_cancelled() {
+    // Cancel fires after apply_run but merge_all is tiny so it
+    // generally completes first — we check the run_id disappears from
+    // the active map in either Cancelled or Done form. Per spec, once
+    // merge_all finishes we check the cancel token and route to
+    // Cancelled. This test accepts either terminal status as valid;
+    // the important invariant is the run finalizes and cleanup runs.
+    let agent = agent_writing(&[("t0", vec![("a.txt", "a\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cancel during merge".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Fire cancel and apply back-to-back. cancel_run is a no-op on an
+    // already-terminal run, so even if apply wins the race we still
+    // land in a valid terminal state.
+    h.orch.apply_run(&run_id).await.unwrap();
+    h.orch.cancel_run(&run_id).await.unwrap();
+
+    // Wait for *any* terminal state.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+        if matches!(
+            stored.status,
+            RunStatus::Cancelled | RunStatus::Done | RunStatus::Rejected
+        ) {
+            // Cleanup ran.
+            assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("run did not finalize, last status {:?}", stored.status);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn apply_timeout_auto_discards_to_rejected() {
+    let agent = agent_writing(&[("t0", vec![("a.txt", "a\n")])]).await;
+    // 200ms timeout — long enough to dispatch + merge-phase setup,
+    // short enough to observe.
+    let h = Harness::new_with_apply_timeout(agent, Some(Duration::from_millis(200))).await;
+
+    let run_id = h
+        .orch
+        .submit_task("timeout".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Don't click. Wait for auto-discard → Rejected.
+    h.await_status(&run_id, RunStatus::Rejected).await;
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Rejected);
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+}
+
+#[tokio::test]
+async fn diff_ready_deduplicates_paths_last_write_wins() {
+    // Two subtasks both touch `shared.txt`, but t1 depends on t0, so
+    // t1's branch is built on top of t0 (no conflict). DiffReady should
+    // list `shared.txt` exactly once.
+    let mut agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&[("t0", &[]), ("t1", &[0])])))
+        .await;
+    agent = agent
+        .with_execute(
+            "t0",
+            ExecuteScript::OkWrite {
+                summary: "t0".into(),
+                files: vec![(PathBuf::from("shared.txt"), "v0\n".into())],
+            },
+        )
+        .await
+        .with_execute(
+            "t1",
+            ExecuteScript::OkWrite {
+                summary: "t1".into(),
+                files: vec![(PathBuf::from("shared.txt"), "v1\n".into())],
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("dedup".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+
+    let files = expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { files, .. } => Some(files.clone()),
+        _ => None,
+    })
+    .await;
+    let shared_entries: Vec<_> = files.iter().filter(|f| f.path == "shared.txt").collect();
+    assert_eq!(
+        shared_entries.len(),
+        1,
+        "shared.txt must appear exactly once after dedup, got {files:#?}"
+    );
+
+    // Clean up.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
 }
 
 #[tokio::test]
