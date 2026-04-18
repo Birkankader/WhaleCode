@@ -83,13 +83,11 @@ export const useRepoStore = create<RepoState>((set, get) => ({
             });
             set({ settings: merged });
           } catch (err) {
-            // eslint-disable-next-line no-console
             console.error('[repoStore] auto-swap master failed', err);
           }
         }
       }
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[repoStore] init failed', err);
       set({ initializing: false });
     }
