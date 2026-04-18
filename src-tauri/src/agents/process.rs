@@ -205,6 +205,39 @@ fn first_meaningful_line(s: &str) -> Option<String> {
         .map(|l| l.to_string())
 }
 
+/// Run `git status --porcelain` inside `worktree` and return the set of
+/// paths with pending changes (working tree + index). Every adapter's
+/// `execute()` ends with this — it's more reliable than asking the
+/// agent to self-report what it touched.
+///
+/// On any git failure we return `Ok(vec![])` rather than surface the
+/// error: worktree state mid-failure is orchestrator territory, and
+/// returning "no diff" cleanly beats a failure cascade here.
+pub async fn git_changed_files(worktree: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let out = Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(worktree)
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Ok(vec![]);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut files = Vec::new();
+    for line in stdout.lines() {
+        // porcelain: two status chars, space, path. Rename entries are
+        // "orig -> new" — we take the "new" side.
+        if line.len() < 4 {
+            continue;
+        }
+        let path = &line[3..];
+        let path = path.split(" -> ").last().unwrap_or(path);
+        files.push(std::path::PathBuf::from(path.trim()));
+    }
+    Ok(files)
+}
+
 // -- Simple {{var}} template rendering -------------------------------
 //
 // All three master prompts are static templates with a handful of

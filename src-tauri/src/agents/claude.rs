@@ -24,7 +24,7 @@ use crate::storage::models::Subtask;
 
 use super::plan_parser::parse_and_validate;
 use super::process::{
-    classify_nonzero, render_template, run_streaming, ChildOutput, RunSpec,
+    classify_nonzero, git_changed_files, render_template, run_streaming, ChildOutput, RunSpec,
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
 use super::prompts::MASTER_CLAUDE;
@@ -245,31 +245,6 @@ fn summarize_last_lines(stdout: &str, n: usize) -> String {
         .collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].join(" ").trim().to_string()
-}
-
-async fn git_changed_files(worktree: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let out = tokio::process::Command::new("git")
-        .arg("status")
-        .arg("--porcelain")
-        .current_dir(worktree)
-        .output()
-        .await?;
-    if !out.status.success() {
-        return Ok(vec![]);
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // porcelain format: two status chars, space, then path. Rename
-    // lines have "orig -> new"; we take the "new" side.
-    let mut files = Vec::new();
-    for line in stdout.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let path = &line[3..];
-        let path = path.split(" -> ").last().unwrap_or(path);
-        files.push(PathBuf::from(path.trim()));
-    }
-    Ok(files)
 }
 
 #[cfg(test)]
