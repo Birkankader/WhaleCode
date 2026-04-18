@@ -61,6 +61,7 @@ pub enum RunStatus {
     Done,
     Rejected,
     Failed,
+    Cancelled,
 }
 
 // SubtaskState / SubtaskData / FileDiff / RunSummary are scaffolding for the

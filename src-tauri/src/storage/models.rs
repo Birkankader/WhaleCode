@@ -107,6 +107,7 @@ pub(super) fn run_status_to_str(s: RunStatus) -> &'static str {
         RunStatus::Done => "done",
         RunStatus::Rejected => "rejected",
         RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
     }
 }
 
@@ -120,6 +121,7 @@ pub(super) fn run_status_from_str(s: &str) -> StorageResult<RunStatus> {
         "done" => Ok(RunStatus::Done),
         "rejected" => Ok(RunStatus::Rejected),
         "failed" => Ok(RunStatus::Failed),
+        "cancelled" => Ok(RunStatus::Cancelled),
         other => Err(StorageError::Invalid(format!("unknown run status: {other}"))),
     }
 }

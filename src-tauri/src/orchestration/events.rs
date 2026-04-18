@@ -1,0 +1,196 @@
+//! `RunEvent` is the orchestrator's internal event vocabulary. One
+//! enum so the orchestrator can emit events with a single method call
+//! regardless of how they reach the frontend; the [`EventSink`] trait
+//! is what turns those enum values into either Tauri emits (prod) or
+//! an in-memory `Vec` (tests).
+//!
+//! Contract with `ipc::events`:
+//! - The wire-level payload structs and event names live in
+//!   `ipc::events` — they're what the frontend subscribes to. Each
+//!   variant here maps 1:1 to one of those structs and one of those
+//!   event names. The enum exists so tests can assert on structured
+//!   values without spinning up a Tauri runtime; `TauriEventSink`
+//!   converts back to the wire shapes the frontend already knows.
+//! - Don't add fields to a variant here without updating the matching
+//!   `ipc::events` struct, otherwise prod loses the info in transit.
+//!
+//! Emission failures (Tauri channel down, runtime torn down) are
+//! logged but never propagated — the orchestrator's state machine
+//! must not hang on a dead frontend.
+
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+use tauri::AppHandle;
+
+use crate::ipc::events as wire;
+use crate::ipc::{FileDiff, RunId, RunStatus, RunSummary, SubtaskData, SubtaskId, SubtaskState};
+
+/// Structured events the orchestrator emits during a run. Each is
+/// fire-and-forget: the sink is expected to swallow transport
+/// errors so the state machine never blocks on IPC.
+#[derive(Debug, Clone)]
+pub enum RunEvent {
+    StatusChanged {
+        run_id: RunId,
+        status: RunStatus,
+    },
+    MasterLog {
+        run_id: RunId,
+        line: String,
+    },
+    SubtasksProposed {
+        run_id: RunId,
+        subtasks: Vec<SubtaskData>,
+    },
+    SubtaskStateChanged {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        state: SubtaskState,
+    },
+    SubtaskLog {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        line: String,
+    },
+    DiffReady {
+        run_id: RunId,
+        files: Vec<FileDiff>,
+    },
+    Completed {
+        run_id: RunId,
+        summary: RunSummary,
+    },
+    Failed {
+        run_id: RunId,
+        error: String,
+    },
+    MergeConflict {
+        run_id: RunId,
+        files: Vec<PathBuf>,
+    },
+}
+
+impl RunEvent {
+    /// The `run_id` field. Useful for logs, dispatching, and tests that
+    /// want to filter events by run without pattern-matching every
+    /// variant.
+    pub fn run_id(&self) -> &RunId {
+        match self {
+            RunEvent::StatusChanged { run_id, .. }
+            | RunEvent::MasterLog { run_id, .. }
+            | RunEvent::SubtasksProposed { run_id, .. }
+            | RunEvent::SubtaskStateChanged { run_id, .. }
+            | RunEvent::SubtaskLog { run_id, .. }
+            | RunEvent::DiffReady { run_id, .. }
+            | RunEvent::Completed { run_id, .. }
+            | RunEvent::Failed { run_id, .. }
+            | RunEvent::MergeConflict { run_id, .. } => run_id,
+        }
+    }
+}
+
+/// Sink the orchestrator pushes events into. The production impl
+/// forwards to Tauri; tests collect into a `Vec`.
+///
+/// `emit` is async so the Tauri impl can drop onto a runtime if a
+/// future sink turns synchronous Tauri emits into anything that
+/// awaits — today they don't, but pinning this signature now keeps
+/// the trait stable.
+#[async_trait]
+pub trait EventSink: Send + Sync {
+    async fn emit(&self, event: RunEvent);
+}
+
+/// Production sink: forwards each variant through the matching
+/// `ipc::events::emit_*` helper. On transport failure we log and
+/// move on — a dead frontend channel must not stall orchestration.
+pub struct TauriEventSink {
+    app: AppHandle,
+}
+
+impl TauriEventSink {
+    pub fn new(app: AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+#[async_trait]
+impl EventSink for TauriEventSink {
+    async fn emit(&self, event: RunEvent) {
+        let result = match event {
+            RunEvent::StatusChanged { run_id, status } => {
+                wire::emit_status_changed(&self.app, &wire::StatusChanged { run_id, status })
+            }
+            RunEvent::MasterLog { run_id, line } => {
+                wire::emit_master_log(&self.app, &wire::MasterLog { run_id, line })
+            }
+            RunEvent::SubtasksProposed { run_id, subtasks } => wire::emit_subtasks_proposed(
+                &self.app,
+                &wire::SubtasksProposed { run_id, subtasks },
+            ),
+            RunEvent::SubtaskStateChanged {
+                run_id,
+                subtask_id,
+                state,
+            } => wire::emit_subtask_state_changed(
+                &self.app,
+                &wire::SubtaskStateChanged {
+                    run_id,
+                    subtask_id,
+                    state,
+                },
+            ),
+            RunEvent::SubtaskLog {
+                run_id,
+                subtask_id,
+                line,
+            } => wire::emit_subtask_log(
+                &self.app,
+                &wire::SubtaskLog {
+                    run_id,
+                    subtask_id,
+                    line,
+                },
+            ),
+            RunEvent::DiffReady { run_id, files } => {
+                wire::emit_diff_ready(&self.app, &wire::DiffReady { run_id, files })
+            }
+            RunEvent::Completed { run_id, summary } => {
+                wire::emit_completed(&self.app, &wire::Completed { run_id, summary })
+            }
+            RunEvent::Failed { run_id, error } => {
+                wire::emit_failed(&self.app, &wire::Failed { run_id, error })
+            }
+            RunEvent::MergeConflict { run_id, files } => {
+                wire::emit_merge_conflict(&self.app, &wire::MergeConflict { run_id, files })
+            }
+        };
+        if let Err(e) = result {
+            eprintln!("[orchestrator] event emit failed: {e}");
+        }
+    }
+}
+
+/// Test-only sink that accumulates events. Construct with `default()`;
+/// call `snapshot()` to read without consuming the collector.
+#[cfg(test)]
+#[derive(Default)]
+pub struct RecordingEventSink {
+    events: tokio::sync::Mutex<Vec<RunEvent>>,
+}
+
+#[cfg(test)]
+impl RecordingEventSink {
+    pub async fn snapshot(&self) -> Vec<RunEvent> {
+        self.events.lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl EventSink for RecordingEventSink {
+    async fn emit(&self, event: RunEvent) {
+        self.events.lock().await.push(event);
+    }
+}

@@ -11,6 +11,8 @@
 // `submit_task`; the rest land when the orchestrator arrives.
 #![allow(dead_code)]
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -24,6 +26,7 @@ pub const EVENT_SUBTASK_LOG: &str = "run:subtask_log";
 pub const EVENT_DIFF_READY: &str = "run:diff_ready";
 pub const EVENT_COMPLETED: &str = "run:completed";
 pub const EVENT_FAILED: &str = "run:failed";
+pub const EVENT_MERGE_CONFLICT: &str = "run:merge_conflict";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +86,16 @@ pub struct Failed {
     pub error: String,
 }
 
+/// A merge triggered by `apply_run` hit a conflict on one or more files.
+/// The run stays in `Merging` state and worktrees are intact, so the
+/// user can inspect the conflict before choosing discard.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeConflict {
+    pub run_id: RunId,
+    pub files: Vec<PathBuf>,
+}
+
 pub fn emit_status_changed(app: &AppHandle, payload: &StatusChanged) -> tauri::Result<()> {
     app.emit(EVENT_STATUS_CHANGED, payload)
 }
@@ -116,6 +129,10 @@ pub fn emit_completed(app: &AppHandle, payload: &Completed) -> tauri::Result<()>
 
 pub fn emit_failed(app: &AppHandle, payload: &Failed) -> tauri::Result<()> {
     app.emit(EVENT_FAILED, payload)
+}
+
+pub fn emit_merge_conflict(app: &AppHandle, payload: &MergeConflict) -> tauri::Result<()> {
+    app.emit(EVENT_MERGE_CONFLICT, payload)
 }
 
 #[cfg(test)]
