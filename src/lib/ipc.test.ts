@@ -1,0 +1,170 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  agentDetectionResultSchema,
+  agentKindSchema,
+  agentStatusSchema,
+  diffReadySchema,
+  runStatusSchema,
+  statusChangedSchema,
+  subtaskDataSchema,
+  subtaskStateChangedSchema,
+  subtaskStateSchema,
+  subtasksProposedSchema,
+} from './ipc';
+
+describe('agentKindSchema', () => {
+  it('accepts the three kebab-case variants', () => {
+    expect(agentKindSchema.parse('claude')).toBe('claude');
+    expect(agentKindSchema.parse('codex')).toBe('codex');
+    expect(agentKindSchema.parse('gemini')).toBe('gemini');
+  });
+
+  it('rejects unknown variants', () => {
+    expect(agentKindSchema.safeParse('gpt4').success).toBe(false);
+  });
+});
+
+describe('agentStatusSchema', () => {
+  it('parses available with version', () => {
+    const parsed = agentStatusSchema.parse({ status: 'available', version: '1.2.3' });
+    expect(parsed).toEqual({ status: 'available', version: '1.2.3' });
+  });
+
+  it('parses broken with error', () => {
+    const parsed = agentStatusSchema.parse({ status: 'broken', error: 'boom' });
+    expect(parsed).toEqual({ status: 'broken', error: 'boom' });
+  });
+
+  it('parses not-installed', () => {
+    expect(agentStatusSchema.parse({ status: 'not-installed' })).toEqual({
+      status: 'not-installed',
+    });
+  });
+
+  it('rejects available without version', () => {
+    expect(agentStatusSchema.safeParse({ status: 'available' }).success).toBe(false);
+  });
+});
+
+describe('agentDetectionResultSchema', () => {
+  it('accepts the stub payload from detect_agents', () => {
+    const parsed = agentDetectionResultSchema.parse({
+      claude: { status: 'not-installed' },
+      codex: { status: 'not-installed' },
+      gemini: { status: 'not-installed' },
+      recommendedMaster: null,
+    });
+    expect(parsed.recommendedMaster).toBeNull();
+  });
+
+  it('accepts a recommendation of claude', () => {
+    const parsed = agentDetectionResultSchema.parse({
+      claude: { status: 'available', version: '1.0.0' },
+      codex: { status: 'not-installed' },
+      gemini: { status: 'broken', error: 'bad path' },
+      recommendedMaster: 'claude',
+    });
+    expect(parsed.recommendedMaster).toBe('claude');
+  });
+});
+
+describe('runStatusSchema', () => {
+  it('accepts all documented kebab-case states', () => {
+    for (const s of [
+      'idle',
+      'planning',
+      'awaiting-approval',
+      'running',
+      'merging',
+      'done',
+      'rejected',
+      'failed',
+    ]) {
+      expect(runStatusSchema.parse(s)).toBe(s);
+    }
+  });
+});
+
+describe('subtaskStateSchema', () => {
+  it('accepts all documented states', () => {
+    for (const s of ['proposed', 'waiting', 'running', 'done', 'failed', 'skipped']) {
+      expect(subtaskStateSchema.parse(s)).toBe(s);
+    }
+  });
+});
+
+describe('subtaskDataSchema', () => {
+  it('parses camelCase keys with nullable why', () => {
+    const parsed = subtaskDataSchema.parse({
+      id: 's1',
+      title: 'do the thing',
+      why: null,
+      assignedWorker: 'codex',
+      dependencies: ['s0'],
+    });
+    expect(parsed.assignedWorker).toBe('codex');
+    expect(parsed.why).toBeNull();
+  });
+});
+
+describe('statusChangedSchema', () => {
+  it('matches the camelCase shape emitted by the Rust helper', () => {
+    const parsed = statusChangedSchema.parse({
+      runId: 'r1',
+      status: 'awaiting-approval',
+    });
+    expect(parsed).toEqual({ runId: 'r1', status: 'awaiting-approval' });
+  });
+
+  it('rejects snake_case keys (guards against backend regression)', () => {
+    expect(
+      statusChangedSchema.safeParse({ run_id: 'r1', status: 'planning' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('subtasksProposedSchema', () => {
+  it('parses a list of subtasks', () => {
+    const parsed = subtasksProposedSchema.parse({
+      runId: 'r1',
+      subtasks: [
+        {
+          id: 's1',
+          title: 't',
+          why: 'because',
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    expect(parsed.subtasks).toHaveLength(1);
+  });
+});
+
+describe('subtaskStateChangedSchema', () => {
+  it('parses camelCase subtaskId', () => {
+    const parsed = subtaskStateChangedSchema.parse({
+      runId: 'r1',
+      subtaskId: 's1',
+      state: 'running',
+    });
+    expect(parsed.subtaskId).toBe('s1');
+  });
+});
+
+describe('diffReadySchema', () => {
+  it('rejects negative additions', () => {
+    expect(
+      diffReadySchema.safeParse({
+        runId: 'r1',
+        files: [{ path: 'a', additions: -1, deletions: 0 }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts an empty file list', () => {
+    const parsed = diffReadySchema.parse({ runId: 'r1', files: [] });
+    expect(parsed.files).toEqual([]);
+  });
+});
