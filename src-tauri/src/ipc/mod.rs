@@ -7,6 +7,8 @@
 //! obvious events (e.g. `run:status_changed`), and return placeholder data.
 //! Real orchestration lands in step 8.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 pub mod commands;
@@ -26,8 +28,16 @@ pub enum AgentKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum AgentStatus {
-    Available { version: String },
-    Broken { error: String },
+    Available {
+        version: String,
+        #[serde(rename = "binaryPath")]
+        binary_path: PathBuf,
+    },
+    Broken {
+        #[serde(rename = "binaryPath")]
+        binary_path: PathBuf,
+        error: String,
+    },
     NotInstalled,
 }
 
@@ -99,4 +109,3 @@ pub struct RunSummary {
     pub files_changed: u32,
 }
 
-pub use commands::IpcState;

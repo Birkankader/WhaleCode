@@ -27,8 +27,16 @@ export const agentKindSchema = z.enum(['claude', 'codex', 'gemini']);
 export type AgentKind = z.infer<typeof agentKindSchema>;
 
 export const agentStatusSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('available'), version: z.string() }),
-  z.object({ status: z.literal('broken'), error: z.string() }),
+  z.object({
+    status: z.literal('available'),
+    version: z.string(),
+    binaryPath: z.string(),
+  }),
+  z.object({
+    status: z.literal('broken'),
+    binaryPath: z.string(),
+    error: z.string(),
+  }),
   z.object({ status: z.literal('not-installed') }),
 ]);
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
@@ -232,8 +240,9 @@ export async function detectAgents(): Promise<AgentDetectionResult> {
   return agentDetectionResultSchema.parse(raw);
 }
 
-export async function setMasterAgent(agent: AgentKind): Promise<void> {
-  await invoke('set_master_agent', { agent });
+export async function setMasterAgent(agent: AgentKind): Promise<Settings> {
+  const raw = await invoke<unknown>('set_master_agent', { agent });
+  return settingsSchema.parse(raw);
 }
 
 export async function getSettings(): Promise<Settings> {

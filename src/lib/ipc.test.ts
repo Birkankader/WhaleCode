@@ -29,14 +29,26 @@ describe('agentKindSchema', () => {
 });
 
 describe('agentStatusSchema', () => {
-  it('parses available with version', () => {
-    const parsed = agentStatusSchema.parse({ status: 'available', version: '1.2.3' });
-    expect(parsed).toEqual({ status: 'available', version: '1.2.3' });
+  it('parses available with version and binaryPath', () => {
+    const parsed = agentStatusSchema.parse({
+      status: 'available',
+      version: '1.2.3',
+      binaryPath: '/usr/local/bin/claude',
+    });
+    expect(parsed).toEqual({
+      status: 'available',
+      version: '1.2.3',
+      binaryPath: '/usr/local/bin/claude',
+    });
   });
 
-  it('parses broken with error', () => {
-    const parsed = agentStatusSchema.parse({ status: 'broken', error: 'boom' });
-    expect(parsed).toEqual({ status: 'broken', error: 'boom' });
+  it('parses broken with binaryPath and error', () => {
+    const parsed = agentStatusSchema.parse({
+      status: 'broken',
+      binaryPath: '/bad',
+      error: 'boom',
+    });
+    expect(parsed).toEqual({ status: 'broken', binaryPath: '/bad', error: 'boom' });
   });
 
   it('parses not-installed', () => {
@@ -45,8 +57,10 @@ describe('agentStatusSchema', () => {
     });
   });
 
-  it('rejects available without version', () => {
-    expect(agentStatusSchema.safeParse({ status: 'available' }).success).toBe(false);
+  it('rejects available without binaryPath', () => {
+    expect(
+      agentStatusSchema.safeParse({ status: 'available', version: '1.0.0' }).success,
+    ).toBe(false);
   });
 });
 
@@ -63,9 +77,13 @@ describe('agentDetectionResultSchema', () => {
 
   it('accepts a recommendation of claude', () => {
     const parsed = agentDetectionResultSchema.parse({
-      claude: { status: 'available', version: '1.0.0' },
+      claude: {
+        status: 'available',
+        version: '1.0.0',
+        binaryPath: '/opt/homebrew/bin/claude',
+      },
       codex: { status: 'not-installed' },
-      gemini: { status: 'broken', error: 'bad path' },
+      gemini: { status: 'broken', binaryPath: '/x', error: 'bad path' },
       recommendedMaster: 'claude',
     });
     expect(parsed.recommendedMaster).toBe('claude');

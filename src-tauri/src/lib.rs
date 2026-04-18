@@ -1,9 +1,14 @@
+mod detection;
 mod ipc;
 mod repo;
 mod settings;
 mod storage;
 
-use ipc::{commands, IpcState};
+use std::sync::Arc;
+
+use detection::Detector;
+use ipc::commands;
+use settings::SettingsStore;
 use storage::{migrations, Storage};
 use tauri::Manager;
 
@@ -23,12 +28,17 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let ipc_state = IpcState::load(app.handle())?;
-            app.manage(ipc_state);
+            // Settings: load once, share via Arc so Detector can hold a clone
+            // while commands borrow through Tauri's `State<Arc<...>>`.
+            let settings_path = settings::resolve_path(app.handle())?;
+            let settings = Arc::new(SettingsStore::load_at(settings_path));
+            app.manage(settings.clone());
 
-            // Open the Rust-side Storage pool at the same DB file. Done on
-            // the async runtime because sqlx is async-only. Failures here
-            // abort startup — the orchestrator can't run without a DB.
+            // Detector: stateless apart from its settings handle. Cheap to
+            // clone; we keep a single managed copy.
+            app.manage(Detector::new(settings.clone()));
+
+            // Storage: Rust-side pool against the same DB file plugin-sql uses.
             let db_path = app
                 .path()
                 .app_config_dir()

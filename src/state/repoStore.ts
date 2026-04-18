@@ -20,6 +20,7 @@ import {
   type RepoInfo,
   type Settings,
 } from '../lib/ipc';
+import { useAgentStore } from './agentStore';
 
 export type RepoState = {
   /** Initial boot is in flight — gate the UI so we don't flash the picker. */
@@ -64,6 +65,29 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       }
 
       set({ settings, currentRepo, initializing: false });
+
+      // Kick off agent detection. We don't await it blocking the UI — the
+      // setup/picker screens can render without it — but we do want the
+      // master-agent auto-swap to happen before the first submit_task.
+      const detection = await useAgentStore.getState().refresh();
+      if (detection) {
+        const currentMasterStatus = detection[settings.masterAgent];
+        const currentMasterUsable = currentMasterStatus.status === 'available';
+        if (!currentMasterUsable && detection.recommendedMaster) {
+          // Silent auto-switch: the user's chosen master is broken/missing,
+          // so follow the fallback chain. They can change it back from the
+          // TopBar dropdown once the binary is fixed.
+          try {
+            const merged = await setSettingsIpc({
+              masterAgent: detection.recommendedMaster,
+            });
+            set({ settings: merged });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[repoStore] auto-swap master failed', err);
+          }
+        }
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[repoStore] init failed', err);
