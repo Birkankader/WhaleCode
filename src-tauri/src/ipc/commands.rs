@@ -1,52 +1,46 @@
 //! Command handlers exposed to the frontend via `tauri::generate_handler!`.
 //!
-//! Phase 2 step 1: these are stubs. They validate argument shape, log the
-//! invocation, emit a couple of obvious events (so the frontend wiring can
-//! be exercised end-to-end), and return placeholder data. Real semantics
-//! land when the orchestrator arrives in step 8.
+//! Phase 2 step 1 stubbed the run-lifecycle commands (`submit_task`,
+//! `approve_subtasks`, …). Step 2 adds `get_settings` / `set_settings`
+//! wrappers on top of `SettingsStore`. Repo inspection commands live in
+//! `crate::repo` — they're registered from `lib.rs` directly.
 //!
 //! All commands use `rename_all = "camelCase"` so the JS side sends
 //! idiomatic `runId`, `subtaskIds`, etc. instead of snake_case.
-
-use std::sync::Mutex;
 
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use super::events::{self, StatusChanged};
-use super::{
-    AgentDetectionResult, AgentKind, AgentStatus, RunId, RunStatus, SubtaskId,
-};
+use super::{AgentDetectionResult, AgentKind, AgentStatus, RunId, RunStatus, SubtaskId};
+use crate::settings::{self, Settings, SettingsStore};
 
-/// Shared IPC state. Real run/subtask tracking lands in step 8; for now this
-/// only holds the user's selected master agent (which Phase 1's top-bar chip
-/// reads/writes via these commands).
-#[derive(Debug)]
+/// Shared IPC state. Holds the loaded settings; `Mutex` inside `SettingsStore`
+/// handles concurrent command invocations. Real run/subtask tracking lands
+/// in step 8.
 pub struct IpcState {
-    pub master_agent: Mutex<AgentKind>,
+    pub settings: SettingsStore,
 }
 
-impl Default for IpcState {
-    fn default() -> Self {
-        Self {
-            master_agent: Mutex::new(AgentKind::Claude),
-        }
+impl IpcState {
+    /// Resolves `app_config_dir/settings.json`, creates the directory if
+    /// missing, loads settings (or defaults), and returns the state. Called
+    /// once from the Tauri `setup` hook.
+    pub fn load(app: &AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = settings::resolve_path(app)?;
+        Ok(Self {
+            settings: SettingsStore::load_at(path),
+        })
     }
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn submit_task(
-    app: AppHandle,
-    input: String,
-    repo_path: String,
-) -> Result<RunId, String> {
+pub fn submit_task(app: AppHandle, input: String, repo_path: String) -> Result<RunId, String> {
     let run_id = Uuid::new_v4().to_string();
     eprintln!(
         "[ipc] submit_task: input={:?} repo_path={:?} → run_id={}",
         input, repo_path, run_id
     );
-    // Emit the first state transition so the frontend can prove its listener
-    // is wired up before the orchestrator exists.
     let _ = events::emit_status_changed(
         &app,
         &StatusChanged {
@@ -58,10 +52,7 @@ pub fn submit_task(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn approve_subtasks(
-    run_id: RunId,
-    subtask_ids: Vec<SubtaskId>,
-) -> Result<(), String> {
+pub fn approve_subtasks(run_id: RunId, subtask_ids: Vec<SubtaskId>) -> Result<(), String> {
     eprintln!(
         "[ipc] approve_subtasks: run_id={} subtask_ids={:?}",
         run_id, subtask_ids
@@ -107,28 +98,32 @@ pub fn detect_agents() -> Result<AgentDetectionResult, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn set_master_agent(
-    state: State<'_, IpcState>,
-    agent: AgentKind,
-) -> Result<(), String> {
-    let mut guard = state
-        .master_agent
-        .lock()
-        .map_err(|e| format!("master_agent lock poisoned: {e}"))?;
-    *guard = agent;
+pub fn set_master_agent(state: State<'_, IpcState>, agent: AgentKind) -> Result<(), String> {
+    state
+        .settings
+        .update(&serde_json::json!({ "masterAgent": agent }))?;
     eprintln!("[ipc] set_master_agent: {:?}", agent);
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, IpcState>) -> Result<Settings, String> {
+    state.settings.snapshot()
+}
+
+#[tauri::command]
+pub fn set_settings(
+    state: State<'_, IpcState>,
+    patch: serde_json::Value,
+) -> Result<Settings, String> {
+    let merged = state.settings.update(&patch)?;
+    eprintln!("[ipc] set_settings: applied {}", patch);
+    Ok(merged)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_state_is_claude() {
-        let state = IpcState::default();
-        assert_eq!(*state.master_agent.lock().unwrap(), AgentKind::Claude);
-    }
 
     #[test]
     fn detect_agents_stub_returns_not_installed() {

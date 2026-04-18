@@ -1,0 +1,114 @@
+/**
+ * Zustand slice for repo + settings — everything the app needs to decide
+ * which folder the orchestrator is working in. Kept separate from
+ * `graphStore` because its lifecycle is different: repo/settings outlive
+ * a single run, while `graphStore` is reset per run.
+ *
+ * Boot flow is driven by `init()` from `App.tsx`. Everything else is the
+ * user pressing Cmd+O, clicking the TopBar label, or picking from the
+ * overlay — all funnel through `pickInteractively()`.
+ */
+
+import { create } from 'zustand';
+
+import {
+  getSettings,
+  pickRepo,
+  setSettings as setSettingsIpc,
+  validateRepo,
+  type AgentKind,
+  type RepoInfo,
+  type Settings,
+} from '../lib/ipc';
+
+export type RepoState = {
+  /** Initial boot is in flight — gate the UI so we don't flash the picker. */
+  initializing: boolean;
+  /** Null until settings are loaded. */
+  settings: Settings | null;
+  /** Validated repo the orchestrator will operate on, or null if none. */
+  currentRepo: RepoInfo | null;
+  /**
+   * Transient explanation of the last failed pick, for a toast-ish surface
+   * beneath the picker. Cleared on the next successful pick or on open.
+   */
+  pickerError: string | null;
+
+  init: () => Promise<void>;
+  pickInteractively: () => Promise<void>;
+  clearCurrentRepo: () => Promise<void>;
+  setMasterAgent: (agent: AgentKind) => Promise<void>;
+};
+
+export const useRepoStore = create<RepoState>((set, get) => ({
+  initializing: true,
+  settings: null,
+  currentRepo: null,
+  pickerError: null,
+
+  async init() {
+    try {
+      const settings = await getSettings();
+      let currentRepo: RepoInfo | null = null;
+
+      if (settings.lastRepo) {
+        const validation = await validateRepo(settings.lastRepo);
+        if (validation.valid) {
+          currentRepo = validation.info;
+        } else {
+          // Stale pointer (folder deleted/moved) — forget it silently so the
+          // picker shows up clean on the next render.
+          await setSettingsIpc({ lastRepo: null });
+          settings.lastRepo = null;
+        }
+      }
+
+      set({ settings, currentRepo, initializing: false });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[repoStore] init failed', err);
+      set({ initializing: false });
+    }
+  },
+
+  async pickInteractively() {
+    set({ pickerError: null });
+    let picked: RepoInfo | null;
+    try {
+      picked = await pickRepo();
+    } catch (err) {
+      set({ pickerError: String(err) });
+      return;
+    }
+    if (picked === null) return; // user cancelled
+    if (!picked.isGitRepo) {
+      set({ pickerError: `"${picked.name}" isn't a git repo` });
+      return;
+    }
+
+    try {
+      const merged = await setSettingsIpc({ lastRepo: picked.path });
+      set({ currentRepo: picked, settings: merged });
+    } catch (err) {
+      set({ pickerError: `Couldn't save settings: ${err}` });
+    }
+  },
+
+  async clearCurrentRepo() {
+    try {
+      const merged = await setSettingsIpc({ lastRepo: null });
+      set({ currentRepo: null, settings: merged });
+    } catch (err) {
+      set({ pickerError: `Couldn't clear settings: ${err}` });
+    }
+  },
+
+  async setMasterAgent(agent) {
+    const merged = await setSettingsIpc({ masterAgent: agent });
+    set({ settings: merged });
+    // Keep graphStore's selectedMasterAgent in sync for Phase 1's mock flow;
+    // real orchestrator reads settings directly from Rust.
+    const { settings } = get();
+    if (settings) settings.masterAgent = agent;
+  },
+}));

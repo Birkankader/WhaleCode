@@ -151,6 +151,52 @@ export const failedSchema = z.object({
 });
 export type Failed = z.infer<typeof failedSchema>;
 
+// ---------- Settings ----------
+
+export const settingsSchema = z.object({
+  lastRepo: z.string().nullable(),
+  masterAgent: agentKindSchema,
+  claudeBinaryPath: z.string().optional(),
+  codexBinaryPath: z.string().optional(),
+  geminiBinaryPath: z.string().optional(),
+});
+export type Settings = z.infer<typeof settingsSchema>;
+
+/**
+ * Partial shape accepted by `set_settings`. Keys omitted are left untouched;
+ * `lastRepo` may be explicitly `null` to clear it.
+ */
+export type SettingsPatch = Partial<{
+  lastRepo: string | null;
+  masterAgent: AgentKind;
+  claudeBinaryPath: string | null;
+  codexBinaryPath: string | null;
+  geminiBinaryPath: string | null;
+}>;
+
+// ---------- Repo ----------
+
+export const repoInfoSchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  isGitRepo: z.boolean(),
+  currentBranch: z.string().nullable(),
+});
+export type RepoInfo = z.infer<typeof repoInfoSchema>;
+
+export const repoInvalidReasonSchema = z.enum([
+  'not_a_directory',
+  'not_a_git_repo',
+  'inaccessible',
+]);
+export type RepoInvalidReason = z.infer<typeof repoInvalidReasonSchema>;
+
+export const repoValidationSchema = z.discriminatedUnion('valid', [
+  z.object({ valid: z.literal(true), info: repoInfoSchema }),
+  z.object({ valid: z.literal(false), reason: repoInvalidReasonSchema }),
+]);
+export type RepoValidation = z.infer<typeof repoValidationSchema>;
+
 // ---------- Command wrappers ----------
 
 export async function submitTask(input: string, repoPath: string): Promise<RunId> {
@@ -188,6 +234,32 @@ export async function detectAgents(): Promise<AgentDetectionResult> {
 
 export async function setMasterAgent(agent: AgentKind): Promise<void> {
   await invoke('set_master_agent', { agent });
+}
+
+export async function getSettings(): Promise<Settings> {
+  const raw = await invoke<unknown>('get_settings');
+  return settingsSchema.parse(raw);
+}
+
+export async function setSettings(patch: SettingsPatch): Promise<Settings> {
+  const raw = await invoke<unknown>('set_settings', { patch });
+  return settingsSchema.parse(raw);
+}
+
+/**
+ * Opens the native folder dialog. Resolves to `null` when the user cancels,
+ * or a `RepoInfo` where `isGitRepo` may be `false` if they picked a non-git
+ * folder — the UI gatekeeps on that flag before persisting `lastRepo`.
+ */
+export async function pickRepo(): Promise<RepoInfo | null> {
+  const raw = await invoke<unknown>('pick_repo');
+  if (raw === null) return null;
+  return repoInfoSchema.parse(raw);
+}
+
+export async function validateRepo(path: string): Promise<RepoValidation> {
+  const raw = await invoke<unknown>('validate_repo', { path });
+  return repoValidationSchema.parse(raw);
 }
 
 // ---------- Event subscription ----------

@@ -5,7 +5,10 @@ import {
   agentKindSchema,
   agentStatusSchema,
   diffReadySchema,
+  repoInfoSchema,
+  repoValidationSchema,
   runStatusSchema,
+  settingsSchema,
   statusChangedSchema,
   subtaskDataSchema,
   subtaskStateChangedSchema,
@@ -166,5 +169,91 @@ describe('diffReadySchema', () => {
   it('accepts an empty file list', () => {
     const parsed = diffReadySchema.parse({ runId: 'r1', files: [] });
     expect(parsed.files).toEqual([]);
+  });
+});
+
+describe('settingsSchema', () => {
+  it('parses the default-ish settings shape from disk', () => {
+    const parsed = settingsSchema.parse({
+      lastRepo: null,
+      masterAgent: 'claude',
+    });
+    expect(parsed.lastRepo).toBeNull();
+    expect(parsed.masterAgent).toBe('claude');
+  });
+
+  it('accepts optional binary overrides', () => {
+    const parsed = settingsSchema.parse({
+      lastRepo: '/Users/me/app',
+      masterAgent: 'gemini',
+      claudeBinaryPath: '/opt/homebrew/bin/claude',
+    });
+    expect(parsed.claudeBinaryPath).toBe('/opt/homebrew/bin/claude');
+    expect(parsed.codexBinaryPath).toBeUndefined();
+  });
+
+  it('requires lastRepo to be present (null is the empty value)', () => {
+    expect(settingsSchema.safeParse({ masterAgent: 'claude' }).success).toBe(false);
+  });
+});
+
+describe('repoInfoSchema', () => {
+  it('parses the payload returned by pick_repo', () => {
+    const parsed = repoInfoSchema.parse({
+      path: '/Users/me/app',
+      name: 'app',
+      isGitRepo: true,
+      currentBranch: 'main',
+    });
+    expect(parsed.currentBranch).toBe('main');
+  });
+
+  it('allows currentBranch to be null (detached HEAD or non-repo)', () => {
+    const parsed = repoInfoSchema.parse({
+      path: '/tmp/x',
+      name: 'x',
+      isGitRepo: false,
+      currentBranch: null,
+    });
+    expect(parsed.isGitRepo).toBe(false);
+  });
+});
+
+describe('repoValidationSchema', () => {
+  it('discriminates on the boolean valid tag — valid branch', () => {
+    const parsed = repoValidationSchema.parse({
+      valid: true,
+      info: {
+        path: '/r',
+        name: 'r',
+        isGitRepo: true,
+        currentBranch: 'main',
+      },
+    });
+    expect(parsed.valid).toBe(true);
+    if (parsed.valid) expect(parsed.info.name).toBe('r');
+  });
+
+  it('discriminates on the boolean valid tag — invalid branch', () => {
+    const parsed = repoValidationSchema.parse({
+      valid: false,
+      reason: 'not_a_git_repo',
+    });
+    expect(parsed.valid).toBe(false);
+    if (!parsed.valid) expect(parsed.reason).toBe('not_a_git_repo');
+  });
+
+  it('rejects string-tagged discriminator (guard against serde regression)', () => {
+    // The Rust side hand-rolls Serialize to emit `true`/`false` as booleans,
+    // not strings — this test catches a regression if it flips back.
+    expect(
+      repoValidationSchema.safeParse({ valid: 'true', info: {} }).success,
+    ).toBe(false);
+  });
+
+  it('rejects unknown reason codes', () => {
+    expect(
+      repoValidationSchema.safeParse({ valid: false, reason: 'wat' }).success,
+    ).toBe(false);
   });
 });

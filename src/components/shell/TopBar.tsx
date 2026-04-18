@@ -1,14 +1,17 @@
 import { useGraphStore } from '../../state/graphStore';
+import { useRepoStore } from '../../state/repoStore';
 import { AGENT_FULL_LABEL } from '../primitives/agentColor';
-import { Chip } from '../primitives/Chip';
 
 const APP_NAME = 'WhaleCode';
-const REPO_LABEL = 'apps/web';
-const MONO_REPO_BADGE = 'Mono-repo · 4 packages';
+const NO_REPO_LABEL = 'No repo loaded';
 
 export function TopBar() {
   const masterAgent = useGraphStore((s) => s.masterNode?.agent ?? s.selectedMasterAgent);
   const masterName = AGENT_FULL_LABEL[masterAgent];
+  const currentRepo = useRepoStore((s) => s.currentRepo);
+  const pickInteractively = useRepoStore((s) => s.pickInteractively);
+
+  const repoLabel = currentRepo?.name ?? NO_REPO_LABEL;
 
   return (
     <header
@@ -22,8 +25,15 @@ export function TopBar() {
           aria-hidden
         />
         <span className="text-[13px] font-medium text-fg-primary">{APP_NAME}</span>
-        <span className="text-meta text-fg-tertiary">· {REPO_LABEL}</span>
-        <Chip>{MONO_REPO_BADGE}</Chip>
+        <button
+          type="button"
+          onClick={pickInteractively}
+          className="-mx-1 rounded-sm px-1 py-0.5 text-meta text-fg-tertiary transition-colors hover:bg-bg-subtle hover:text-fg-secondary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-agent-master)]"
+          aria-label={currentRepo ? `Switch repository from ${repoLabel}` : 'Open a repository'}
+          title="Open repository (⌘O)"
+        >
+          · {repoLabel}
+        </button>
       </div>
       <div className="flex items-center gap-2">
         <span className="text-hint text-fg-tertiary">Master:</span>
