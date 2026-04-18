@@ -49,6 +49,13 @@ pub fn run() {
                 .map(|d| d.join(DB_FILENAME))?;
             let storage = tauri::async_runtime::block_on(Storage::open(&db_path))?;
             app.manage(storage);
+            // TODO (Phase 2 — Step 10/11): once the Orchestrator is
+            // managed here, call `orch.recover_active_runs().await`
+            // exactly once, after construction, before the frontend
+            // can submit. This sweeps stale `Running`/`Merging`
+            // SQLite rows + orphan worktrees left by a previous
+            // crash. The method exists and is tested; the wire-up
+            // just needs the managed Orchestrator to exist.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -6,13 +6,12 @@
  * applied at the boundary so a backend-shape drift surfaces as a parse
  * error instead of a silent `undefined` deep in the UI.
  *
- * Command wrappers wrap `invoke()`; `listenRunEvents()` subscribes a bundle
- * of handlers to the `run:*` event family for a single run and returns a
- * single unsubscribe function.
+ * Command wrappers wrap `invoke()`. Event subscription lives in
+ * `src/lib/runSubscription.ts` — this file exports only the raw schemas
+ * and event-name constants it needs.
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { z } from 'zod';
 
 // ---------- Shared scalar / enum schemas ----------
@@ -106,6 +105,7 @@ export const EVENT_SUBTASK_LOG = 'run:subtask_log' as const;
 export const EVENT_DIFF_READY = 'run:diff_ready' as const;
 export const EVENT_COMPLETED = 'run:completed' as const;
 export const EVENT_FAILED = 'run:failed' as const;
+export const EVENT_MERGE_CONFLICT = 'run:merge_conflict' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -158,6 +158,17 @@ export const failedSchema = z.object({
   error: z.string(),
 });
 export type Failed = z.infer<typeof failedSchema>;
+
+/**
+ * Emitted when `apply_run` hit a merge conflict. The run stays in
+ * `Merging`; worktrees and notes are preserved. `files` are relative to
+ * the repo root. The user's next click is either Discard or Retry.
+ */
+export const mergeConflictSchema = z.object({
+  runId: runIdSchema,
+  files: z.array(z.string()),
+});
+export type MergeConflict = z.infer<typeof mergeConflictSchema>;
 
 // ---------- Settings ----------
 
@@ -271,75 +282,6 @@ export async function validateRepo(path: string): Promise<RepoValidation> {
   return repoValidationSchema.parse(raw);
 }
 
-// ---------- Event subscription ----------
-
-export type RunEventHandlers = {
-  onStatusChanged?: (payload: StatusChanged) => void;
-  onMasterLog?: (payload: MasterLog) => void;
-  onSubtasksProposed?: (payload: SubtasksProposed) => void;
-  onSubtaskStateChanged?: (payload: SubtaskStateChanged) => void;
-  onSubtaskLog?: (payload: SubtaskLog) => void;
-  onDiffReady?: (payload: DiffReady) => void;
-  onCompleted?: (payload: Completed) => void;
-  onFailed?: (payload: Failed) => void;
-  /** Called when a payload fails schema validation. Default: log to console. */
-  onParseError?: (event: string, error: unknown, raw: unknown) => void;
-};
-
-export type Unsubscribe = () => void;
-
-/**
- * Subscribe to all `run:*` events for a given `runId`. Payloads for other
- * runs are ignored (Tauri emits globally). Returns a single unsubscribe
- * function that tears down every listener registered here.
- */
-export async function listenRunEvents(
-  runId: RunId,
-  handlers: RunEventHandlers,
-): Promise<Unsubscribe> {
-  const unlisteners: UnlistenFn[] = [];
-
-  const bind = async <T>(
-    name: string,
-    schema: z.ZodType<T>,
-    handler: ((payload: T) => void) | undefined,
-  ) => {
-    if (!handler) return;
-    const un = await listen<unknown>(name, (event) => {
-      const parsed = schema.safeParse(event.payload);
-      if (!parsed.success) {
-        (handlers.onParseError ?? defaultOnParseError)(name, parsed.error, event.payload);
-        return;
-      }
-      // Every run:* payload has a runId; drop events for other runs.
-      const payloadRunId = (parsed.data as { runId: RunId }).runId;
-      if (payloadRunId !== runId) return;
-      handler(parsed.data);
-    });
-    unlisteners.push(un);
-  };
-
-  await Promise.all([
-    bind(EVENT_STATUS_CHANGED, statusChangedSchema, handlers.onStatusChanged),
-    bind(EVENT_MASTER_LOG, masterLogSchema, handlers.onMasterLog),
-    bind(EVENT_SUBTASKS_PROPOSED, subtasksProposedSchema, handlers.onSubtasksProposed),
-    bind(
-      EVENT_SUBTASK_STATE_CHANGED,
-      subtaskStateChangedSchema,
-      handlers.onSubtaskStateChanged,
-    ),
-    bind(EVENT_SUBTASK_LOG, subtaskLogSchema, handlers.onSubtaskLog),
-    bind(EVENT_DIFF_READY, diffReadySchema, handlers.onDiffReady),
-    bind(EVENT_COMPLETED, completedSchema, handlers.onCompleted),
-    bind(EVENT_FAILED, failedSchema, handlers.onFailed),
-  ]);
-
-  return () => {
-    for (const un of unlisteners) un();
-  };
-}
-
-function defaultOnParseError(event: string, error: unknown, raw: unknown): void {
-  // eslint-disable-next-line no-console
-  console.error(`[ipc] rejected ${event} payload`, { error, raw });
-}
+// Event subscription lives in `runSubscription.ts` — this file exports
+// only the raw schemas + EVENT_* constants. The store consumes
+// RunSubscription, not a free `listen` helper.

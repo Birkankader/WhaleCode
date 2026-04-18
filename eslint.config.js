@@ -6,7 +6,15 @@ import prettier from 'eslint-config-prettier';
 import globals from 'globals';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', 'src-tauri/target', 'src/bindings.ts'] },
+  {
+    ignores: [
+      'dist',
+      'node_modules',
+      'src-tauri/target',
+      'src/bindings.ts',
+      '.claude',
+    ],
+  },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
