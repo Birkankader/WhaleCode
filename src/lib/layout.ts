@@ -1,5 +1,3 @@
-import dagre from '@dagrejs/dagre';
-
 export type LayoutNodeKind = 'master' | 'worker' | 'final';
 
 export type LayoutNodeInput = {
@@ -21,11 +19,15 @@ export type LayoutNodeOutput = {
   height: number;
 };
 
-/**
- * Fixed node dimensions per type — Dagre needs deterministic sizes before the
- * DOM measures anything. Step 6 may tune these once real node content lands;
- * layout tests lock the ratios until then.
- */
+export type LayoutOptions = {
+  /**
+   * Maximum workers per row. Undefined means unbounded (all workers on one
+   * row) — the pre-responsive default. Set to 2 when the container is narrow
+   * so the graph stacks instead of overflowing.
+   */
+  maxPerRow?: number;
+};
+
 export const NODE_DIMENSIONS: Record<LayoutNodeKind, { width: number; height: number }> = {
   master: { width: 240, height: 80 },
   worker: { width: 200, height: 140 },
@@ -40,43 +42,102 @@ export const LAYOUT_SPACING = {
   marginy: 24,
 } as const;
 
+/**
+ * Deterministic manual layout for our fixed master → workers → final
+ * topology. We dropped Dagre because (a) the topology is tightly constrained
+ * so the extra graph-theory is dead weight, and (b) Dagre doesn't expose the
+ * per-row worker count we need for responsive stacking.
+ *
+ * The `edges` parameter is kept for API stability — consumers pass the real
+ * edge list for React Flow rendering, and future multi-hop topologies may
+ * need it.
+ */
 export function layoutGraph(
   nodes: readonly LayoutNodeInput[],
-  edges: readonly LayoutEdgeInput[],
+  _edges: readonly LayoutEdgeInput[],
+  options: LayoutOptions = {},
 ): LayoutNodeOutput[] {
   if (nodes.length === 0) return [];
 
-  const g = new dagre.graphlib.Graph({ directed: true });
-  g.setGraph({
-    rankdir: 'TB',
-    nodesep: LAYOUT_SPACING.nodesep,
-    ranksep: LAYOUT_SPACING.ranksep,
-    marginx: LAYOUT_SPACING.marginx,
-    marginy: LAYOUT_SPACING.marginy,
-  });
-  g.setDefaultEdgeLabel(() => ({}));
+  const master = nodes.find((n) => n.kind === 'master') ?? null;
+  const final = nodes.find((n) => n.kind === 'final') ?? null;
+  // Sort workers by id so layout is invariant to input order.
+  const workers = nodes
+    .filter((n) => n.kind === 'worker')
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id));
 
-  for (const node of nodes) {
-    const { width, height } = NODE_DIMENSIONS[node.kind];
-    g.setNode(node.id, { width, height });
+  const workerW = NODE_DIMENSIONS.worker.width;
+  const workerH = NODE_DIMENSIONS.worker.height;
+  const masterW = NODE_DIMENSIONS.master.width;
+  const masterH = NODE_DIMENSIONS.master.height;
+  const finalW = NODE_DIMENSIONS.final.width;
+  const finalH = NODE_DIMENSIONS.final.height;
+  const { nodesep, ranksep, marginx, marginy } = LAYOUT_SPACING;
+
+  const workerCount = workers.length;
+  const requestedPerRow = options.maxPerRow;
+  const cols =
+    workerCount === 0
+      ? 0
+      : requestedPerRow === undefined
+        ? workerCount
+        : Math.max(1, Math.min(requestedPerRow, workerCount));
+  const rows = cols > 0 ? Math.ceil(workerCount / cols) : 0;
+  const fullRowWidth = cols > 0 ? cols * workerW + (cols - 1) * nodesep : 0;
+  const contentWidth = Math.max(fullRowWidth, masterW, finalW);
+
+  const placed = new Map<string, LayoutNodeOutput>();
+  let y = marginy;
+
+  if (master) {
+    placed.set(master.id, {
+      id: master.id,
+      kind: 'master',
+      width: masterW,
+      height: masterH,
+      x: marginx + (contentWidth - masterW) / 2,
+      y,
+    });
+    y += masterH + ranksep;
   }
-  for (const edge of edges) {
-    g.setEdge(edge.source, edge.target);
+
+  for (let i = 0; i < workerCount; i++) {
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    const itemsInRow = Math.min(cols, workerCount - row * cols);
+    const rowWidth = itemsInRow * workerW + (itemsInRow - 1) * nodesep;
+    const rowStartX = marginx + (contentWidth - rowWidth) / 2;
+    placed.set(workers[i].id, {
+      id: workers[i].id,
+      kind: 'worker',
+      width: workerW,
+      height: workerH,
+      x: rowStartX + col * (workerW + nodesep),
+      y: y + row * (workerH + ranksep),
+    });
   }
 
-  dagre.layout(g);
+  if (rows > 0) {
+    y += rows * workerH + (rows - 1) * ranksep + ranksep;
+  }
 
-  return nodes.map((node) => {
-    const { width, height } = NODE_DIMENSIONS[node.kind];
-    const centered = g.node(node.id);
-    return {
-      id: node.id,
-      kind: node.kind,
-      width,
-      height,
-      // Dagre reports center coordinates; React Flow expects top-left.
-      x: centered.x - width / 2,
-      y: centered.y - height / 2,
-    };
-  });
+  if (final) {
+    placed.set(final.id, {
+      id: final.id,
+      kind: 'final',
+      width: finalW,
+      height: finalH,
+      x: marginx + (contentWidth - finalW) / 2,
+      y,
+    });
+  }
+
+  // Emit in input order so consumers that zip nodes/outputs stay aligned.
+  const result: LayoutNodeOutput[] = [];
+  for (const n of nodes) {
+    const p = placed.get(n.id);
+    if (p) result.push(p);
+  }
+  return result;
 }

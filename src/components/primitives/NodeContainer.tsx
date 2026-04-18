@@ -44,8 +44,17 @@ function styleForState(variant: Variant, state: NodeState, agent: string): CSSPr
 
   switch (state) {
     case 'thinking':
+      return {
+        border: `1px solid ${agent}`,
+        animation: 'node-think 1.5s ease-in-out infinite',
+      };
     case 'running':
-      return { border: `1px solid ${agent}`, boxShadow: `0 0 12px -4px ${agent}` };
+      return {
+        border: `1px solid ${agent}`,
+        animation: 'node-running-glow 2s ease-in-out infinite',
+        // Consumed by the keyframe via var() so the glow matches the agent.
+        ['--node-glow-color' as string]: agent,
+      };
     case 'proposed':
       return { border: `1px dashed ${pending}` };
     case 'approved':

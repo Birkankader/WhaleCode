@@ -137,7 +137,8 @@ Keep the store lean. UI-specific ephemeral state (hover, expanded) stays in comp
 - Import React Flow. Set up the canvas to fill the main viewport area.
 - Custom node types registered: `master`, `worker`, `final`.
 - Use Dagre for auto-layout. Orientation: top-to-bottom.
-- Disable panning/zooming for v2 (focused single-screen view). Canvas size auto-fits content.
+- Pan is enabled (drag + two-finger scroll); zoom is disabled. `translateExtent` clamps pan so users can't scroll the graph off-screen. Cmd/Ctrl+0 recenters. The viewport auto-recenters on structural changes (subtasks proposed, replan, final node added).
+- Responsive: ≥1280px renders subtasks single-row; <1280px stacks them two-per-row. Below 900×600 a "Window too small" overlay replaces the app.
 - Custom edges: simple straight lines, `1px solid border-default`, animated during active runs.
 
 ### Step 6: Node components

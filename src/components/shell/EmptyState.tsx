@@ -59,7 +59,7 @@ export function EmptyState() {
           <span>to start</span>
         </div>
 
-        <div className="mt-8 flex items-center gap-2">
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
           {SHORTCUTS.map((s) => (
             <KeyChip key={s}>{s}</KeyChip>
           ))}

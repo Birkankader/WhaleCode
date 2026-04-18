@@ -129,12 +129,61 @@ describe('layoutGraph — coordinates are top-left (React Flow contract)', () =>
   it('returns top-left, not center (master x/y minus half dims lands top-left)', () => {
     const nodes = [MASTER];
     const [master] = layoutGraph(nodes, []);
-    // Dagre would center at some (cx, cy); top-left = (cx - w/2, cy - h/2).
-    // That means when we re-center, the result matches the dagre center exactly.
     const centerX = master.x + master.width / 2;
     const centerY = master.y + master.height / 2;
-    // The center should be deterministic and positive (inside positive quadrant after margins).
     expect(centerX).toBeGreaterThan(0);
     expect(centerY).toBeGreaterThan(0);
+  });
+});
+
+describe('layoutGraph — maxPerRow responsive stacking', () => {
+  const workerD: LayoutNodeInput = { id: 'd', kind: 'worker' };
+
+  it('maxPerRow=2 with 4 workers produces 2 rows of 2', () => {
+    const nodes = [MASTER, workerA, workerB, workerC, workerD, FINAL];
+    const edges = topologyEdges('master', ['a', 'b', 'c', 'd'], 'final');
+    const out = byId(layoutGraph(nodes, edges, { maxPerRow: 2 }));
+
+    const a = out.get('a')!;
+    const b = out.get('b')!;
+    const c = out.get('c')!;
+    const d = out.get('d')!;
+
+    // Row 0 (a, b): same y. Row 1 (c, d): same y, below row 0.
+    expect(Math.abs(a.y - b.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(c.y - d.y)).toBeLessThanOrEqual(1);
+    expect(c.y).toBeGreaterThan(a.y);
+  });
+
+  it('maxPerRow=2 with 3 workers: row 0 has 2, row 1 has the singleton centered', () => {
+    const nodes = [MASTER, workerA, workerB, workerC, FINAL];
+    const edges = topologyEdges('master', ['a', 'b', 'c'], 'final');
+    const out = byId(layoutGraph(nodes, edges, { maxPerRow: 2 }));
+
+    const a = out.get('a')!;
+    const b = out.get('b')!;
+    const c = out.get('c')!;
+    expect(Math.abs(a.y - b.y)).toBeLessThanOrEqual(1);
+    expect(c.y).toBeGreaterThan(a.y);
+    // Singleton in row 1 should be horizontally centered against the row above.
+    const row0Center = ((a.x + a.width) + b.x) / 2;
+    const cCenter = c.x + c.width / 2;
+    expect(Math.abs(row0Center - cCenter)).toBeLessThanOrEqual(1);
+  });
+
+  it('final sits below the last worker row, not the first', () => {
+    const nodes = [MASTER, workerA, workerB, workerC, workerD, FINAL];
+    const edges = topologyEdges('master', ['a', 'b', 'c', 'd'], 'final');
+    const out = byId(layoutGraph(nodes, edges, { maxPerRow: 2 }));
+    const lastWorkerBottom = out.get('d')!.y + out.get('d')!.height;
+    expect(out.get('final')!.y).toBeGreaterThan(lastWorkerBottom);
+  });
+
+  it('undefined maxPerRow preserves single-row behavior (back-compat)', () => {
+    const nodes = [MASTER, workerA, workerB, workerC, FINAL];
+    const edges = topologyEdges('master', ['a', 'b', 'c'], 'final');
+    const out = byId(layoutGraph(nodes, edges));
+    const ys = ['a', 'b', 'c'].map((id) => out.get(id)!.y);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThanOrEqual(1);
   });
 });

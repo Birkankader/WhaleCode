@@ -1,10 +1,25 @@
 import '@xyflow/react/dist/base.css';
 
-import { ReactFlow, type Edge, type Node, type NodeTypes, type EdgeTypes } from '@xyflow/react';
-import { useMemo } from 'react';
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
+  type CoordinateExtent,
+  type Edge,
+  type EdgeTypes,
+  type Node,
+  type NodeTypes,
+} from '@xyflow/react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
-import { layoutGraph, type LayoutNodeInput, type LayoutEdgeInput } from '../../lib/layout';
+import { useRecenterShortcut } from '../../hooks/useRecenterShortcut';
+import {
+  NODE_DIMENSIONS,
+  layoutGraph,
+  type LayoutEdgeInput,
+  type LayoutNodeInput,
+} from '../../lib/layout';
 import { FinalNode, type FinalNodeData } from '../nodes/FinalNode';
 import { MasterNode, type MasterNodeData } from '../nodes/MasterNode';
 import { WorkerNode, type WorkerNodeData } from '../nodes/WorkerNode';
@@ -25,8 +40,23 @@ const edgeTypes: EdgeTypes = {
 
 const RUNNING_STATES: ReadonlySet<NodeState> = new Set(['running', 'retrying']);
 
+/**
+ * Container-width threshold below which we stack subtasks 2-per-row instead
+ * of spreading them across a single wide row.
+ */
+const COMPACT_BREAKPOINT = 1280;
+/** Pan headroom past the graph bounds so users can scroll into the margin. */
+const PAN_MARGIN = 200;
+
 export function GraphCanvas() {
-  // Structural selectors — references stay stable across log appends.
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner />
+    </ReactFlowProvider>
+  );
+}
+
+function GraphCanvasInner() {
   const structure = useGraphStore(
     useShallow((s) => ({
       masterNode: s.masterNode,
@@ -34,24 +64,106 @@ export function GraphCanvas() {
       finalNode: s.finalNode,
     })),
   );
-  // Snapshot map — changes only on state transitions, not on logs.
   const nodeSnapshots = useGraphStore((s) => s.nodeSnapshots);
 
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [compact, setCompact] = useState(false);
+
+  // Track container width so we can switch between single-row and stacked
+  // grid layouts. We read from getBoundingClientRect on every signal rather
+  // than trusting ResizeObserver's contentRect — some preview/embed contexts
+  // drop RO callbacks, and the window resize listener is the authoritative
+  // fallback. Reading twice is cheap (a single layout query, no work on hot
+  // paths like pointermove).
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const apply = () => setCompact(el.getBoundingClientRect().width < COMPACT_BREAKPOINT);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    window.addEventListener('resize', apply);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', apply);
+    };
+  }, []);
+
   const { nodes, edges } = useMemo(() => {
-    return buildGraph(structure, nodeSnapshots);
-  }, [structure, nodeSnapshots]);
+    return buildGraph(structure, nodeSnapshots, compact ? 2 : undefined);
+  }, [structure, nodeSnapshots, compact]);
+
+  const { setViewport } = useReactFlow();
+
+  const structureSignature = useMemo(() => {
+    const ids = [
+      structure.masterNode?.id ?? '',
+      ...structure.subtasks.map((s) => s.id),
+      structure.finalNode?.id ?? '',
+    ];
+    return ids.join('|');
+  }, [structure]);
+
+  // Ref the latest nodes so the recenter callback identity doesn't churn on
+  // every snapshot update. Effects that depend on recenter would otherwise
+  // cancel their pending rAFs before the structural frame got a chance to fit.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+
+  const recenter = useCallback(
+    (duration = 300) => {
+      const box = containerRef.current?.getBoundingClientRect();
+      if (!box) return;
+      const bounds = computeBounds(nodesRef.current);
+      if (!bounds) return;
+      const pad = 0.15;
+      const scale = Math.min(
+        1,
+        (box.width * (1 - 2 * pad)) / bounds.w,
+        (box.height * (1 - 2 * pad)) / bounds.h,
+      );
+      const x = (box.width - bounds.w * scale) / 2 - bounds.minX * scale;
+      const y = (box.height - bounds.h * scale) / 2 - bounds.minY * scale;
+      setViewport({ x, y, zoom: scale }, duration > 0 ? { duration } : undefined);
+    },
+    [setViewport],
+  );
+
+  // Clamp panning so users can't sling the graph entirely off-screen. Margin
+  // gives a breathable gutter past the node edges; recomputed whenever the
+  // structure changes so a new final node or replan doesn't land out of reach.
+  const translateExtent = useMemo<CoordinateExtent | undefined>(() => {
+    const bounds = computeBounds(nodes);
+    if (!bounds) return undefined;
+    return [
+      [bounds.minX - PAN_MARGIN, bounds.minY - PAN_MARGIN],
+      [bounds.minX + bounds.w + PAN_MARGIN, bounds.minY + bounds.h + PAN_MARGIN],
+    ];
+  }, [nodes]);
+
+  // Recenter when the *layout* changes (structure, compact mode, or container
+  // size). No animation — stomping animations during rapid layout updates
+  // (resize drag, orchestration ramp-up) produced a stale viewport; snap is
+  // instant and visually fine at these cadences.
+  useLayoutEffect(() => {
+    if (nodes.length === 0) return;
+    recenter(0);
+  }, [structureSignature, compact, recenter, nodes.length]);
+
+  useRecenterShortcut(useCallback(() => recenter(300), [recenter]));
 
   return (
-    <div className="h-full w-full bg-bg-primary">
+    <div ref={containerRef} className="h-full w-full bg-bg-primary">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        panOnDrag={false}
-        panOnScroll={false}
+        minZoom={0.4}
+        maxZoom={1}
+        translateExtent={translateExtent}
+        panOnDrag
+        panOnScroll
         zoomOnScroll={false}
         zoomOnPinch={false}
         zoomOnDoubleClick={false}
@@ -73,6 +185,7 @@ type Structure = {
 function buildGraph(
   structure: Structure,
   snapshots: Map<string, NodeSnapshot>,
+  maxPerRow: number | undefined,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
   if (!masterNode) return { nodes: [], edges: [] };
@@ -87,7 +200,7 @@ function buildGraph(
     if (finalNode) layoutEdges.push({ source: st.id, target: finalNode.id });
   }
 
-  const positioned = layoutGraph(layoutInputs, layoutEdges);
+  const positioned = layoutGraph(layoutInputs, layoutEdges, { maxPerRow });
 
   const nodes: Node[] = positioned.map((p) => {
     const data = dataFor(p.id, p.kind, structure, snapshots);
@@ -110,6 +223,26 @@ function buildGraph(
   }));
 
   return { nodes, edges };
+}
+
+function computeBounds(
+  nodes: Node[],
+): { minX: number; minY: number; w: number; h: number } | null {
+  if (nodes.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const n of nodes) {
+    const dim = NODE_DIMENSIONS[n.type as keyof typeof NODE_DIMENSIONS];
+    if (!dim) continue;
+    if (n.position.x < minX) minX = n.position.x;
+    if (n.position.y < minY) minY = n.position.y;
+    if (n.position.x + dim.width > maxX) maxX = n.position.x + dim.width;
+    if (n.position.y + dim.height > maxY) maxY = n.position.y + dim.height;
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, w: maxX - minX, h: maxY - minY };
 }
 
 function dataFor(
@@ -135,7 +268,6 @@ function dataFor(
       files: structure.finalNode.files,
     };
   }
-  // Worker
   const st = structure.subtasks.find((s) => s.id === id);
   return {
     state,
