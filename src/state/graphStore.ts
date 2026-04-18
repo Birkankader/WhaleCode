@@ -36,6 +36,7 @@ export type GraphStatus =
   | 'running'
   | 'merging'
   | 'done'
+  | 'applied'
   | 'failed';
 
 type NodeActorRef = ActorRefFrom<typeof nodeMachine>;
@@ -52,10 +53,18 @@ export type GraphState = {
   nodeActors: Map<string, NodeActorRef>;
   nodeSnapshots: Map<string, NodeSnapshot>;
   nodeLogs: Map<string, string[]>;
+  /**
+   * Handle for aborting an in-flight orchestrator (mock in Phase 1, real in
+   * Phase 2). Stored here so reset() can tear down timers and subscriptions
+   * before the store itself is cleared — no zombie callbacks.
+   */
+  orchestrationCancel: (() => void) | null;
 
   setMasterAgent: (agent: AgentKind) => void;
+  setOrchestrationCancel: (fn: (() => void) | null) => void;
   submitTask: (input: string, masterAgent?: AgentKind) => void;
-  proposeSubtasks: (subtasks: Array<Omit<SubtaskNodeData, 'logs'>>) => void;
+  proposeSubtasks: (subtasks: ReadonlyArray<Omit<SubtaskNodeData, 'logs'>>) => void;
+  proposeReplacementSubtasks: (subtasks: ReadonlyArray<Omit<SubtaskNodeData, 'logs'>>) => void;
   toggleSubtaskSelection: (id: string) => void;
   selectAll: () => void;
   selectNone: () => void;
@@ -63,6 +72,9 @@ export type GraphState = {
   rejectAll: () => void;
   updateSubtaskState: (id: string, event: NodeEvent) => void;
   appendLogToNode: (id: string, line: string) => void;
+  setFinalFiles: (files: readonly string[]) => void;
+  completeRun: () => void;
+  applyRun: () => void;
   reset: () => void;
 };
 
@@ -82,6 +94,7 @@ const initial: Pick<
   | 'nodeActors'
   | 'nodeSnapshots'
   | 'nodeLogs'
+  | 'orchestrationCancel'
 > = {
   runId: null,
   taskInput: '',
@@ -94,6 +107,7 @@ const initial: Pick<
   nodeActors: new Map(),
   nodeSnapshots: new Map(),
   nodeLogs: new Map(),
+  orchestrationCancel: null,
 };
 
 function newRunId(): string {
@@ -133,11 +147,21 @@ export const useGraphStore = create<GraphState>((set, get) => {
     actor.send(event);
   }
 
+  function ensureFinalNode() {
+    if (get().finalNode) return;
+    set({ finalNode: { id: FINAL_ID, label: 'Merge', files: [] } });
+    registerActor(FINAL_ID);
+  }
+
   return {
     ...initial,
 
     setMasterAgent(agent) {
       set({ selectedMasterAgent: agent });
+    },
+
+    setOrchestrationCancel(fn) {
+      set({ orchestrationCancel: fn });
     },
 
     submitTask(input, masterAgent) {
@@ -168,6 +192,27 @@ export const useGraphStore = create<GraphState>((set, get) => {
       });
     },
 
+    /**
+     * Append-only: keeps existing subtasks (including failed / escalating ones
+     * the user should still see as strikethrough history). Drives the master
+     * back through thinking → proposed so the approval bar can slide up again.
+     */
+    proposeReplacementSubtasks(defs) {
+      const appended: SubtaskNodeData[] = defs.map((d) => ({ ...d }));
+      for (const st of appended) {
+        const actor = registerActor(st.id);
+        actor.send({ type: 'PROPOSE' });
+      }
+      // approved → thinking → proposed (machine allows THINK from approved).
+      sendTo(MASTER_ID, { type: 'THINK' });
+      sendTo(MASTER_ID, { type: 'PROPOSE' });
+      set((state) => ({
+        subtasks: [...state.subtasks, ...appended],
+        selectedSubtaskIds: new Set(appended.map((s) => s.id)),
+        status: 'awaiting_approval',
+      }));
+    },
+
     toggleSubtaskSelection(id) {
       set((state) => {
         const next = new Set(state.selectedSubtaskIds);
@@ -189,15 +234,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     approveSubtasks(ids) {
       const approved = new Set(ids);
+      // APPROVE/SKIP are no-ops from done/failed/escalating states, so we can
+      // safely iterate all subtasks (including prior-wave completions).
       for (const st of get().subtasks) {
         sendTo(st.id, { type: approved.has(st.id) ? 'APPROVE' : 'SKIP' });
       }
       sendTo(MASTER_ID, { type: 'APPROVE' });
-      set({
-        status: 'running',
-        finalNode: { id: FINAL_ID, label: 'Merge', files: [] },
-      });
-      registerActor(FINAL_ID);
+      set({ status: 'running' });
+      ensureFinalNode();
     },
 
     rejectAll() {
@@ -219,10 +263,36 @@ export const useGraphStore = create<GraphState>((set, get) => {
       });
     },
 
+    setFinalFiles(files) {
+      set((state) => {
+        if (!state.finalNode) return state;
+        return { finalNode: { ...state.finalNode, files: [...files] } };
+      });
+    },
+
+    completeRun() {
+      set({ status: 'done' });
+    },
+
+    applyRun() {
+      // Terminal state for Phase 1. Stops any running actors + timers so the
+      // graph freezes, then lets the EmptyState remount with a focused input.
+      const cancel = get().orchestrationCancel;
+      if (cancel) cancel();
+      for (const actor of get().nodeActors.values()) actor.stop();
+      set({
+        ...initial,
+        nodeActors: new Map(),
+        nodeSnapshots: new Map(),
+        nodeLogs: new Map(),
+        status: 'applied',
+      });
+    },
+
     reset() {
-      for (const actor of get().nodeActors.values()) {
-        actor.stop();
-      }
+      const cancel = get().orchestrationCancel;
+      if (cancel) cancel();
+      for (const actor of get().nodeActors.values()) actor.stop();
       set({
         ...initial,
         nodeActors: new Map(),

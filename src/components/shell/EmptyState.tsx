@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 
+import { runMockOrchestration } from '../../lib/mockOrchestration';
 import { useGraphStore } from '../../state/graphStore';
 
 const TITLE = 'WhaleCode';
@@ -9,13 +10,20 @@ const SHORTCUTS: readonly string[] = ['⌘K', '⌘H', '⌘T', '⌘,'];
 
 export function EmptyState() {
   const submitTask = useGraphStore((s) => s.submitTask);
+  const setOrchestrationCancel = useGraphStore((s) => s.setOrchestrationCancel);
   const [value, setValue] = useState('');
+
+  function launch(trimmed: string) {
+    submitTask(trimmed);
+    const handle = runMockOrchestration(trimmed, useGraphStore);
+    setOrchestrationCancel(handle.cancel);
+  }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = value.trim();
     if (!trimmed) return;
-    submitTask(trimmed);
+    launch(trimmed);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
@@ -23,7 +31,7 @@ export function EmptyState() {
       e.preventDefault();
       const trimmed = value.trim();
       if (!trimmed) return;
-      submitTask(trimmed);
+      launch(trimmed);
     }
   }
 

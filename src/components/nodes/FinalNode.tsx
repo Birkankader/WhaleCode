@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 
 import { NODE_DIMENSIONS } from '../../lib/layout';
+import { useGraphStore } from '../../state/graphStore';
 import type { NodeState } from '../../state/nodeMachine';
 import { Button } from '../primitives/Button';
 import { NodeContainer } from '../primitives/NodeContainer';
@@ -17,6 +18,8 @@ export function FinalNode({ data }: NodeProps) {
   const { width, height } = NODE_DIMENSIONS.final;
   const activated = d.state === 'done' || d.state === 'running';
   const dotColor = activated ? 'var(--color-status-success)' : 'var(--color-fg-tertiary)';
+  const applyRun = useGraphStore((s) => s.applyRun);
+  const reset = useGraphStore((s) => s.reset);
 
   return (
     <NodeContainer
@@ -47,10 +50,10 @@ export function FinalNode({ data }: NodeProps) {
         ) : null}
       </ul>
       <footer className="mt-auto flex items-center justify-end gap-2">
-        <Button variant="ghost" disabled={!activated}>
+        <Button variant="ghost" disabled={!activated} onClick={reset}>
           Discard all
         </Button>
-        <Button variant="primary" disabled={!activated}>
+        <Button variant="primary" disabled={!activated} onClick={applyRun}>
           Apply to branch
         </Button>
       </footer>

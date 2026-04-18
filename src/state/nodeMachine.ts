@@ -76,6 +76,9 @@ export const nodeMachine = setup({
       on: {
         START: 'running',
         BLOCK: 'waiting',
+        // Master only: re-enters thinking when a subtask escalates and it has
+        // to draft a replacement plan. Workers never drive this transition.
+        THINK: 'thinking',
       },
     },
     waiting: {

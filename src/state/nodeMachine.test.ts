@@ -44,6 +44,11 @@ describe('nodeMachine — waiting / blocked', () => {
     const snap = run(['PROPOSE', 'APPROVE', 'BLOCK', 'START']);
     expect(snap.value).toBe('waiting');
   });
+
+  it('approved → thinking → proposed → approved (master replan loop)', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'THINK', 'PROPOSE', 'APPROVE']);
+    expect(snap.value).toBe('approved');
+  });
 });
 
 describe('nodeMachine — retry path', () => {

@@ -12,7 +12,7 @@ export default function App() {
     <div className="flex h-screen w-screen flex-col bg-bg-primary text-fg-primary">
       <TopBar />
       <main className="relative flex-1 overflow-hidden">
-        {status === 'idle' ? <EmptyState /> : <GraphCanvas />}
+        {status === 'idle' || status === 'applied' ? <EmptyState /> : <GraphCanvas />}
         <ApprovalBar />
       </main>
       <Footer />
