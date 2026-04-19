@@ -145,6 +145,29 @@ export type GraphState = {
    * Cleared on run reset and when a subtask is removed from the plan.
    */
   subtaskRetryCounts: Map<string, number>;
+  /**
+   * Phase 3 Step 2 — "edited" / "added" badge provenance. Edited state is
+   * derived by comparing the current subtask row to its captured original
+   * (snapshotted the *first* time an id appears in a run:subtasks_proposed
+   * event for ids not already marked user-added). User-added ids skip the
+   * original snapshot entirely — their badge is "added", not "edited".
+   *
+   * The backend's storage layer persists `edited_by_user` for re-plan
+   * prompt assembly (see `docs/phase-3-spec.md` Common Pitfalls), but the
+   * event payload doesn't expose it yet. For the UI badge we compute it
+   * client-side from these two maps — correct as long as the browser tab
+   * stays open for the life of the run, which matches every other piece
+   * of session-scoped state in the store.
+   */
+  originalSubtasks: Map<string, { title: string; why: string | null; agent: BackendAgentKind }>;
+  userAddedSubtaskIds: Set<string>;
+  /**
+   * Set by `addSubtask` to the just-returned id, cleared as soon as the
+   * WorkerNode reads it once. Drives the "new node auto-enters edit mode
+   * on the title" interaction. One-shot — subsequent renders of the same
+   * node don't auto-focus.
+   */
+  lastAddedSubtaskId: string | null;
   /** Live subscription to the active run's events. Null between runs. */
   activeSubscription: RunSubscription | null;
   /** Last surfaced error (IPC failure or backend `Failed` event). */
@@ -172,12 +195,44 @@ export type GraphState = {
   updateSubtask: (subtaskId: SubtaskId, patch: SubtaskPatch) => Promise<void>;
   addSubtask: (draft: SubtaskDraft) => Promise<SubtaskId>;
   removeSubtask: (subtaskId: SubtaskId) => Promise<void>;
+  /**
+   * One-shot consumer for `lastAddedSubtaskId`. The just-mounted
+   * WorkerNode calls this in a layout effect after reading the flag so
+   * re-renders of the same node don't re-enter edit mode.
+   */
+  clearLastAddedSubtaskId: () => void;
   dismissError: () => void;
   reset: () => void;
 };
 
 export const MASTER_ID = 'master' as const;
 export const FINAL_ID = 'final' as const;
+
+/**
+ * True if the subtask has been edited from master's original proposal.
+ * User-added subtasks always return false (they don't have a "master
+ * original" to diff against — their badge is "added", not "edited").
+ * Also returns false for ids we've never seen an original for, which
+ * can happen transiently during store warmup — safer to underreport
+ * than to flash a false edit badge.
+ */
+export function isSubtaskEdited(state: GraphState, id: string): boolean {
+  if (state.userAddedSubtaskIds.has(id)) return false;
+  const original = state.originalSubtasks.get(id);
+  if (!original) return false;
+  const current = state.subtasks.find((s) => s.id === id);
+  if (!current) return false;
+  return (
+    current.title !== original.title ||
+    current.why !== original.why ||
+    current.agent !== original.agent
+  );
+}
+
+/** True if the subtask was added by the user via `addSubtask`. */
+export function isSubtaskAdded(state: GraphState, id: string): boolean {
+  return state.userAddedSubtaskIds.has(id);
+}
 
 const initial: Pick<
   GraphState,
@@ -193,6 +248,9 @@ const initial: Pick<
   | 'nodeSnapshots'
   | 'nodeLogs'
   | 'subtaskRetryCounts'
+  | 'originalSubtasks'
+  | 'userAddedSubtaskIds'
+  | 'lastAddedSubtaskId'
   | 'activeSubscription'
   | 'currentError'
 > = {
@@ -208,6 +266,9 @@ const initial: Pick<
   nodeSnapshots: new Map(),
   nodeLogs: new Map(),
   subtaskRetryCounts: new Map(),
+  originalSubtasks: new Map(),
+  userAddedSubtaskIds: new Set(),
+  lastAddedSubtaskId: null,
   activeSubscription: null,
   currentError: null,
 };
@@ -497,11 +558,41 @@ export const useGraphStore = create<GraphState>((set, get) => {
       });
     }
 
+    // Scrub provenance maps by the authoritative incoming id set rather
+    // than `removedIds`. This handles a subtle add-then-remove race: a
+    // user-added id lands in `userAddedSubtaskIds` via `addSubtask`'s
+    // optimistic `set` BEFORE the backend's follow-up subtasks_proposed
+    // adds it to `state.subtasks`. If that subtask is subsequently
+    // removed without ever surfacing in the store list, the
+    // `removedIds` walk misses it. Walking the tracking maps directly
+    // closes that gap and is idempotent on the common path.
+    const trackedOriginals = [...get().originalSubtasks.keys()];
+    const trackedAdded = [...get().userAddedSubtaskIds];
+    const orphanOriginals = trackedOriginals.filter((id) => !incomingIds.has(id));
+    const orphanAdded = trackedAdded.filter((id) => !incomingIds.has(id));
+    if (orphanOriginals.length > 0 || orphanAdded.length > 0) {
+      set((state) => {
+        const nextOriginals = new Map(state.originalSubtasks);
+        const nextAdded = new Set(state.userAddedSubtaskIds);
+        for (const id of orphanOriginals) nextOriginals.delete(id);
+        for (const id of orphanAdded) nextAdded.delete(id);
+        return {
+          originalSubtasks: nextOriginals,
+          userAddedSubtaskIds: nextAdded,
+        };
+      });
+    }
+
     // Build the next subtasks list in incoming order (DAG layout
     // should follow the master's intent), spawning actors only for
     // brand-new ids.
     const nextSubtasks: SubtaskNodeData[] = [];
     const newIds: string[] = [];
+    const pendingOriginals: Array<
+      [string, { title: string; why: string | null; agent: BackendAgentKind }]
+    > = [];
+    const addedIds = get().userAddedSubtaskIds;
+    const currentOriginals = get().originalSubtasks;
     for (const st of e.subtasks) {
       nextSubtasks.push({
         id: st.id,
@@ -514,6 +605,19 @@ export const useGraphStore = create<GraphState>((set, get) => {
         newIds.push(st.id);
         const actor = registerActor(st.id);
         actor.send({ type: 'PROPOSE' });
+      }
+      // Snapshot the master-original the first time we see a subtask
+      // that isn't user-added. Skipped for already-known ids so a
+      // post-edit re-emit doesn't stomp the baseline we're diffing
+      // the "edited" badge against.
+      if (
+        !currentOriginals.has(st.id) &&
+        !addedIds.has(st.id)
+      ) {
+        pendingOriginals.push([
+          st.id,
+          { title: st.title, why: st.why, agent: st.assignedWorker },
+        ]);
       }
     }
 
@@ -539,9 +643,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
         if (incomingIds.has(id)) nextSelected.add(id);
       }
       for (const id of newIds) nextSelected.add(id);
+      const nextOriginals =
+        pendingOriginals.length > 0
+          ? new Map(state.originalSubtasks)
+          : state.originalSubtasks;
+      for (const [id, snapshot] of pendingOriginals) {
+        nextOriginals.set(id, snapshot);
+      }
       return {
         subtasks: nextSubtasks,
         selectedSubtaskIds: nextSelected,
+        originalSubtasks: nextOriginals,
       };
     });
   }
@@ -873,6 +985,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
       }
       try {
         const id = await addSubtaskIpc(runId, draft);
+        // Mark as user-added *before* the handler sees the follow-up
+        // run:subtasks_proposed — that handler checks this set to
+        // decide whether to snapshot an "original" for the edited-badge
+        // diff. User-added ids skip the snapshot (they get "added"
+        // instead of "edited"). Also stash id so the newly-mounted
+        // WorkerNode enters edit mode on its title; the flag is one-
+        // shot, consumed by clearLastAddedSubtaskId below.
+        set((state) => {
+          const next = new Set(state.userAddedSubtaskIds);
+          next.add(id);
+          return { userAddedSubtaskIds: next, lastAddedSubtaskId: id };
+        });
         return id;
       } catch (err) {
         set({ currentError: mapEditError(err, 'Add') });
@@ -889,6 +1013,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
         set({ currentError: mapEditError(err, 'Remove') });
         throw err;
       }
+      // Backend's follow-up run:subtasks_proposed will drop the id from
+      // the subtasks list via the diff-by-id handler, which also scrubs
+      // originalSubtasks / userAddedSubtaskIds. No store mutation here.
+    },
+
+    clearLastAddedSubtaskId() {
+      // Guard the no-op case so callers can fire-and-forget from a
+      // layout effect without flashing `set` on every render.
+      if (get().lastAddedSubtaskId === null) return;
+      set({ lastAddedSubtaskId: null });
     },
 
     dismissError() {
@@ -904,6 +1038,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeSnapshots: new Map(),
         nodeLogs: new Map(),
         subtaskRetryCounts: new Map(),
+        originalSubtasks: new Map(),
+        userAddedSubtaskIds: new Set(),
+        lastAddedSubtaskId: null,
       });
     },
   };

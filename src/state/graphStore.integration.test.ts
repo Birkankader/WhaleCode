@@ -54,7 +54,13 @@ import {
   EVENT_SUBTASKS_PROPOSED,
 } from '../lib/ipc';
 import { useRepoStore } from './repoStore';
-import { FINAL_ID, MASTER_ID, useGraphStore } from './graphStore';
+import {
+  FINAL_ID,
+  MASTER_ID,
+  isSubtaskAdded,
+  isSubtaskEdited,
+  useGraphStore,
+} from './graphStore';
 
 const BACKEND_RUN_ID = 'run-integration-001';
 const REPO_PATH = '/tmp/fake-repo';
@@ -1127,5 +1133,208 @@ describe('graphStore — discard / cancel / reset', () => {
     expect(s.activeSubscription).toBeNull();
     expect(s.nodeActors.size).toBe(0);
     for (const a of actors) expect(a.getSnapshot().status).toBe('stopped');
+  });
+});
+
+// Phase 3 Step 2 — provenance tracking for the "edited" / "added" badges.
+describe('graphStore — edit/add provenance (Phase 3 Step 2)', () => {
+  async function setupAwaitingApproval() {
+    await state().submitTask('Build settings page');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'auth', title: 'Auth', why: 'login first', assignedWorker: 'claude', dependencies: [] },
+        {
+          id: 'tests',
+          title: 'Tests',
+          why: null,
+          assignedWorker: 'gemini',
+          dependencies: ['auth'],
+        },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+  }
+
+  it('snapshots an original for every master-proposed subtask on first emit', async () => {
+    await setupAwaitingApproval();
+    const s = state();
+    const authOrig = s.originalSubtasks.get('auth');
+    expect(authOrig).toEqual({ title: 'Auth', why: 'login first', agent: 'claude' });
+    expect(s.originalSubtasks.get('tests')).toEqual({
+      title: 'Tests',
+      why: null,
+      agent: 'gemini',
+    });
+    expect(isSubtaskEdited(s, 'auth')).toBe(false);
+    expect(isSubtaskAdded(s, 'auth')).toBe(false);
+  });
+
+  it('does NOT re-snapshot an original when a subtask_proposed re-emits the same id with edits', async () => {
+    await setupAwaitingApproval();
+    // Simulate backend re-emitting after an update_subtask edit landed.
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'auth',
+          title: 'Auth (edited)',
+          why: 'login first',
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+        {
+          id: 'tests',
+          title: 'Tests',
+          why: null,
+          assignedWorker: 'gemini',
+          dependencies: ['auth'],
+        },
+      ],
+    });
+    const s = state();
+    expect(s.originalSubtasks.get('auth')).toEqual({
+      title: 'Auth',
+      why: 'login first',
+      agent: 'claude',
+    });
+    expect(isSubtaskEdited(s, 'auth')).toBe(true);
+    expect(isSubtaskEdited(s, 'tests')).toBe(false);
+  });
+
+  it('reverting to original flips isSubtaskEdited back to false', async () => {
+    await setupAwaitingApproval();
+    // Edit …
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'auth',
+          title: 'Auth (edited)',
+          why: 'login first',
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+        {
+          id: 'tests',
+          title: 'Tests',
+          why: null,
+          assignedWorker: 'gemini',
+          dependencies: ['auth'],
+        },
+      ],
+    });
+    expect(isSubtaskEdited(state(), 'auth')).toBe(true);
+    // … then revert via another re-emit with the original fields.
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'auth',
+          title: 'Auth',
+          why: 'login first',
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+        {
+          id: 'tests',
+          title: 'Tests',
+          why: null,
+          assignedWorker: 'gemini',
+          dependencies: ['auth'],
+        },
+      ],
+    });
+    expect(isSubtaskEdited(state(), 'auth')).toBe(false);
+  });
+
+  it('addSubtask → returned id enters userAddedSubtaskIds and lastAddedSubtaskId', async () => {
+    await setupAwaitingApproval();
+    invokeHandlers.set('add_subtask', async () => 'user-1');
+    const id = await state().addSubtask({
+      title: '',
+      why: null,
+      assignedWorker: 'claude',
+    });
+    expect(id).toBe('user-1');
+    const s = state();
+    expect(s.userAddedSubtaskIds.has('user-1')).toBe(true);
+    expect(s.lastAddedSubtaskId).toBe('user-1');
+  });
+
+  it('user-added subtask reports isSubtaskAdded=true, isSubtaskEdited=false (even after edits)', async () => {
+    await setupAwaitingApproval();
+    invokeHandlers.set('add_subtask', async () => 'user-1');
+    await state().addSubtask({ title: '', why: null, assignedWorker: 'claude' });
+
+    // Backend re-emits with the new user-added row.
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'auth', title: 'Auth', why: 'login first', assignedWorker: 'claude', dependencies: [] },
+        {
+          id: 'tests',
+          title: 'Tests',
+          why: null,
+          assignedWorker: 'gemini',
+          dependencies: ['auth'],
+        },
+        {
+          id: 'user-1',
+          title: '',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    const s = state();
+    // User-added never gets snapshotted as an original …
+    expect(s.originalSubtasks.has('user-1')).toBe(false);
+    // … so it never counts as "edited", only "added".
+    expect(isSubtaskAdded(s, 'user-1')).toBe(true);
+    expect(isSubtaskEdited(s, 'user-1')).toBe(false);
+  });
+
+  it('clearLastAddedSubtaskId is a one-shot and tolerates repeated calls', async () => {
+    await setupAwaitingApproval();
+    invokeHandlers.set('add_subtask', async () => 'user-2');
+    await state().addSubtask({ title: '', why: null, assignedWorker: 'claude' });
+    expect(state().lastAddedSubtaskId).toBe('user-2');
+    state().clearLastAddedSubtaskId();
+    expect(state().lastAddedSubtaskId).toBeNull();
+    // Repeated call is a no-op (regression guard against flashing `set` on
+    // every layout-effect tick of a non-just-added WorkerNode).
+    state().clearLastAddedSubtaskId();
+    expect(state().lastAddedSubtaskId).toBeNull();
+  });
+
+  it('removing a subtask scrubs originalSubtasks and userAddedSubtaskIds entries', async () => {
+    await setupAwaitingApproval();
+    invokeHandlers.set('add_subtask', async () => 'user-1');
+    await state().addSubtask({ title: '', why: null, assignedWorker: 'claude' });
+    // Backend re-emits without 'tests' and without 'user-1'.
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'auth', title: 'Auth', why: 'login first', assignedWorker: 'claude', dependencies: [] },
+      ],
+    });
+    const s = state();
+    expect(s.originalSubtasks.has('tests')).toBe(false);
+    expect(s.userAddedSubtaskIds.has('user-1')).toBe(false);
+    // But 'auth' is still retained as an original.
+    expect(s.originalSubtasks.has('auth')).toBe(true);
+  });
+
+  it('reset clears all three new tracking fields', async () => {
+    await setupAwaitingApproval();
+    invokeHandlers.set('add_subtask', async () => 'user-1');
+    await state().addSubtask({ title: '', why: null, assignedWorker: 'claude' });
+    state().reset();
+    const s = state();
+    expect(s.originalSubtasks.size).toBe(0);
+    expect(s.userAddedSubtaskIds.size).toBe(0);
+    expect(s.lastAddedSubtaskId).toBeNull();
   });
 });
