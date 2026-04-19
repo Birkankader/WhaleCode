@@ -64,6 +64,10 @@ export const subtaskStateSchema = z.enum([
   'proposed',
   'waiting',
   'running',
+  // Phase 3 prerequisite: transient state between Layer-1 failure and the
+  // second attempt. The store bridges this to node-machine events in Step
+  // 3a; until then `eventsForSubtaskState` returns [] for 'retrying'.
+  'retrying',
   'done',
   'failed',
   'skipped',

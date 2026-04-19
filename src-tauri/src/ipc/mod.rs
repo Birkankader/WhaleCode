@@ -67,6 +67,12 @@ pub enum RunStatus {
 // SubtaskState / SubtaskData / FileDiff / RunSummary are scaffolding for the
 // orchestrator (step 8). They travel across IPC event payloads; the command
 // stubs in step 1 don't construct them yet.
+//
+// Phase 3 adds `Retrying` — the transient state a subtask enters between
+// Layer-1 failure and its second attempt. No frontend bridge behaviour
+// until Step 3a wires `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` in
+// `eventsForSubtaskState`; for now the variant is declared and the store
+// treats it as a no-op.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -74,6 +80,7 @@ pub enum SubtaskState {
     Proposed,
     Waiting,
     Running,
+    Retrying,
     Done,
     Failed,
     Skipped,

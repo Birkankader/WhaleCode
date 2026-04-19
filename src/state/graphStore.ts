@@ -224,6 +224,12 @@ function eventsForSubtaskState(
       if (current === 'waiting') return ['UNBLOCK', 'START'];
       if (current === 'approved') return ['START'];
       return [];
+    case 'retrying':
+      // Phase 3 prerequisite: the variant is declared on the wire but the
+      // XState bridge lands in Step 3a (START_RETRY / RETRY_SUCCESS /
+      // RETRY_FAIL). Until then this is a no-op so a backend that emits
+      // Retrying against a pre-Step-3 frontend doesn't crash the parser.
+      return [];
     case 'done':
       // Bridge the same approved-waypoint gap if backend jumps
       // proposed/waiting/approved → done (e.g. a no-op subtask).

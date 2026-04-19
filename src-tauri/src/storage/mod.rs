@@ -72,12 +72,28 @@ impl Storage {
         Ok(Self { pool })
     }
 
-    /// Runs M001 against the pool. Idempotent — safe to call on a DB the
-    /// plugin-sql runner has already initialised.
+    /// Runs the schema migrations against the pool. Idempotent — safe to
+    /// call on a DB the plugin-sql runner has already initialised.
+    ///
+    /// M001 is fully declarative (`CREATE TABLE IF NOT EXISTS`), so running
+    /// it twice is harmless. M002 uses `ALTER TABLE ADD COLUMN` which has
+    /// no `IF NOT EXISTS` in SQLite — gate it on a `pragma_table_info`
+    /// check so production (plugin-sql already applied) and in-memory
+    /// tests (fresh pool) both work.
     async fn bootstrap(pool: &SqlitePool) -> StorageResult<()> {
         sqlx::query(migrations::M001_INITIAL_SCHEMA)
             .execute(pool)
             .await?;
+        let m002_applied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('subtasks') WHERE name = 'edited_by_user'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if m002_applied == 0 {
+            sqlx::query(migrations::M002_ADD_USER_EDIT_TRACKING_AND_REPLANS)
+                .execute(pool)
+                .await?;
+        }
         Ok(())
     }
 
@@ -572,5 +588,123 @@ mod tests {
             .unwrap();
         let err = s.get_run("r1").await.unwrap_err();
         assert!(matches!(err, StorageError::Invalid(_)));
+    }
+
+    // --- M002: Phase 3 prerequisite tests ----------------------------------
+    //
+    // These check the schema shape directly rather than going through the
+    // (not-yet-written) Step 1 commands, so the migration can land as a
+    // standalone prerequisite and be verified independently.
+
+    #[tokio::test]
+    async fn m002_subtask_columns_exist() {
+        let s = Storage::in_memory().await.unwrap();
+        let edited: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('subtasks') WHERE name = 'edited_by_user'",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        let added: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('subtasks') WHERE name = 'added_by_user'",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(edited, 1, "edited_by_user column must exist after M002");
+        assert_eq!(added, 1, "added_by_user column must exist after M002");
+    }
+
+    #[tokio::test]
+    async fn m002_new_subtask_defaults_flags_to_zero() {
+        // Existing inserts don't name the new columns — DEFAULT 0 must fill
+        // them so Step 1's `update_subtask` has a baseline to flip.
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("s1", "r1")).await.unwrap();
+        let flags: (i64, i64) = sqlx::query_as(
+            "SELECT edited_by_user, added_by_user FROM subtasks WHERE id = ?",
+        )
+        .bind("s1")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(flags, (0, 0));
+    }
+
+    #[tokio::test]
+    async fn m002_subtask_replans_table_exists_and_cascades() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("orig", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("repl", "r1")).await.unwrap();
+        sqlx::query(
+            "INSERT INTO subtask_replans \
+             (original_subtask_id, replacement_subtask_id, reason, created_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind("orig")
+        .bind("repl")
+        .bind("master couldn't finish")
+        .bind(now_iso8601())
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM subtask_replans")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // Deleting the original subtask must cascade into subtask_replans.
+        // This is how Phase 2's delete_run will stay consistent in Phase 3
+        // without extra cleanup code.
+        s.delete_run("r1").await.unwrap();
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM subtask_replans")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(after, 0, "subtask_replans must CASCADE on run delete");
+    }
+
+    #[tokio::test]
+    async fn m002_bootstrap_is_idempotent_on_second_call() {
+        // Production has two runners racing for the same DB (plugin-sql +
+        // Rust pool). bootstrap() must be safe to call repeatedly; if the
+        // ADD COLUMN fires twice SQLite errors "duplicate column name".
+        let s = Storage::in_memory().await.unwrap();
+        Storage::bootstrap(&s.pool).await.expect("first re-bootstrap");
+        Storage::bootstrap(&s.pool).await.expect("second re-bootstrap");
+    }
+
+    #[tokio::test]
+    async fn retrying_subtask_state_round_trips_through_storage() {
+        // SubtaskState::Retrying is Phase 3 plumbing; the text-column
+        // persistence just has to carry the variant in both directions
+        // without surprises until Step 3b emits it for real.
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("s1", "r1")).await.unwrap();
+        s.update_subtask_state("s1", SubtaskState::Running, None)
+            .await
+            .unwrap();
+        let started_at_before = s
+            .get_subtask("s1")
+            .await
+            .unwrap()
+            .unwrap()
+            .started_at
+            .clone();
+
+        s.update_subtask_state("s1", SubtaskState::Retrying, None)
+            .await
+            .unwrap();
+        let sub = s.get_subtask("s1").await.unwrap().unwrap();
+        assert_eq!(sub.state, SubtaskState::Retrying);
+        // Neither Running's started_at stamp is cleared, nor is a new
+        // finished_at set — Retrying is a transient mid-attempt state.
+        assert_eq!(sub.started_at, started_at_before);
+        assert!(sub.finished_at.is_none());
     }
 }
