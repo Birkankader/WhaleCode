@@ -105,7 +105,6 @@ export type FinalNodeData = {
 
 export type NodeSnapshot = {
   value: NodeState;
-  retries: number;
 };
 
 export type GraphStatus =
@@ -133,6 +132,19 @@ export type GraphState = {
   nodeActors: Map<string, NodeActorRef>;
   nodeSnapshots: Map<string, NodeSnapshot>;
   nodeLogs: Map<string, string[]>;
+  /**
+   * Per-subtask retry counter — the number of times the backend has
+   * entered `SubtaskState::Retrying` for that id, counted cumulatively
+   * across the run. Phase 3 Step 3a moved this out of the XState
+   * machine context (see `nodeMachine.ts` header comment) so the UI
+   * has a single source of truth and the machine stays context-free.
+   *
+   * Semantics: a retry that *succeeds* still contributes to the count —
+   * the badge "retry 1" on a currently-running subtask means "this
+   * subtask needed a retry and recovered", which is useful signal.
+   * Cleared on run reset and when a subtask is removed from the plan.
+   */
+  subtaskRetryCounts: Map<string, number>;
   /** Live subscription to the active run's events. Null between runs. */
   activeSubscription: RunSubscription | null;
   /** Last surfaced error (IPC failure or backend `Failed` event). */
@@ -180,6 +192,7 @@ const initial: Pick<
   | 'nodeActors'
   | 'nodeSnapshots'
   | 'nodeLogs'
+  | 'subtaskRetryCounts'
   | 'activeSubscription'
   | 'currentError'
 > = {
@@ -194,6 +207,7 @@ const initial: Pick<
   nodeActors: new Map(),
   nodeSnapshots: new Map(),
   nodeLogs: new Map(),
+  subtaskRetryCounts: new Map(),
   activeSubscription: null,
   currentError: null,
 };
@@ -244,29 +258,44 @@ function eventsForSubtaskState(
     case 'running':
       // Backend's subtask_state_changed for an approved subtask jumps
       // straight to 'running' — the machine's `approved` state is a
-      // frontend-only waypoint the backend doesn't model. Bridge it here
-      // so the actor lands where backend expects.
+      // frontend-only waypoint the backend doesn't model. Bridge it
+      // here so the actor lands where backend expects. From `retrying`
+      // a running signal means the retry took — emit RETRY_SUCCESS so
+      // the machine rejoins the happy path.
+      if (current === 'retrying') return ['RETRY_SUCCESS'];
       if (current === 'proposed') return ['APPROVE', 'START'];
       if (current === 'waiting') return ['UNBLOCK', 'START'];
       if (current === 'approved') return ['START'];
       return [];
     case 'retrying':
-      // Phase 3 prerequisite: the variant is declared on the wire but the
-      // XState bridge lands in Step 3a (START_RETRY / RETRY_SUCCESS /
-      // RETRY_FAIL). Until then this is a no-op so a backend that emits
-      // Retrying against a pre-Step-3 frontend doesn't crash the parser.
+      // Step 3a: backend-driven retry entry. From `running`, START_RETRY
+      // directly; from earlier lifecycle states, bridge to `running`
+      // first and then START_RETRY so the machine doesn't skip the
+      // `running` waypoint (keeps log-visibility rules and edge
+      // animations consistent). The counter is bumped in the handler
+      // before this function runs — see `handleSubtaskStateChanged`.
+      if (current === 'running') return ['START_RETRY'];
+      if (current === 'proposed') return ['APPROVE', 'START', 'START_RETRY'];
+      if (current === 'waiting') return ['UNBLOCK', 'START', 'START_RETRY'];
+      if (current === 'approved') return ['START', 'START_RETRY'];
       return [];
     case 'done':
       // Bridge the same approved-waypoint gap if backend jumps
       // proposed/waiting/approved → done (e.g. a no-op subtask).
+      // From `retrying` a done is unusual but legal — treat as
+      // retry-recovered-then-completed.
+      if (current === 'retrying') return ['RETRY_SUCCESS', 'COMPLETE'];
       if (current === 'proposed') return ['APPROVE', 'START', 'COMPLETE'];
       if (current === 'waiting') return ['UNBLOCK', 'START', 'COMPLETE'];
       if (current === 'approved') return ['START', 'COMPLETE'];
       return ['COMPLETE'];
     case 'failed':
-      // MAX_RETRIES = 0 so `running --FAIL→ failed` directly. Bridge from
-      // non-running states too (backend may emit failed on a never-started
-      // subtask, e.g. master re-plan invalidation).
+      // From `running` → terminal FAIL (no branching guard; retry
+      // arrives as a follow-up Retrying event if at all). From
+      // `retrying` → RETRY_FAIL so we leave the retry sub-state
+      // cleanly. Bridge from earlier states for backend shortcuts
+      // (e.g. master re-plan invalidation before START).
+      if (current === 'retrying') return ['RETRY_FAIL'];
       if (current === 'proposed') return ['APPROVE', 'START', 'FAIL'];
       if (current === 'waiting') return ['UNBLOCK', 'START', 'FAIL'];
       if (current === 'approved') return ['START', 'FAIL'];
@@ -337,10 +366,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     actor.subscribe((snap) => {
       set((state) => {
         const nextSnaps = new Map(state.nodeSnapshots);
-        nextSnaps.set(id, {
-          value: snap.value as NodeState,
-          retries: snap.context.retries,
-        });
+        nextSnaps.set(id, { value: snap.value as NodeState });
         return { nodeSnapshots: nextSnaps };
       });
     });
@@ -455,15 +481,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const nextActors = new Map(state.nodeActors);
         const nextSnaps = new Map(state.nodeSnapshots);
         const nextLogs = new Map(state.nodeLogs);
+        const nextRetries = new Map(state.subtaskRetryCounts);
         for (const id of removedIds) {
           nextActors.delete(id);
           nextSnaps.delete(id);
           nextLogs.delete(id);
+          nextRetries.delete(id);
         }
         return {
           nodeActors: nextActors,
           nodeSnapshots: nextSnaps,
           nodeLogs: nextLogs,
+          subtaskRetryCounts: nextRetries,
         };
       });
     }
@@ -520,6 +549,21 @@ export const useGraphStore = create<GraphState>((set, get) => {
   function handleSubtaskStateChanged(e: SubtaskStateChanged) {
     if (e.runId !== get().runId) return;
     const current = get().nodeSnapshots.get(e.subtaskId)?.value;
+
+    // Bump the retry counter *before* we transition the actor so a
+    // subscriber that reads the snapshot + counter in the same render
+    // pass sees both the `retrying` state and the incremented count.
+    // Every backend Retrying event counts, including retries that
+    // eventually succeed — see `subtaskRetryCounts` doc on GraphState
+    // for the rationale.
+    if (e.state === 'retrying') {
+      set((state) => {
+        const next = new Map(state.subtaskRetryCounts);
+        next.set(e.subtaskId, (next.get(e.subtaskId) ?? 0) + 1);
+        return { subtaskRetryCounts: next };
+      });
+    }
+
     const events = eventsForSubtaskState(e.state, current);
     for (const type of events) {
       sendTo(e.subtaskId, { type });
@@ -859,6 +903,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeActors: new Map(),
         nodeSnapshots: new Map(),
         nodeLogs: new Map(),
+        subtaskRetryCounts: new Map(),
       });
     },
   };

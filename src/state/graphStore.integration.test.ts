@@ -232,7 +232,10 @@ describe('graphStore — happy path (realistic backend sequence)', () => {
     expect(s.activeSubscription).toBeNull(); // auto-detached
   });
 
-  it('failed subtask (no retries, per MAX_RETRIES=0) lands in failed directly', async () => {
+  it('subtask that fails without a prior Retrying lands in failed with retry count 0', async () => {
+    // Phase 3 Step 3a: retry counting lives in graphStore.subtaskRetryCounts,
+    // not on the machine snapshot. A first-pass FAIL never entered
+    // Retrying, so the counter stays at 0.
     await state().submitTask('x');
     emit(EVENT_SUBTASKS_PROPOSED, {
       runId: BACKEND_RUN_ID,
@@ -254,7 +257,7 @@ describe('graphStore — happy path (realistic backend sequence)', () => {
       state: 'failed',
     });
     expect(snap('a')?.value).toBe('failed');
-    expect(snap('a')?.retries).toBe(0);
+    expect(state().subtaskRetryCounts.get('a') ?? 0).toBe(0);
   });
 
   it('re-plan replaces subtasks by id: removed subtasks drop, new ones append, retained ones stay', async () => {
@@ -304,6 +307,152 @@ describe('graphStore — happy path (realistic backend sequence)', () => {
     expect(s.selectedSubtaskIds).toEqual(new Set(['a', 'c']));
     expect(snap('c')?.value).toBe('proposed');
     expect(snap(MASTER_ID)?.value).toBe('proposed');
+  });
+});
+
+describe('graphStore — retry counter (Phase 3 Step 3a)', () => {
+  // Counter semantics: every backend `Retrying` event bumps the count
+  // for that subtask id, including retries that eventually succeed.
+  // Cleared when the subtask is removed from the plan via diff, or
+  // when the store is reset.
+
+  async function runToFirstRunning() {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    await state().approveSubtasks(['a']);
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'running' });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'running',
+    });
+  }
+
+  it('running → retrying bumps counter to 1 and drives the machine to retrying', async () => {
+    await runToFirstRunning();
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    expect(state().subtaskRetryCounts.get('a')).toBe(1);
+    expect(snap('a')?.value).toBe('retrying');
+  });
+
+  it('two retry events bump the counter to 2 (cumulative, not high-water)', async () => {
+    await runToFirstRunning();
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'running',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    expect(state().subtaskRetryCounts.get('a')).toBe(2);
+    expect(snap('a')?.value).toBe('retrying');
+  });
+
+  it('retrying → running keeps the counter at 1 (recovered retry still shows "retry 1")', async () => {
+    await runToFirstRunning();
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'running',
+    });
+    expect(state().subtaskRetryCounts.get('a')).toBe(1);
+    expect(snap('a')?.value).toBe('running');
+  });
+
+  it('running → failed without a retry keeps counter at 0', async () => {
+    await runToFirstRunning();
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'failed',
+    });
+    expect(state().subtaskRetryCounts.get('a') ?? 0).toBe(0);
+    expect(snap('a')?.value).toBe('failed');
+  });
+
+  it('retrying → failed preserves the counter (ladder progression needs the history)', async () => {
+    await runToFirstRunning();
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'failed',
+    });
+    expect(state().subtaskRetryCounts.get('a')).toBe(1);
+    expect(snap('a')?.value).toBe('failed');
+  });
+
+  it('remove via diff clears the counter', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+        { id: 'b', title: 'B', why: null, assignedWorker: 'gemini', dependencies: [] },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    await state().approveSubtasks(['a', 'b']);
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'running' });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'running',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    expect(state().subtaskRetryCounts.get('a')).toBe(1);
+
+    // Re-emit drops `a` — its retry counter should be cleaned up too.
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'b', title: 'B', why: null, assignedWorker: 'gemini', dependencies: [] },
+      ],
+    });
+    expect(state().subtaskRetryCounts.has('a')).toBe(false);
+  });
+
+  it('reset clears all retry counters', async () => {
+    await runToFirstRunning();
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'retrying',
+    });
+    expect(state().subtaskRetryCounts.get('a')).toBe(1);
+    state().reset();
+    expect(state().subtaskRetryCounts.size).toBe(0);
   });
 });
 

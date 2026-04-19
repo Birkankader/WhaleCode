@@ -68,6 +68,11 @@ function GraphCanvasInner() {
     })),
   );
   const nodeSnapshots = useGraphStore((s) => s.nodeSnapshots);
+  // Step 3a: retry counts are tracked in the store, not in machine
+  // context. Subscribe separately so a retry tick doesn't rebuild
+  // nodes whose state didn't change — the buildGraph memo re-runs
+  // only when one of its own inputs changes.
+  const retryCounts = useGraphStore((s) => s.subtaskRetryCounts);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -93,8 +98,8 @@ function GraphCanvasInner() {
   }, []);
 
   const { nodes, edges } = useMemo(() => {
-    return buildGraph(structure, nodeSnapshots, compact ? 2 : undefined);
-  }, [structure, nodeSnapshots, compact]);
+    return buildGraph(structure, nodeSnapshots, retryCounts, compact ? 2 : undefined);
+  }, [structure, nodeSnapshots, retryCounts, compact]);
 
   const { setViewport } = useReactFlow();
 
@@ -202,6 +207,7 @@ type Structure = {
 function buildGraph(
   structure: Structure,
   snapshots: Map<string, NodeSnapshot>,
+  retryCounts: Map<string, number>,
   maxPerRow: number | undefined,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
@@ -220,7 +226,7 @@ function buildGraph(
   const positioned = layoutGraph(layoutInputs, layoutEdges, { maxPerRow });
 
   const nodes: Node[] = positioned.map((p) => {
-    const data = dataFor(p.id, p.kind, structure, snapshots);
+    const data = dataFor(p.id, p.kind, structure, snapshots, retryCounts);
     return {
       id: p.id,
       type: p.kind,
@@ -267,6 +273,7 @@ function dataFor(
   kind: 'master' | 'worker' | 'final',
   structure: Structure,
   snapshots: Map<string, NodeSnapshot>,
+  retryCounts: Map<string, number>,
 ): MasterNodeData | WorkerNodeData | FinalNodeData {
   const snap = snapshots.get(id);
   const state: NodeState = snap?.value ?? 'idle';
@@ -291,7 +298,7 @@ function dataFor(
     state,
     agent: st?.agent ?? 'claude',
     title: st?.title ?? id,
-    retries: snap?.retries ?? 0,
+    retries: retryCounts.get(id) ?? 0,
   };
 }
 

@@ -1,4 +1,4 @@
-import { assign, setup } from 'xstate';
+import { setup } from 'xstate';
 
 export type NodeState =
   | 'idle'
@@ -22,8 +22,10 @@ export type NodeEventType =
   | 'BLOCK'
   | 'UNBLOCK'
   | 'START'
+  | 'START_RETRY'
   | 'FAIL'
   | 'RETRY_SUCCESS'
+  | 'RETRY_FAIL'
   | 'COMPLETE'
   | 'ESCALATE'
   | 'REPLAN_DONE'
@@ -32,34 +34,42 @@ export type NodeEventType =
 
 export type NodeEvent = { type: NodeEventType };
 
-export type NodeContext = {
-  retries: number;
-  maxRetries: number;
-};
-
-// Phase 2: retry decisions live in the backend, not the frontend machine.
-// The `retrying` state is currently unreachable — backend's `failed` means
-// terminal, so FAIL from `running` routes directly to `failed` via the
-// second transition branch. Phase 3 will refactor this to be backend-driven
-// (entered on backend SubtaskState::Retrying, exited on backend Done/Failed),
-// at which point this constant becomes obsolete.
-export const MAX_RETRIES = 0;
-
+// Phase 3 Step 3a: retry semantics are driven by the backend, not by
+// the frontend machine.
+//
+// Rationale (see phase-3-spec.md Decision 2): the backend owns the
+// "can we retry?" decision — it knows the subtask's fail history,
+// whether the worker agent is still available, whether a dependency
+// was invalidated by a master re-plan, etc. The frontend machine
+// used to mirror that with a `retries/maxRetries` context and a
+// `canRetry` guard, but doing so in two places is how drift bugs
+// happen (e.g. "UI shows 'retry 2' but backend is on attempt 3").
+//
+// The model is now:
+//   running -- FAIL ----------→ failed       (terminal fail from
+//                                              first attempt, no
+//                                              guard branching)
+//   running -- START_RETRY --→ retrying     (backend emitted
+//                                              SubtaskState::Retrying
+//                                              → store bridge drives
+//                                              this)
+//   retrying -- RETRY_SUCCESS → running     (backend re-entered
+//                                              Running after the retry
+//                                              began)
+//   retrying -- RETRY_FAIL ---→ failed      (backend transitioned
+//                                              retry attempt to Failed)
+//
+// The "how many retries has this subtask seen?" counter lives in
+// `graphStore.subtaskRetryCounts` — a `Map<subtaskId, number>`
+// incremented on every backend `Retrying` event. WorkerNode reads
+// that map via GraphCanvas; the machine context is context-free.
 export const nodeMachine = setup({
   types: {
-    context: {} as NodeContext,
     events: {} as NodeEvent,
-  },
-  guards: {
-    canRetry: ({ context }) => context.retries < context.maxRetries,
-  },
-  actions: {
-    incrementRetries: assign({ retries: ({ context }) => context.retries + 1 }),
   },
 }).createMachine({
   id: 'node',
   initial: 'idle',
-  context: { retries: 0, maxRetries: MAX_RETRIES },
   states: {
     idle: {
       on: {
@@ -95,20 +105,18 @@ export const nodeMachine = setup({
     running: {
       on: {
         COMPLETE: 'done',
-        FAIL: [
-          {
-            target: 'retrying',
-            guard: 'canRetry',
-            actions: 'incrementRetries',
-          },
-          { target: 'failed' },
-        ],
+        // Single-branch terminal FAIL — backend's first-pass failure.
+        // The retry decision (if any) arrives as a subsequent
+        // Retrying-state event that the store bridges via
+        // START_RETRY; we don't guess it from here.
+        FAIL: 'failed',
+        START_RETRY: 'retrying',
       },
     },
     retrying: {
       on: {
         RETRY_SUCCESS: 'running',
-        FAIL: 'failed',
+        RETRY_FAIL: 'failed',
       },
     },
     failed: {

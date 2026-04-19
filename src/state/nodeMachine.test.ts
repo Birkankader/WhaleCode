@@ -11,10 +11,9 @@ function run(events: NodeEventType[]) {
 }
 
 describe('nodeMachine — happy paths', () => {
-  it('starts in idle with zero retries', () => {
+  it('starts in idle', () => {
     const snap = run([]);
     expect(snap.value).toBe('idle');
-    expect(snap.context.retries).toBe(0);
   });
 
   it('idle → thinking → proposed → approved → running → done', () => {
@@ -51,15 +50,65 @@ describe('nodeMachine — waiting / blocked', () => {
   });
 });
 
+// Phase 3 Step 3a: retry semantics are backend-driven. FAIL from running is a
+// terminal leaf (no guard branch); START_RETRY/RETRY_SUCCESS/RETRY_FAIL drive
+// the retry sub-loop. No retry count lives in the machine context — that's in
+// graphStore.subtaskRetryCounts now.
 describe('nodeMachine — failure path', () => {
-  // Phase 2: MAX_RETRIES = 0, so FAIL from running routes directly to failed
-  // via the second transition branch (canRetry guard is always false). The
-  // `retrying` state is reserved for Phase 3's backend-driven retry ladder
-  // and is unreachable from the default context.
-  it('FAIL from running → failed, retries stays at 0', () => {
+  it('FAIL from running lands in failed (no intermediate retrying)', () => {
     const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL']);
     expect(snap.value).toBe('failed');
-    expect(snap.context.retries).toBe(0);
+  });
+});
+
+describe('nodeMachine — retry sub-loop (backend-driven)', () => {
+  it('START_RETRY from running lands in retrying', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'START_RETRY']);
+    expect(snap.value).toBe('retrying');
+  });
+
+  it('RETRY_SUCCESS from retrying lands in running', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'START_RETRY', 'RETRY_SUCCESS']);
+    expect(snap.value).toBe('running');
+  });
+
+  it('RETRY_FAIL from retrying lands in failed', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'START_RETRY', 'RETRY_FAIL']);
+    expect(snap.value).toBe('failed');
+  });
+
+  it('recovered subtask can complete: retry → running → done', () => {
+    const snap = run([
+      'PROPOSE',
+      'APPROVE',
+      'START',
+      'START_RETRY',
+      'RETRY_SUCCESS',
+      'COMPLETE',
+    ]);
+    expect(snap.value).toBe('done');
+  });
+
+  it('retry sub-loop can re-enter: running → retrying → running → retrying', () => {
+    const snap = run([
+      'PROPOSE',
+      'APPROVE',
+      'START',
+      'START_RETRY',
+      'RETRY_SUCCESS',
+      'START_RETRY',
+    ]);
+    expect(snap.value).toBe('retrying');
+  });
+
+  it('START_RETRY from proposed is a no-op (only running reaches retrying)', () => {
+    const snap = run(['PROPOSE', 'START_RETRY']);
+    expect(snap.value).toBe('proposed');
+  });
+
+  it('RETRY_SUCCESS from running is a no-op', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'RETRY_SUCCESS']);
+    expect(snap.value).toBe('running');
   });
 });
 
@@ -98,6 +147,18 @@ describe('nodeMachine — escalation path', () => {
       'SKIP',
     ]);
     expect(snap.value).toBe('skipped');
+  });
+
+  it('retry-then-fail flows into escalation: retrying → failed → escalating', () => {
+    const snap = run([
+      'PROPOSE',
+      'APPROVE',
+      'START',
+      'START_RETRY',
+      'RETRY_FAIL',
+      'ESCALATE',
+    ]);
+    expect(snap.value).toBe('escalating');
   });
 });
 
