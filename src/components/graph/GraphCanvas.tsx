@@ -48,6 +48,9 @@ const COMPACT_BREAKPOINT = 1280;
 /** Pan headroom past the graph bounds so users can scroll into the margin. */
 const PAN_MARGIN = 200;
 
+/** See `onNodeClick` comment below — this noop unblocks pointer-events. */
+const noopNodeClick = () => undefined;
+
 export function GraphCanvas() {
   return (
     <ReactFlowProvider>
@@ -176,6 +179,14 @@ function GraphCanvasInner() {
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
+        // React Flow's NodeWrapper sets an inline `pointer-events: none` when
+        // a node is not draggable, not selectable, and has no node-level mouse
+        // handlers — which happens to match our config exactly. That style
+        // beats the `pointer-events: all` rule in base.css, so inner `onClick`
+        // handlers (card-click-to-select, Apply/Discard buttons on the final
+        // node) never fire. Passing a noop `onNodeClick` flips the wrapper
+        // back to pointer-events:all without enabling RF's own selection UI.
+        onNodeClick={noopNodeClick}
         proOptions={{ hideAttribution: true }}
       />
     </div>
