@@ -31,12 +31,33 @@ function defaultWorkerAgent(
 }
 
 export function ApprovalBar() {
-  const { status, proposedCount, selectedCount } = useGraphStore(
-    useShallow((s) => ({
-      status: s.status,
-      proposedCount: s.subtasks.length,
-      selectedCount: s.selectedSubtaskIds.size,
-    })),
+  const { status, proposedCount, selectedCount, isReplan } = useGraphStore(
+    useShallow((s) => {
+      // Replan mode: at least one subtask in the plan carries a
+      // non-empty `replaces`, which only the master's Layer-2 replan
+      // populates. Strictly stronger signal than any transient store
+      // flag — it's derived from the plan itself, so out-of-order
+      // events can't desync it.
+      const isReplan = s.subtasks.some((st) => st.replaces.length > 0);
+      // In replan mode the prior run's done / failed subtasks are
+      // still in `s.subtasks`; only the replacements are currently
+      // awaiting approval. Count by node-machine state so the copy
+      // matches what the user sees. Falls back to the full list length
+      // for the initial approval (every actor just landed in
+      // `proposed`, so the counts match).
+      const proposedCount = isReplan
+        ? s.subtasks.reduce((n, st) => {
+            const snap = s.nodeSnapshots.get(st.id)?.value;
+            return snap === 'proposed' ? n + 1 : n;
+          }, 0)
+        : s.subtasks.length;
+      return {
+        status: s.status,
+        proposedCount,
+        selectedCount: s.selectedSubtaskIds.size,
+        isReplan,
+      };
+    }),
   );
   const detection = useAgentStore((s) => s.detection);
 
@@ -79,8 +100,9 @@ export function ApprovalBar() {
               aria-hidden
             />
             <span className="text-meta text-fg-primary">
-              Master proposes {proposedCount} subtask{proposedCount === 1 ? '' : 's'}. Approve to
-              start.
+              {isReplan
+                ? `Master proposes ${proposedCount} replacement subtask${proposedCount === 1 ? '' : 's'}. Approve to continue.`
+                : `Master proposes ${proposedCount} subtask${proposedCount === 1 ? '' : 's'}. Approve to start.`}
             </span>
           </div>
           <div className="flex items-center gap-2">

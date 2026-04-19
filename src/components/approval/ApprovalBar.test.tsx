@@ -34,6 +34,7 @@ function seedAwaitingApproval(subtaskCount = 1) {
       why: null,
       agent: 'claude',
       dependsOn: [],
+      replaces: [],
     })),
   });
 }
@@ -163,6 +164,82 @@ describe('ApprovalBar — "+ Add subtask" button', () => {
       fireEvent.click(screen.getByRole('button', { name: /\+ Add subtask/i }));
     });
     expect(addSubtask).toHaveBeenCalled();
+  });
+});
+
+describe('ApprovalBar — replan variant copy', () => {
+  // Layer-2 replan re-enters `awaiting_approval` with a plan whose
+  // replacement subtask(s) carry a non-empty `replaces` array — that's
+  // the strictly stronger signal the copy variant keys off of.
+
+  it('shows replan copy + counts only currently-proposed subtasks', () => {
+    useGraphStore.setState({
+      status: 'awaiting_approval',
+      subtasks: [
+        // Leftover terminal rows from the original pass.
+        { id: 'done1', title: 'Done A', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        { id: 'failed1', title: 'Failed', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        // Fresh replacement from the master's replan.
+        {
+          id: 'repl1',
+          title: 'Repaired',
+          why: null,
+          agent: 'claude',
+          dependsOn: [],
+          replaces: ['failed1'],
+        },
+      ],
+      nodeSnapshots: new Map([
+        ['done1', { value: 'done' }],
+        ['failed1', { value: 'failed' }],
+        ['repl1', { value: 'proposed' }],
+      ]),
+    });
+    render(<ApprovalBar />);
+    expect(
+      screen.getByText(/Master proposes 1 replacement subtask\. Approve to continue\./i),
+    ).toBeDefined();
+  });
+
+  it('pluralises replacement-subtask count when more than one', () => {
+    useGraphStore.setState({
+      status: 'awaiting_approval',
+      subtasks: [
+        { id: 'failed1', title: 'Failed', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        {
+          id: 'r1',
+          title: 'R1',
+          why: null,
+          agent: 'claude',
+          dependsOn: [],
+          replaces: ['failed1'],
+        },
+        {
+          id: 'r2',
+          title: 'R2',
+          why: null,
+          agent: 'claude',
+          dependsOn: [],
+          replaces: ['failed1'],
+        },
+      ],
+      nodeSnapshots: new Map([
+        ['failed1', { value: 'failed' }],
+        ['r1', { value: 'proposed' }],
+        ['r2', { value: 'proposed' }],
+      ]),
+    });
+    render(<ApprovalBar />);
+    expect(
+      screen.getByText(/Master proposes 2 replacement subtasks\. Approve to continue\./i),
+    ).toBeDefined();
+  });
+
+  it('initial approval (no replaces) still uses "Approve to start" copy', () => {
+    seedAwaitingApproval(2);
+    render(<ApprovalBar />);
+    expect(screen.getByText(/Master proposes 2 subtasks\. Approve to start\./i)).toBeDefined();
+    expect(screen.queryByText(/replacement/i)).toBeNull();
   });
 });
 

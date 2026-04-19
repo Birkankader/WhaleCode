@@ -310,6 +310,11 @@ function dataFor(
     // static so WorkerNode doesn't need conditional typing.
     why: st?.why ?? null,
     dependsOn: st?.dependsOn ?? [],
+    // `replaces` is non-empty only for Layer-2 replan replacements; the
+    // WorkerNode renders a "replaces #N" badge when present. Default to
+    // `[]` so the data shape stays static regardless of whether the
+    // subtask row has landed yet.
+    replaces: st?.replaces ?? [],
     retries: retryCounts.get(id) ?? 0,
   };
 }

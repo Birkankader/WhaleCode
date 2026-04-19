@@ -80,6 +80,15 @@ export const subtaskDataSchema = z.object({
   why: z.string().nullable(),
   assignedWorker: agentKindSchema,
   dependencies: z.array(subtaskIdSchema),
+  /**
+   * Subtask ids this one replaces. Empty for freshly-planned subtasks;
+   * populated (usually with one id) when the master produced this
+   * subtask as part of a Layer-2 replan. The graph renders a "replaces
+   * #N" badge on the replacement node so the user can trace lineage.
+   * `.default([])` keeps older backend builds (or pre-Phase-3 fixtures)
+   * compatible — the wire format serialises `[]` when empty.
+   */
+  replaces: z.array(subtaskIdSchema).default([]),
 });
 export type SubtaskData = z.infer<typeof subtaskDataSchema>;
 
@@ -149,6 +158,8 @@ export const EVENT_COMPLETED = 'run:completed' as const;
 export const EVENT_FAILED = 'run:failed' as const;
 export const EVENT_MERGE_CONFLICT = 'run:merge_conflict' as const;
 export const EVENT_BASE_BRANCH_DIRTY = 'run:base_branch_dirty' as const;
+export const EVENT_REPLAN_STARTED = 'run:replan_started' as const;
+export const EVENT_HUMAN_ESCALATION = 'run:human_escalation' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -224,6 +235,36 @@ export const baseBranchDirtySchema = z.object({
   files: z.array(z.string()),
 });
 export type BaseBranchDirty = z.infer<typeof baseBranchDirtySchema>;
+
+/**
+ * Emitted right before the orchestrator calls `AgentImpl::replan` on the
+ * master. The failed worker has already burned its Layer-1 retry budget;
+ * the master is now being asked for a replacement. UI response: flip the
+ * master chip to thinking and mark `failedSubtaskId` as the one being
+ * replanned.
+ */
+export const replanStartedSchema = z.object({
+  runId: runIdSchema,
+  failedSubtaskId: subtaskIdSchema,
+});
+export type ReplanStarted = z.infer<typeof replanStartedSchema>;
+
+/**
+ * Emitted when the retry ladder is exhausted — either the failed
+ * subtask's lineage already burned two replans, or the master returned
+ * an empty plan (infeasible). `reason` is a short human-readable
+ * sentence; `suggestedAction`, when present, is the master's proposal
+ * for what to try next. UI response: mark `subtaskId` as escalated, show
+ * `reason` alongside the failing node, and expose `suggestedAction` as
+ * the CTA copy.
+ */
+export const humanEscalationSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  reason: z.string(),
+  suggestedAction: z.string().optional(),
+});
+export type HumanEscalation = z.infer<typeof humanEscalationSchema>;
 
 // ---------- Recovery ----------
 

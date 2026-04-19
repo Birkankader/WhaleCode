@@ -28,8 +28,10 @@ import {
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
+  EVENT_HUMAN_ESCALATION,
   EVENT_MASTER_LOG,
   EVENT_MERGE_CONFLICT,
+  EVENT_REPLAN_STARTED,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
@@ -48,6 +50,8 @@ const ALL_EVENTS = [
   EVENT_FAILED,
   EVENT_MERGE_CONFLICT,
   EVENT_BASE_BRANCH_DIRTY,
+  EVENT_REPLAN_STARTED,
+  EVENT_HUMAN_ESCALATION,
 ];
 
 function emit(event: string, payload: unknown) {
@@ -171,6 +175,8 @@ describe('RunSubscription payload routing', () => {
       onFailed: vi.fn(),
       onMergeConflict: vi.fn(),
       onBaseBranchDirty: vi.fn(),
+      onReplanStarted: vi.fn(),
+      onHumanEscalation: vi.fn(),
     };
     const sub = new RunSubscription('r1', handlers);
     await sub.attach();
@@ -197,6 +203,12 @@ describe('RunSubscription payload routing', () => {
     emit(EVENT_FAILED, { runId: 'r1', error: 'boom' });
     emit(EVENT_MERGE_CONFLICT, { runId: 'r1', files: ['a.ts'] });
     emit(EVENT_BASE_BRANCH_DIRTY, { runId: 'r1', files: ['b.ts'] });
+    emit(EVENT_REPLAN_STARTED, { runId: 'r1', failedSubtaskId: 's1' });
+    emit(EVENT_HUMAN_ESCALATION, {
+      runId: 'r1',
+      subtaskId: 's1',
+      reason: 'lineage exhausted',
+    });
 
     expect(handlers.onMasterLog).toHaveBeenCalledTimes(1);
     expect(handlers.onSubtasksProposed).toHaveBeenCalledTimes(1);
@@ -209,6 +221,15 @@ describe('RunSubscription payload routing', () => {
     expect(handlers.onBaseBranchDirty).toHaveBeenCalledWith({
       runId: 'r1',
       files: ['b.ts'],
+    });
+    expect(handlers.onReplanStarted).toHaveBeenCalledWith({
+      runId: 'r1',
+      failedSubtaskId: 's1',
+    });
+    expect(handlers.onHumanEscalation).toHaveBeenCalledWith({
+      runId: 'r1',
+      subtaskId: 's1',
+      reason: 'lineage exhausted',
     });
     // Omitted: status_changed handler was wired but not emitted here.
     expect(handlers.onStatusChanged).not.toHaveBeenCalled();

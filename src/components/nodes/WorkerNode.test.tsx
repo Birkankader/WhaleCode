@@ -70,6 +70,7 @@ describe('WorkerNode — card-click selection in proposed state', () => {
       title: 'Write ThemeProvider',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
 
@@ -87,6 +88,7 @@ describe('WorkerNode — card-click selection in proposed state', () => {
       title: 'x',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
 
@@ -103,6 +105,7 @@ describe('WorkerNode — card-click selection in proposed state', () => {
       title: 'Running subtask',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
 
@@ -119,6 +122,7 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
       title: 'Write ThemeProvider',
       why: 'We need tokens before components.',
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.getByRole('button', { name: /Edit Subtask title/i })).toBeDefined();
@@ -132,6 +136,7 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
       title: 'Running subtask',
       why: 'body',
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.queryByRole('button', { name: /Edit Subtask title/i })).toBeNull();
@@ -147,6 +152,7 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
       title: 'Old',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByRole('button', { name: /Edit Subtask title/i }));
@@ -167,6 +173,7 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
       title: 'Old',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByRole('button', { name: /Edit Subtask title/i }));
@@ -186,6 +193,7 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
       title: 't',
       why: 'some rationale',
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByRole('button', { name: /Edit Subtask rationale/i }));
@@ -210,6 +218,7 @@ describe('WorkerNode — edited/added badges', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.getByText('added')).toBeDefined();
@@ -227,6 +236,7 @@ describe('WorkerNode — edited/added badges', () => {
           why: null,
           agent: 'claude',
           dependsOn: [],
+          replaces: [],
         },
       ],
     });
@@ -236,6 +246,7 @@ describe('WorkerNode — edited/added badges', () => {
       title: 'New',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.getByText('edited')).toBeDefined();
@@ -254,6 +265,7 @@ describe('WorkerNode — edited/added badges', () => {
           why: null,
           agent: 'claude',
           dependsOn: [],
+          replaces: [],
         },
       ],
     });
@@ -263,6 +275,7 @@ describe('WorkerNode — edited/added badges', () => {
       title: 'Different',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.getByText('added')).toBeDefined();
@@ -279,9 +292,75 @@ describe('WorkerNode — edited/added badges', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.queryByText('added')).toBeNull();
+  });
+});
+
+describe('WorkerNode — replaces badge (Layer-2 replan)', () => {
+  // The badge renders "replaces #N" where #N is the 1-indexed position of
+  // the replaced subtask in the current plan — so a replacement tagged with
+  // `replaces: ['failed1']` reads off the row index of 'failed1'. Failed
+  // rows stick around in `subtasks` after replan so the lineage resolves.
+
+  it('renders "replaces #N" when the replacement is tagged', () => {
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'failed1', title: 'Failed one', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        { id: 'repl1', title: 'Repaired', why: null, agent: 'claude', dependsOn: [], replaces: ['failed1'] },
+      ],
+    });
+    renderNode('repl1', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Repaired',
+      why: null,
+      dependsOn: [],
+      replaces: ['failed1'],
+      retries: 0,
+    });
+    expect(screen.getByText(/replaces #1/i)).toBeDefined();
+  });
+
+  it('renders nothing when the replaced id is no longer in the plan (race guard)', () => {
+    // The failed row was evicted from `subtasks` between the event and the
+    // render — the badge should silently drop rather than show "#-1" or crash.
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'repl1', title: 'Repaired', why: null, agent: 'claude', dependsOn: [], replaces: ['ghost'] },
+      ],
+    });
+    renderNode('repl1', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Repaired',
+      why: null,
+      dependsOn: [],
+      replaces: ['ghost'],
+      retries: 0,
+    });
+    expect(screen.queryByText(/replaces/i)).toBeNull();
+  });
+
+  it('shows the badge even outside proposed state (lineage stays visible while running/done)', () => {
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'failed1', title: 'Failed one', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        { id: 'repl1', title: 'Repaired', why: null, agent: 'claude', dependsOn: [], replaces: ['failed1'] },
+      ],
+    });
+    renderNode('repl1', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Repaired',
+      why: null,
+      dependsOn: [],
+      replaces: ['failed1'],
+      retries: 0,
+    });
+    expect(screen.getByText(/replaces #1/i)).toBeDefined();
   });
 });
 
@@ -289,9 +368,9 @@ describe('WorkerNode — dependencies footer', () => {
   it('renders 1-indexed dependency list while proposed', () => {
     useGraphStore.setState({
       subtasks: [
-        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
-        { id: 'b', title: '2', why: null, agent: 'claude', dependsOn: [] },
-        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a', 'b'] },
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
+        { id: 'b', title: '2', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a', 'b'] , replaces: [] },
       ],
     });
     renderNode('c', {
@@ -300,6 +379,7 @@ describe('WorkerNode — dependencies footer', () => {
       title: '3',
       why: null,
       dependsOn: ['a', 'b'],
+      replaces: [],
       retries: 0,
     });
     expect(screen.getByText('#1')).toBeDefined();
@@ -309,7 +389,7 @@ describe('WorkerNode — dependencies footer', () => {
   it('silently drops unknown dependency ids', () => {
     useGraphStore.setState({
       subtasks: [
-        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
       ],
     });
     renderNode('c', {
@@ -318,6 +398,7 @@ describe('WorkerNode — dependencies footer', () => {
       title: '3',
       why: null,
       dependsOn: ['a', 'ghost'],
+      replaces: [],
       retries: 0,
     });
     expect(screen.getByText('#1')).toBeDefined();
@@ -332,9 +413,9 @@ describe('WorkerNode — dependency click-to-pan', () => {
   function seedDag() {
     useGraphStore.setState({
       subtasks: [
-        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
-        { id: 'b', title: '2', why: null, agent: 'claude', dependsOn: [] },
-        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a', 'b'] },
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
+        { id: 'b', title: '2', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a', 'b'] , replaces: [] },
       ],
     });
     reactFlowMock.getNode.mockImplementation((id: string) => {
@@ -353,6 +434,7 @@ describe('WorkerNode — dependency click-to-pan', () => {
       title: '3',
       why: null,
       dependsOn: ['a', 'b'],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('depends-on-link-a'));
@@ -371,6 +453,7 @@ describe('WorkerNode — dependency click-to-pan', () => {
       title: '3',
       why: null,
       dependsOn: ['a', 'b'],
+      replaces: [],
       retries: 0,
     });
     const link = screen.getByTestId('depends-on-link-b');
@@ -388,8 +471,8 @@ describe('WorkerNode — dependency click-to-pan', () => {
   it('graceful no-op when the dep node has disappeared (mid-replan race)', () => {
     useGraphStore.setState({
       subtasks: [
-        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
-        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a'] },
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a'] , replaces: [] },
       ],
     });
     // Mock `getNode` to return undefined even though the store still has the
@@ -401,6 +484,7 @@ describe('WorkerNode — dependency click-to-pan', () => {
       title: '3',
       why: null,
       dependsOn: ['a'],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('depends-on-link-a'));
@@ -410,8 +494,8 @@ describe('WorkerNode — dependency click-to-pan', () => {
   it('falls back to NODE_DIMENSIONS.worker when the node has no measured width/height', () => {
     useGraphStore.setState({
       subtasks: [
-        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
-        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a'] },
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] , replaces: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a'] , replaces: [] },
       ],
     });
     // Omit width/height to simulate pre-measurement state.
@@ -424,6 +508,7 @@ describe('WorkerNode — dependency click-to-pan', () => {
       title: '3',
       why: null,
       dependsOn: ['a'],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('depends-on-link-a'));
@@ -445,6 +530,7 @@ describe('WorkerNode — remove button', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('worker-remove-button'));
@@ -462,6 +548,7 @@ describe('WorkerNode — remove button', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('worker-remove-button'));
@@ -478,6 +565,7 @@ describe('WorkerNode — remove button', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     expect(screen.queryByTestId('worker-remove-button')).toBeNull();
@@ -493,6 +581,7 @@ describe('WorkerNode — worker dropdown', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     const trigger = screen.getByRole('button', { name: /Worker for auth/i });
@@ -514,6 +603,7 @@ describe('WorkerNode — worker dropdown', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByRole('button', { name: /Worker for auth/i }));
@@ -531,6 +621,7 @@ describe('WorkerNode — worker dropdown', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     fireEvent.click(screen.getByRole('button', { name: /Worker for auth/i }));
@@ -553,6 +644,7 @@ describe('WorkerNode — auto-enter edit for newly-added subtask', () => {
         title: '',
         why: null,
         dependsOn: [],
+        replaces: [],
         retries: 0,
       });
     });
@@ -569,6 +661,7 @@ describe('WorkerNode — auto-enter edit for newly-added subtask', () => {
       title: 't',
       why: null,
       dependsOn: [],
+      replaces: [],
       retries: 0,
     });
     // Display mode renders a button, not the input.

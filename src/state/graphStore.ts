@@ -46,8 +46,10 @@ import {
   type Completed,
   type DiffReady,
   type Failed,
+  type HumanEscalation,
   type MasterLog,
   type MergeConflict,
+  type ReplanStarted,
   type RunStatus,
   type StatusChanged,
   type SubtaskDraft,
@@ -87,6 +89,14 @@ export type SubtaskNodeData = {
   why: string | null;
   agent: BackendAgentKind;
   dependsOn: string[];
+  /**
+   * Subtask ids this one replaces — non-empty only for master-generated
+   * Layer-2 replan replacements. Drives the "replaces #N" badge on the
+   * replacement node and lets the ApprovalBar detect it's showing a
+   * replan plan. Defaults to `[]` for freshly-planned and user-added
+   * subtasks.
+   */
+  replaces: string[];
 };
 
 export type FinalNodeData = {
@@ -168,6 +178,27 @@ export type GraphState = {
    * node don't auto-focus.
    */
   lastAddedSubtaskId: string | null;
+  /**
+   * Id of the subtask currently being replanned by the master. Set by
+   * `handleReplanStarted`, cleared by the next `handleSubtasksProposed`
+   * (which carries the replacement plan) or by `handleHumanEscalation`
+   * (which short-circuits the replan). Used only for internal signalling
+   * — the "replan mode" ApprovalBar copy is instead derived from whether
+   * any incoming subtask has a non-empty `replaces` field, which is
+   * resilient to out-of-order events.
+   */
+  replanningSubtaskId: string | null;
+  /**
+   * Set by `handleHumanEscalation` when the retry ladder is exhausted.
+   * The banner/overlay surfaces `reason` verbatim and `suggestedAction`
+   * as CTA copy; the subtask node flips to the `human_escalation`
+   * visual via its XState actor. Cleared on `reset` / new submit.
+   */
+  humanEscalation: {
+    subtaskId: string;
+    reason: string;
+    suggestedAction: string | null;
+  } | null;
   /** Live subscription to the active run's events. Null between runs. */
   activeSubscription: RunSubscription | null;
   /** Last surfaced error (IPC failure or backend `Failed` event). */
@@ -251,6 +282,8 @@ const initial: Pick<
   | 'originalSubtasks'
   | 'userAddedSubtaskIds'
   | 'lastAddedSubtaskId'
+  | 'replanningSubtaskId'
+  | 'humanEscalation'
   | 'activeSubscription'
   | 'currentError'
 > = {
@@ -269,6 +302,8 @@ const initial: Pick<
   originalSubtasks: new Map(),
   userAddedSubtaskIds: new Set(),
   lastAddedSubtaskId: null,
+  replanningSubtaskId: null,
+  humanEscalation: null,
   activeSubscription: null,
   currentError: null,
 };
@@ -600,6 +635,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         why: st.why,
         agent: st.assignedWorker,
         dependsOn: st.dependencies,
+        replaces: st.replaces,
       });
       if (!currentIds.has(st.id)) {
         newIds.push(st.id);
@@ -654,6 +690,12 @@ export const useGraphStore = create<GraphState>((set, get) => {
         subtasks: nextSubtasks,
         selectedSubtaskIds: nextSelected,
         originalSubtasks: nextOriginals,
+        // Any pending replan completes when the next plan lands —
+        // whether or not this emit actually carries the replacements
+        // (a user edit during awaiting_approval also re-emits). The
+        // ApprovalBar reads `replaces` on the nextSubtasks to decide
+        // its copy variant, which is a strictly stronger signal.
+        replanningSubtaskId: null,
       };
     });
   }
@@ -776,6 +818,47 @@ export const useGraphStore = create<GraphState>((set, get) => {
     detachActiveSubscription();
   }
 
+  function handleReplanStarted(e: ReplanStarted) {
+    if (e.runId !== get().runId) return;
+    // Flip the master chip back to "thinking" for the duration of the
+    // replan call. The master actor is in `approved` by now (it signed
+    // off on the original plan); the transition is approved → thinking
+    // via THINK, and the follow-up `run:subtasks_proposed` walks it
+    // back to `proposed` (see handleSubtasksProposed).
+    const masterSnap = get().nodeSnapshots.get(MASTER_ID)?.value;
+    if (masterSnap === 'approved') {
+      sendTo(MASTER_ID, { type: 'THINK' });
+    }
+    set({ replanningSubtaskId: e.failedSubtaskId });
+  }
+
+  function handleHumanEscalation(e: HumanEscalation) {
+    if (e.runId !== get().runId) return;
+    // Drive the failed subtask's actor through the escalation path.
+    // Backend invariants: the subtask's state is `Failed` by the time
+    // HumanEscalation fires, so the local actor should be at `failed`.
+    // Bridge through `escalating` in a single synchronous pair of
+    // sends — XState processes events in order.
+    const current = get().nodeSnapshots.get(e.subtaskId)?.value;
+    if (current === 'failed') {
+      sendTo(e.subtaskId, { type: 'ESCALATE' });
+      sendTo(e.subtaskId, { type: 'HUMAN_NEEDED' });
+    } else if (current === 'escalating') {
+      // ReplanStarted → (master errored or returned empty plan) →
+      // HumanEscalation without an intervening SubtasksProposed.
+      // Actor is already in `escalating` from a prior ESCALATE send.
+      sendTo(e.subtaskId, { type: 'HUMAN_NEEDED' });
+    }
+    set({
+      replanningSubtaskId: null,
+      humanEscalation: {
+        subtaskId: e.subtaskId,
+        reason: e.reason,
+        suggestedAction: e.suggestedAction ?? null,
+      },
+    });
+  }
+
   function buildHandlers() {
     return {
       onStatusChanged: handleStatusChanged,
@@ -788,6 +871,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onBaseBranchDirty: handleBaseBranchDirty,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
+      onReplanStarted: handleReplanStarted,
+      onHumanEscalation: handleHumanEscalation,
       onParseError: defaultOnParseError,
     };
   }
@@ -1041,6 +1126,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         originalSubtasks: new Map(),
         userAddedSubtaskIds: new Set(),
         lastAddedSubtaskId: null,
+        replanningSubtaskId: null,
+        humanEscalation: null,
       });
     },
   };

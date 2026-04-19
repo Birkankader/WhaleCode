@@ -46,8 +46,10 @@ import {
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
+  EVENT_HUMAN_ESCALATION,
   EVENT_MASTER_LOG,
   EVENT_MERGE_CONFLICT,
+  EVENT_REPLAN_STARTED,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
@@ -459,6 +461,170 @@ describe('graphStore — retry counter (Phase 3 Step 3a)', () => {
     expect(state().subtaskRetryCounts.get('a')).toBe(1);
     state().reset();
     expect(state().subtaskRetryCounts.size).toBe(0);
+  });
+});
+
+describe('graphStore — Layer-2 replan + Layer-3 human escalation', () => {
+  // The retry ladder: worker Retrying (Layer-1) → master replan (Layer-2)
+  // → human escalation (Layer-3). Layer-1 is covered by the retry-counter
+  // block above. These tests cover the two new event handlers that close
+  // the ladder.
+
+  async function runUntilFailure() {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    await state().approveSubtasks(['a']);
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'running' });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'running',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'failed',
+    });
+  }
+
+  it('ReplanStarted flips master back to thinking and sets replanningSubtaskId', async () => {
+    await runUntilFailure();
+    // Master is in `approved` by now — it signed off on the plan.
+    expect(snap(MASTER_ID)?.value).toBe('approved');
+    expect(state().replanningSubtaskId).toBeNull();
+
+    emit(EVENT_REPLAN_STARTED, { runId: BACKEND_RUN_ID, failedSubtaskId: 'a' });
+
+    expect(snap(MASTER_ID)?.value).toBe('thinking');
+    expect(state().replanningSubtaskId).toBe('a');
+  });
+
+  it('ReplanStarted for a stranger runId is dropped', async () => {
+    await runUntilFailure();
+    emit(EVENT_REPLAN_STARTED, { runId: 'some-other-run', failedSubtaskId: 'a' });
+    expect(snap(MASTER_ID)?.value).toBe('approved');
+    expect(state().replanningSubtaskId).toBeNull();
+  });
+
+  it('replacement SubtasksProposed clears replanningSubtaskId and propagates `replaces`', async () => {
+    await runUntilFailure();
+    emit(EVENT_REPLAN_STARTED, { runId: BACKEND_RUN_ID, failedSubtaskId: 'a' });
+    expect(state().replanningSubtaskId).toBe('a');
+
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        // Failed row retained (kept visible with its `failed` snapshot).
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [], replaces: [] },
+        // Fresh replacement.
+        {
+          id: 'a2',
+          title: 'A (repaired)',
+          why: null,
+          assignedWorker: 'codex',
+          dependencies: [],
+          replaces: ['a'],
+        },
+      ],
+    });
+
+    const s = state();
+    expect(s.replanningSubtaskId).toBeNull();
+    const replacement = s.subtasks.find((t) => t.id === 'a2')!;
+    expect(replacement.replaces).toEqual(['a']);
+    // Failed row kept its `failed` snapshot — the replacement carries the
+    // lineage visually via its `replaces` field, not by transitioning the
+    // original.
+    expect(snap('a')?.value).toBe('failed');
+    expect(snap('a2')?.value).toBe('proposed');
+  });
+
+  it('HumanEscalation from a `failed` subtask drives it through escalating → human_escalation', async () => {
+    await runUntilFailure();
+    expect(snap('a')?.value).toBe('failed');
+
+    emit(EVENT_HUMAN_ESCALATION, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      reason: 'master returned an empty plan',
+      suggestedAction: 'consider splitting the task manually',
+    });
+
+    const s = state();
+    expect(snap('a')?.value).toBe('human_escalation');
+    expect(s.humanEscalation).toEqual({
+      subtaskId: 'a',
+      reason: 'master returned an empty plan',
+      suggestedAction: 'consider splitting the task manually',
+    });
+    // ReplanStarted + HumanEscalation can arrive in either order; either
+    // way, escalation clears the transient flag.
+    expect(s.replanningSubtaskId).toBeNull();
+  });
+
+  it('HumanEscalation defaults missing suggestedAction to null', async () => {
+    await runUntilFailure();
+    emit(EVENT_HUMAN_ESCALATION, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      reason: 'lineage exhausted two replans',
+    });
+    expect(state().humanEscalation).toEqual({
+      subtaskId: 'a',
+      reason: 'lineage exhausted two replans',
+      suggestedAction: null,
+    });
+  });
+
+  it('full ladder: failure → replan_started → replacement proposal (awaiting approval again)', async () => {
+    await runUntilFailure();
+
+    // Layer-2 kicks in.
+    emit(EVENT_REPLAN_STARTED, { runId: BACKEND_RUN_ID, failedSubtaskId: 'a' });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [], replaces: [] },
+        {
+          id: 'a2',
+          title: 'A (repaired)',
+          why: null,
+          assignedWorker: 'codex',
+          dependencies: [],
+          replaces: ['a'],
+        },
+      ],
+    });
+
+    const s = state();
+    expect(s.status).toBe('awaiting_approval');
+    expect(s.replanningSubtaskId).toBeNull();
+    expect(s.subtasks.find((t) => t.id === 'a2')?.replaces).toEqual(['a']);
+    // Master walks back to `proposed` for the re-approval gate.
+    expect(snap(MASTER_ID)?.value).toBe('proposed');
+  });
+
+  it('reset clears replanningSubtaskId and humanEscalation', async () => {
+    await runUntilFailure();
+    emit(EVENT_REPLAN_STARTED, { runId: BACKEND_RUN_ID, failedSubtaskId: 'a' });
+    emit(EVENT_HUMAN_ESCALATION, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      reason: 'boom',
+    });
+    expect(state().humanEscalation).not.toBeNull();
+
+    state().reset();
+    const s = state();
+    expect(s.replanningSubtaskId).toBeNull();
+    expect(s.humanEscalation).toBeNull();
   });
 });
 

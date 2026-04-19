@@ -1,10 +1,10 @@
 /**
  * Run-scoped event subscription helper.
  *
- * Owns the lifecycle of the nine `run:*` Tauri events for a single `runId`:
- * schema-validates each payload, defensively drops events whose `runId`
- * doesn't match the run this subscription was built for, and routes the
- * rest to per-event handlers the caller supplies.
+ * Owns the lifecycle of the twelve `run:*` Tauri events for a single
+ * `runId`: schema-validates each payload, defensively drops events whose
+ * `runId` doesn't match the run this subscription was built for, and
+ * routes the rest to per-event handlers the caller supplies.
  *
  * Lifecycle contract:
  * - `attach()` registers listeners for every `EVENT_*` constant and stores
@@ -30,8 +30,10 @@ import {
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
+  EVENT_HUMAN_ESCALATION,
   EVENT_MASTER_LOG,
   EVENT_MERGE_CONFLICT,
+  EVENT_REPLAN_STARTED,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
@@ -40,8 +42,10 @@ import {
   completedSchema,
   diffReadySchema,
   failedSchema,
+  humanEscalationSchema,
   masterLogSchema,
   mergeConflictSchema,
+  replanStartedSchema,
   statusChangedSchema,
   subtaskLogSchema,
   subtaskStateChangedSchema,
@@ -50,8 +54,10 @@ import {
   type Completed,
   type DiffReady,
   type Failed,
+  type HumanEscalation,
   type MasterLog,
   type MergeConflict,
+  type ReplanStarted,
   type RunId,
   type StatusChanged,
   type SubtaskLog,
@@ -70,6 +76,8 @@ export type RunEventHandlers = {
   onFailed?: (event: Failed) => void;
   onMergeConflict?: (event: MergeConflict) => void;
   onBaseBranchDirty?: (event: BaseBranchDirty) => void;
+  onReplanStarted?: (event: ReplanStarted) => void;
+  onHumanEscalation?: (event: HumanEscalation) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -193,6 +201,16 @@ export class RunSubscription {
         event: EVENT_BASE_BRANCH_DIRTY,
         schema: baseBranchDirtySchema,
         handler: this.handlers.onBaseBranchDirty as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_REPLAN_STARTED,
+        schema: replanStartedSchema,
+        handler: this.handlers.onReplanStarted as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_HUMAN_ESCALATION,
+        schema: humanEscalationSchema,
+        handler: this.handlers.onHumanEscalation as ((e: unknown) => void) | undefined,
       },
     ];
   }

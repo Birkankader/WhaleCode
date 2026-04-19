@@ -32,6 +32,12 @@ export type WorkerNodeData = {
   why: string | null;
   /** Upstream subtask ids. Rendered as `Depends on: #N, #N` while `proposed`. */
   dependsOn: string[];
+  /**
+   * Subtask ids this node replaces — non-empty only for Layer-2 replan
+   * replacements the master produced after an original worker ran out of
+   * retries. Drives the "replaces #N" badge so lineage is readable.
+   */
+  replaces: string[];
   retries: number;
 };
 
@@ -145,6 +151,7 @@ export function WorkerNode({ id, data }: NodeProps) {
               edited
             </Badge>
           ) : null}
+          {d.replaces.length > 0 ? <ReplacesBadge ids={d.replaces} /> : null}
         </div>
         <div className="flex items-center gap-2">
           {d.retries > 0 ? (
@@ -241,6 +248,32 @@ function ProposedBody({
       />
       {data.dependsOn.length > 0 ? <DependsOn ids={data.dependsOn} /> : null}
     </div>
+  );
+}
+
+function ReplacesBadge({ ids }: { ids: readonly string[] }) {
+  // Resolve each original id to its 1-indexed position in the current
+  // subtask list so the badge reads "replaces #N" instead of exposing
+  // opaque ulids — same pattern as DependsOn. Unknown ids (possible
+  // transiently during a replan re-emit) are silently dropped; the
+  // badge is display-only and would lie if it referenced a dead row.
+  const subtasks = useGraphStore((s) => s.subtasks);
+  const labels = useMemo(() => {
+    const out: string[] = [];
+    for (const dep of ids) {
+      const idx = subtasks.findIndex((s) => s.id === dep);
+      if (idx >= 0) out.push(`#${idx + 1}`);
+    }
+    return out;
+  }, [ids, subtasks]);
+  if (labels.length === 0) return null;
+  return (
+    <Badge
+      variant="neutral"
+      tooltip="Master replanned — this subtask replaces the originals listed."
+    >
+      replaces {labels.join(', ')}
+    </Badge>
   );
 }
 
