@@ -52,6 +52,11 @@ pub struct SubtaskRuntime {
     /// Present only when `state == Failed`. Rendered into events and
     /// persisted to SQLite.
     pub error: Option<String>,
+    /// Subtask ids this one replaces. Empty for subtasks produced by
+    /// the initial plan; a single-entry vec for subtasks the master
+    /// produced as Layer-2 replacements. The lifecycle stamps this at
+    /// insertion time and also persists an edge to `subtask_replans`.
+    pub replaces: Vec<SubtaskId>,
 }
 
 impl SubtaskRuntime {
@@ -68,7 +73,24 @@ impl SubtaskRuntime {
             started_at: None,
             finished_at: None,
             error: None,
+            replaces: Vec::new(),
         }
+    }
+
+    /// Same as [`Self::new`] but records the ids this subtask replaces.
+    /// Callers should pass a single-entry vec (the failed subtask's id)
+    /// when inserting Layer-2 replacements; multi-replace is reserved
+    /// for a future where one replan collapses several siblings into
+    /// one.
+    pub fn new_replacement(
+        id: SubtaskId,
+        data: PlannedSubtask,
+        dependency_ids: Vec<SubtaskId>,
+        replaces: Vec<SubtaskId>,
+    ) -> Self {
+        let mut s = Self::new(id, data, dependency_ids);
+        s.replaces = replaces;
+        s
     }
 
     /// `true` if the subtask has reached a terminal state (can't
@@ -125,6 +147,7 @@ impl SubtaskRuntime {
             why: Some(self.data.why.clone()).filter(|w| !w.is_empty()),
             assigned_worker: self.data.assigned_worker,
             dependencies: self.dependency_ids.clone(),
+            replaces: self.replaces.clone(),
         }
     }
 }

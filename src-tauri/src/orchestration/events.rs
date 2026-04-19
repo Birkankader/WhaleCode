@@ -79,6 +79,25 @@ pub enum RunEvent {
         run_id: RunId,
         files: Vec<PathBuf>,
     },
+    /// Layer-2 replan just started: dispatcher escalated a failed
+    /// subtask and the master is being re-invoked. Emitted *before*
+    /// the master call so the UI can flip the master chip to thinking.
+    ReplanStarted {
+        run_id: RunId,
+        failed_subtask_id: SubtaskId,
+    },
+    /// Layer-3 escalation — retry ladder is exhausted. Either the
+    /// failed subtask's lineage already burned two replans, or the
+    /// master returned an empty replan (infeasible). `subtask_id` is
+    /// the failing subtask the human needs to look at. `reason` is a
+    /// human-readable one-sentence summary; `suggested_action`, when
+    /// present, is the master's proposal for what to try next.
+    HumanEscalation {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        reason: String,
+        suggested_action: Option<String>,
+    },
 }
 
 impl RunEvent {
@@ -96,7 +115,9 @@ impl RunEvent {
             | RunEvent::Completed { run_id, .. }
             | RunEvent::Failed { run_id, .. }
             | RunEvent::MergeConflict { run_id, .. }
-            | RunEvent::BaseBranchDirty { run_id, .. } => run_id,
+            | RunEvent::BaseBranchDirty { run_id, .. }
+            | RunEvent::ReplanStarted { run_id, .. }
+            | RunEvent::HumanEscalation { run_id, .. } => run_id,
         }
     }
 }
@@ -179,6 +200,30 @@ impl EventSink for TauriEventSink {
             RunEvent::BaseBranchDirty { run_id, files } => {
                 wire::emit_base_branch_dirty(&self.app, &wire::BaseBranchDirty { run_id, files })
             }
+            RunEvent::ReplanStarted {
+                run_id,
+                failed_subtask_id,
+            } => wire::emit_replan_started(
+                &self.app,
+                &wire::ReplanStarted {
+                    run_id,
+                    failed_subtask_id,
+                },
+            ),
+            RunEvent::HumanEscalation {
+                run_id,
+                subtask_id,
+                reason,
+                suggested_action,
+            } => wire::emit_human_escalation(
+                &self.app,
+                &wire::HumanEscalation {
+                    run_id,
+                    subtask_id,
+                    reason,
+                    suggested_action,
+                },
+            ),
         };
         if let Err(e) = result {
             eprintln!("[orchestrator] event emit failed: {e}");

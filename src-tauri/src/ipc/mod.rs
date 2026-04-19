@@ -95,6 +95,14 @@ pub struct SubtaskData {
     pub why: Option<String>,
     pub assigned_worker: AgentKind,
     pub dependencies: Vec<SubtaskId>,
+    /// Subtask ids this one replaces. Empty for freshly-planned
+    /// subtasks; populated (usually with one id) when the master
+    /// produced this subtask as part of a Layer-2 replan. The
+    /// frontend uses it to render the "replaces #N" badge on the
+    /// replacement node. Serialized as `[]` when empty so the Zod
+    /// schema can default without needing `#[serde(skip)]`.
+    #[serde(default)]
+    pub replaces: Vec<SubtaskId>,
 }
 
 #[allow(dead_code)]

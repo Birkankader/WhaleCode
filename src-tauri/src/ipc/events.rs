@@ -28,6 +28,16 @@ pub const EVENT_COMPLETED: &str = "run:completed";
 pub const EVENT_FAILED: &str = "run:failed";
 pub const EVENT_MERGE_CONFLICT: &str = "run:merge_conflict";
 pub const EVENT_BASE_BRANCH_DIRTY: &str = "run:base_branch_dirty";
+/// A subtask burned its Layer-1 retry budget; the master is being
+/// re-invoked to produce a replacement plan for it. Emitted *before*
+/// the master call so the frontend can flip the master chip to
+/// thinking + surface a "replanning" pill on the affected subtask.
+pub const EVENT_REPLAN_STARTED: &str = "run:replan_started";
+/// Layer-3 escalation: the run hit the end of the retry ladder (either
+/// two replans already burned on this lineage, or the master returned
+/// an empty replan meaning "infeasible"). The frontend shows the
+/// human-in-the-loop prompt and transitions the run to `Failed`.
+pub const EVENT_HUMAN_ESCALATION: &str = "run:human_escalation";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,6 +118,34 @@ pub struct BaseBranchDirty {
     pub files: Vec<PathBuf>,
 }
 
+/// Layer-2 replan just kicked off. The dispatcher escalated because a
+/// subtask exhausted its Layer-1 retry budget; the master is now being
+/// asked for a replacement plan. The frontend uses this to set the
+/// master chip to thinking and highlight `failed_subtask_id` with a
+/// "replanning" marker.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplanStarted {
+    pub run_id: RunId,
+    pub failed_subtask_id: SubtaskId,
+}
+
+/// Layer-3 escalation — the retry ladder is out of budget (either
+/// two replans already burned on this lineage, or the master replied
+/// with an empty plan). `reason` is a short human-readable sentence
+/// the UI surfaces verbatim. `suggested_action` (optional) is the
+/// master's suggestion for what a human should try; empty on the
+/// lineage-cap branch because no plan was produced.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanEscalation {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_action: Option<String>,
+}
+
 pub fn emit_status_changed(app: &AppHandle, payload: &StatusChanged) -> tauri::Result<()> {
     app.emit(EVENT_STATUS_CHANGED, payload)
 }
@@ -154,6 +192,17 @@ pub fn emit_base_branch_dirty(
     app.emit(EVENT_BASE_BRANCH_DIRTY, payload)
 }
 
+pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {
+    app.emit(EVENT_REPLAN_STARTED, payload)
+}
+
+pub fn emit_human_escalation(
+    app: &AppHandle,
+    payload: &HumanEscalation,
+) -> tauri::Result<()> {
+    app.emit(EVENT_HUMAN_ESCALATION, payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +242,7 @@ mod tests {
                 why: Some("because".into()),
                 assigned_worker: AgentKind::Claude,
                 dependencies: vec![],
+                replaces: vec![],
             }],
         };
         let json = serde_json::to_value(&payload).unwrap();

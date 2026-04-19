@@ -62,6 +62,23 @@ pub enum DispatchOutcome {
     /// The run's cancel token fired; any in-flight workers have been
     /// awaited out. Lifecycle finalizes to Cancelled.
     Cancelled,
+    /// A subtask escalated past Layer 1 (retry exhausted or a
+    /// deterministic failure that skipped retry). The failed subtask
+    /// has been marked Failed in storage + emitted; any other
+    /// in-flight workers were drained (skipped) before returning.
+    /// The lifecycle decides what happens next: either invoke
+    /// Layer 2 (`Orchestrator::replan_subtask`) or, if the failed
+    /// subtask's lineage already burned two replans, surface Layer 3
+    /// (`HumanEscalation` + `Failed`).
+    ///
+    /// `kind` carries the original `EscalateToMaster` signal so the
+    /// lifecycle's replan helper can fold the error into the prompt
+    /// for the master. Distinct from `Failed` so the lifecycle can
+    /// branch on it without parsing error strings.
+    NeedsReplan {
+        failed_subtask_id: SubtaskId,
+        kind: EscalateToMaster,
+    },
 }
 
 /// Bundle the dispatcher pulls state + sinks from. Mirrors
@@ -76,8 +93,16 @@ pub struct DispatcherDeps {
 #[derive(Debug)]
 enum WorkerOutcome {
     Done(ExecutionResult),
+    /// Hard failure the dispatcher can't re-plan its way out of
+    /// (setup error, panic, commit failure after a successful
+    /// execute). Run should transition to Failed.
     Failed(String),
     Cancelled,
+    /// Layer-1 retry is exhausted or the failure was deterministic —
+    /// carries the original `EscalateToMaster` so the main loop can
+    /// return `DispatchOutcome::NeedsReplan` and the lifecycle can
+    /// feed the error into the master's replan prompt.
+    Escalate(EscalateToMaster),
 }
 
 /// Layer-1 escalation signal. Produced by [`execute_subtask_with_retry`]
@@ -404,6 +429,24 @@ pub async fn run_dispatcher(
                         drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
                         return DispatchOutcome::Cancelled;
                     }
+                    WorkerOutcome::Escalate(kind) => {
+                        // Mark the failing subtask as Failed with the
+                        // escalation's error text. The lifecycle's
+                        // replan helper will either produce replacement
+                        // subtasks (lineage budget remaining) or
+                        // escalate to a human (budget spent). Either
+                        // way the failed subtask stays Failed in
+                        // storage — replan produces *new* subtasks, it
+                        // doesn't resurrect the old one.
+                        let err_msg = escalate_error_text(&kind);
+                        mark_failed(deps, &run, &run_id, &sub_id, err_msg).await;
+                        cancel.cancel();
+                        drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                        return DispatchOutcome::NeedsReplan {
+                            failed_subtask_id: sub_id,
+                            kind,
+                        };
+                    }
                 }
             }
             _ = cancel.cancelled() => {
@@ -628,8 +671,13 @@ async fn dispatch_one(
                 Err(e) => WorkerOutcome::Failed(format!("commit failed: {e}")),
             },
             Err(EscalateToMaster::UserCancelled) => WorkerOutcome::Cancelled,
-            Err(EscalateToMaster::Deterministic(e)) => WorkerOutcome::Failed(format!("{e}")),
-            Err(EscalateToMaster::Exhausted(e)) => WorkerOutcome::Failed(format!("{e}")),
+            // Preserve the variant through to the main loop so the
+            // lifecycle can pattern-match on `Deterministic` vs
+            // `Exhausted` when building the replan prompt (the retry
+            // count surfaces differently) rather than parsing strings.
+            Err(kind @ (EscalateToMaster::Deterministic(_) | EscalateToMaster::Exhausted(_))) => {
+                WorkerOutcome::Escalate(kind)
+            }
         };
         (sub_id_owned, outcome)
     });
@@ -901,6 +949,19 @@ async fn drain_as_skipped(
 }
 
 // -- Helpers ---------------------------------------------------------
+
+/// Flatten an `EscalateToMaster` into a short string suitable for
+/// `mark_failed` + the frontend's error pill. The variant information
+/// is preserved on [`DispatchOutcome::NeedsReplan`]; the lifecycle
+/// re-derives a prompt-level rendering when it builds the replan
+/// context, so this only needs to be readable.
+pub(crate) fn escalate_error_text(kind: &EscalateToMaster) -> String {
+    match kind {
+        EscalateToMaster::UserCancelled => "cancelled".to_string(),
+        EscalateToMaster::Deterministic(e) => format!("{e}"),
+        EscalateToMaster::Exhausted(e) => format!("{e}"),
+    }
+}
 
 fn to_storage_subtask(rt: &SubtaskRuntime, run_id: &RunId) -> Subtask {
     Subtask {

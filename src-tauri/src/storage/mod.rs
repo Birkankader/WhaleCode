@@ -458,6 +458,90 @@ impl Storage {
             .map(|r| Ok(r.try_get::<String, _>("depends_on_id")?))
             .collect()
     }
+
+    // --- Replan lineage (Phase 3 Step 4 / Layer 2) -----------------------
+
+    /// Record a master-replan lineage edge: `replacement_subtask_id`
+    /// supersedes `original_subtask_id`. The original row is not
+    /// modified — its state (typically `Failed`) stays put as the
+    /// historical record. `reason` is a human-readable blob (the
+    /// failing worker's last error, or `"infeasible"` when the master
+    /// escalated). Timestamp is stamped server-side.
+    ///
+    /// Foreign keys cascade on both sides: deleting either subtask
+    /// prunes the lineage row automatically.
+    pub async fn insert_replan(
+        &self,
+        original_subtask_id: &str,
+        replacement_subtask_id: &str,
+        reason: Option<&str>,
+    ) -> StorageResult<()> {
+        sqlx::query(
+            "INSERT INTO subtask_replans \
+             (original_subtask_id, replacement_subtask_id, reason, created_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(original_subtask_id)
+        .bind(replacement_subtask_id)
+        .bind(reason)
+        .bind(now_iso8601())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Count how many prior replans sit in `subtask_id`'s lineage —
+    /// i.e. how many times the master has already produced a
+    /// replacement in the chain that ends at this subtask.
+    ///
+    /// `0` means "this subtask has no predecessor — a replan now
+    /// would be the first"; `1` means one prior replan has fired; `2`
+    /// or more means the Layer-2 budget (max-2-replans-per-lineage
+    /// per phase-3-spec.md §3d) is exhausted and the caller must
+    /// escalate to Layer 3.
+    ///
+    /// Walks up `subtask_replans` via a recursive CTE: starting from
+    /// `subtask_id`, find its original via
+    /// `replacement_subtask_id = ?`, then that original's original, etc.
+    /// The row count is the number of lineage edges traversed, which
+    /// equals the number of replans that have fired before this point.
+    pub async fn count_replans_in_lineage(&self, subtask_id: &str) -> StorageResult<u32> {
+        let count: i64 = sqlx::query_scalar(
+            "WITH RECURSIVE ancestors(original_id) AS ( \
+                 SELECT original_subtask_id FROM subtask_replans \
+                  WHERE replacement_subtask_id = ? \
+                 UNION ALL \
+                 SELECT sr.original_subtask_id FROM subtask_replans sr \
+                   JOIN ancestors a ON sr.replacement_subtask_id = a.original_id \
+             ) \
+             SELECT COUNT(*) FROM ancestors",
+        )
+        .bind(subtask_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count.max(0) as u32)
+    }
+
+    /// For a replacement subtask id, return the list of original
+    /// subtask ids it supersedes. Typically singleton (one failed
+    /// subtask → one or more replacements), but the schema permits
+    /// M-originals-to-1-replacement collapses so we return a Vec.
+    /// Empty vec means "not a replacement of anything".
+    pub async fn get_replaces_for_subtask(
+        &self,
+        replacement_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT original_subtask_id FROM subtask_replans \
+             WHERE replacement_subtask_id = ? ORDER BY id ASC",
+        )
+        .bind(replacement_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| Ok(r.try_get::<String, _>("original_subtask_id")?))
+            .collect()
+    }
 }
 
 fn row_to_run(row: sqlx::sqlite::SqliteRow) -> StorageResult<Run> {
@@ -846,6 +930,102 @@ mod tests {
         let s = Storage::in_memory().await.unwrap();
         let err = s.delete_subtask("ghost").await.unwrap_err();
         assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    // -- Replan CRUD (Phase 3 Step 4) -------------------------------------
+
+    #[tokio::test]
+    async fn insert_replan_records_edge_with_timestamp() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("orig", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("repl", "r1")).await.unwrap();
+
+        s.insert_replan("orig", "repl", Some("worker refused"))
+            .await
+            .unwrap();
+
+        let row: (String, String, Option<String>, String) = sqlx::query_as(
+            "SELECT original_subtask_id, replacement_subtask_id, reason, created_at \
+             FROM subtask_replans ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "orig");
+        assert_eq!(row.1, "repl");
+        assert_eq!(row.2.as_deref(), Some("worker refused"));
+        assert!(!row.3.is_empty(), "created_at must be stamped");
+    }
+
+    #[tokio::test]
+    async fn insert_replan_allows_null_reason() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("orig", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("repl", "r1")).await.unwrap();
+        s.insert_replan("orig", "repl", None).await.unwrap();
+        let reason: Option<String> =
+            sqlx::query_scalar("SELECT reason FROM subtask_replans LIMIT 1")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert!(reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn count_replans_in_lineage_is_zero_for_unreplanned() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("solo", "r1")).await.unwrap();
+        assert_eq!(s.count_replans_in_lineage("solo").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn count_replans_in_lineage_walks_chain() {
+        // A → replaced by B → replaced by C. When we're about to replan
+        // C, the count should be 2 (A→B and B→C), meaning the cap is hit.
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("A", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("B", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("C", "r1")).await.unwrap();
+        s.insert_replan("A", "B", Some("first refusal")).await.unwrap();
+        s.insert_replan("B", "C", Some("second refusal")).await.unwrap();
+
+        assert_eq!(s.count_replans_in_lineage("A").await.unwrap(), 0);
+        assert_eq!(s.count_replans_in_lineage("B").await.unwrap(), 1);
+        assert_eq!(s.count_replans_in_lineage("C").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn count_replans_ignores_unrelated_lineages() {
+        // Two independent chains in the same run: X→Y and P→Q. Replans
+        // on one chain must not bleed into the other's count.
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        for id in ["X", "Y", "P", "Q"] {
+            s.insert_subtask(&sample_subtask(id, "r1")).await.unwrap();
+        }
+        s.insert_replan("X", "Y", None).await.unwrap();
+        s.insert_replan("P", "Q", None).await.unwrap();
+        assert_eq!(s.count_replans_in_lineage("Y").await.unwrap(), 1);
+        assert_eq!(s.count_replans_in_lineage("Q").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_replaces_for_subtask_returns_originals() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("orig", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("repl", "r1")).await.unwrap();
+        s.insert_replan("orig", "repl", None).await.unwrap();
+
+        let replaces = s.get_replaces_for_subtask("repl").await.unwrap();
+        assert_eq!(replaces, vec!["orig".to_string()]);
+
+        // A non-replacement subtask returns an empty vec (no lineage row).
+        assert!(s.get_replaces_for_subtask("orig").await.unwrap().is_empty());
     }
 
     #[tokio::test]

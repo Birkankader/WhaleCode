@@ -344,6 +344,7 @@ impl Orchestrator {
             storage: self.storage.clone(),
             event_sink: self.event_sink.clone(),
             registry: self.registry.clone(),
+            approval_senders: self.approval_senders.clone(),
             apply_senders: self.apply_senders.clone(),
             apply_timeout: self.apply_timeout,
         };

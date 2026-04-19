@@ -40,12 +40,14 @@ use chrono::Utc;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::agents::{AgentError, AgentImpl, Plan};
+use crate::agents::{AgentError, AgentImpl, Plan, ReplanContext};
 use crate::ipc::{
     FileDiff as IpcFileDiff, RunId, RunStatus, RunSummary, SubtaskData, SubtaskId, SubtaskState,
 };
 use crate::orchestration::context::build_planning_context;
-use crate::orchestration::dispatcher::{run_dispatcher, DispatchOutcome, DispatcherDeps};
+use crate::orchestration::dispatcher::{
+    escalate_error_text, run_dispatcher, DispatchOutcome, DispatcherDeps, EscalateToMaster,
+};
 use crate::orchestration::events::{EventSink, RunEvent};
 use crate::orchestration::notes::{RunContext, SharedNotes};
 use crate::orchestration::registry::AgentRegistry;
@@ -54,6 +56,35 @@ use crate::orchestration::{APPROVAL_TIMEOUT, MAX_CONCURRENT_WORKERS};
 use crate::storage::models::NewSubtask;
 use crate::storage::Storage;
 use crate::worktree::{DependencyGraph, FileDiff, MergeResult, WorktreeError, WorktreeManager};
+
+/// How many lines of the failed subtask's worker log to include in
+/// the replan prompt. Mirrors `phase-3-spec.md` §4: enough forensics
+/// for the master to spot what was happening just before the failure
+/// without drowning the prompt.
+const REPLAN_LOG_TAIL_LINES: usize = 50;
+
+/// Lineage cap: `count >= this` means the failed subtask has already
+/// been through two replans and we must escalate rather than try a
+/// third. Matches spec Decision 3 ("max 2 master replans").
+const REPLAN_LINEAGE_CAP: u32 = 2;
+
+/// Outcome of a Layer-2 replan attempt. Distinct from [`DispatchOutcome`]
+/// so the lifecycle can decide whether to loop back into approval
+/// (`NewPlan`) or finalize the run (`Escalated` / `Error`).
+enum ReplanOutcome {
+    /// Master produced at least one replacement subtask, rows were
+    /// persisted, and the run is back in `AwaitingApproval` with a
+    /// fresh approval sender installed. Caller should loop.
+    NewPlan,
+    /// Layer-3 escalation: either the lineage cap was hit or the
+    /// master returned an empty plan (infeasible). `HumanEscalation`
+    /// has already been emitted; the lifecycle should finalize to
+    /// `Failed`.
+    Escalated { reason: String },
+    /// Replan itself errored (master crashed, storage write failed,
+    /// etc.). Lifecycle finalizes to `Failed` with this message.
+    Error(String),
+}
 
 /// What `approve_subtasks`/`reject_run` send into the waiting task.
 #[derive(Debug)]
@@ -91,6 +122,14 @@ pub struct LifecycleDeps {
     pub storage: Arc<Storage>,
     pub event_sink: Arc<dyn EventSink>,
     pub registry: Arc<dyn AgentRegistry>,
+    /// Shared back-reference to the Orchestrator's approval-decision
+    /// sender map. After a Layer-2 replan produces fresh subtasks,
+    /// the lifecycle reinstalls a new sender here so the user's next
+    /// approve/reject click lands on the right receiver. On the
+    /// initial approval pass this map is populated by `submit_task`
+    /// and consumed by `approve_subtasks`/`reject_run` — the
+    /// lifecycle doesn't touch it then.
+    pub approval_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<ApprovalDecision>>>>,
     /// Shared back-reference to the Orchestrator's apply-decision
     /// sender map. On conflict the merge phase reinstalls a fresh
     /// sender here so the next `apply_run`/`discard_run` has somewhere
@@ -177,63 +216,132 @@ pub async fn run_lifecycle(
         return;
     }
 
-    // -- Approval wait ----------------------------------------------
-    let decision = tokio::select! {
-        d = approval_rx => match d {
-            Ok(d) => d,
-            // Sender dropped without deciding: treat as reject so the
-            // run doesn't hang. Only happens if the orchestrator is
-            // torn down; commands consume the sender.
-            Err(_) => ApprovalDecision::Reject,
-        },
-        _ = cancel.cancelled() => {
-            finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
-            return;
-        }
-        _ = tokio::time::sleep(APPROVAL_TIMEOUT) => {
-            deps.event_sink.emit(RunEvent::MasterLog {
-                run_id: run_id.clone(),
-                line: "approval timed out after 30 minutes; auto-rejecting.".into(),
-            }).await;
-            finalize_rejected(&deps, &run).await;
-            return;
-        }
-    };
-
-    match decision {
-        ApprovalDecision::Reject => {
-            finalize_rejected(&deps, &run).await;
-        }
-        ApprovalDecision::Approve { subtask_ids } => {
-            if let Err(e) = record_approval(&deps, &run, &subtask_ids).await {
-                finalize_failed(&deps, &run, format!("recording approval failed: {e}")).await;
+    // -- Approval + dispatch loop ----------------------------------
+    //
+    // The loop exists so Layer-2 replans can re-enter the approval
+    // phase: when the dispatcher returns `NeedsReplan`, we ask the
+    // master for a replacement plan, re-emit `SubtasksProposed`,
+    // reinstall the approval oneshot, and wait for the user to
+    // approve again. Initial-plan and replan passes share the same
+    // approval semantics (reject / timeout / cancel paths are
+    // identical), so they share the same code.
+    //
+    // `current_approval_rx` is owned across iterations; on replan we
+    // replace it with a freshly-minted receiver whose sender we've
+    // stashed in `deps.approval_senders`.
+    let mut current_approval_rx = approval_rx;
+    let mut current_cancel = cancel;
+    loop {
+        let decision = tokio::select! {
+            d = &mut current_approval_rx => match d {
+                Ok(d) => d,
+                // Sender dropped without deciding: treat as reject so
+                // the run doesn't hang. Only happens if the orchestrator
+                // is torn down; commands consume the sender.
+                Err(_) => ApprovalDecision::Reject,
+            },
+            _ = current_cancel.cancelled() => {
+                finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
                 return;
             }
-            let dispatcher_deps = DispatcherDeps {
-                storage: deps.storage.clone(),
-                event_sink: deps.event_sink.clone(),
-                registry: deps.registry.clone(),
-            };
-            let outcome = run_dispatcher(
-                &dispatcher_deps,
-                run.clone(),
-                master.clone(),
-                MAX_CONCURRENT_WORKERS,
-            )
-            .await;
-            match outcome {
-                DispatchOutcome::AllDone => {
-                    if let Err(e) = transition_to_merging(&deps, &run).await {
-                        finalize_failed(&deps, &run, e).await;
+            _ = tokio::time::sleep(APPROVAL_TIMEOUT) => {
+                deps.event_sink.emit(RunEvent::MasterLog {
+                    run_id: run_id.clone(),
+                    line: "approval timed out after 30 minutes; auto-rejecting.".into(),
+                }).await;
+                finalize_rejected(&deps, &run).await;
+                return;
+            }
+        };
+
+        match decision {
+            ApprovalDecision::Reject => {
+                finalize_rejected(&deps, &run).await;
+                return;
+            }
+            ApprovalDecision::Approve { subtask_ids } => {
+                if let Err(e) = record_approval(&deps, &run, &subtask_ids).await {
+                    finalize_failed(&deps, &run, format!("recording approval failed: {e}")).await;
+                    return;
+                }
+                let dispatcher_deps = DispatcherDeps {
+                    storage: deps.storage.clone(),
+                    event_sink: deps.event_sink.clone(),
+                    registry: deps.registry.clone(),
+                };
+                let outcome = run_dispatcher(
+                    &dispatcher_deps,
+                    run.clone(),
+                    master.clone(),
+                    MAX_CONCURRENT_WORKERS,
+                )
+                .await;
+                match outcome {
+                    DispatchOutcome::AllDone => {
+                        if let Err(e) = transition_to_merging(&deps, &run).await {
+                            finalize_failed(&deps, &run, e).await;
+                            return;
+                        }
+                        merge_phase(&deps, &run, apply_rx).await;
                         return;
                     }
-                    merge_phase(&deps, &run, apply_rx).await;
-                }
-                DispatchOutcome::Failed { error } => {
-                    finalize_failed(&deps, &run, error).await;
-                }
-                DispatchOutcome::Cancelled => {
-                    finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
+                    DispatchOutcome::Failed { error } => {
+                        finalize_failed(&deps, &run, error).await;
+                        return;
+                    }
+                    DispatchOutcome::Cancelled => {
+                        finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
+                        return;
+                    }
+                    DispatchOutcome::NeedsReplan {
+                        failed_subtask_id,
+                        kind,
+                    } => {
+                        // Layer-2: ask the master for a replacement plan.
+                        // `do_replan_subtask` installs a fresh approval
+                        // sender on success + resets the run's cancel
+                        // token so the next dispatch pass can run
+                        // cleanly. It emits all relevant events
+                        // (ReplanStarted / SubtasksProposed /
+                        // StatusChanged / HumanEscalation) itself.
+                        match do_replan_subtask(
+                            &deps,
+                            &run,
+                            master.as_ref(),
+                            &run_id,
+                            &task_text,
+                            &repo_root,
+                            &failed_subtask_id,
+                            kind,
+                        )
+                        .await
+                        {
+                            ReplanOutcome::NewPlan => {
+                                // Reinstall a fresh approval oneshot for
+                                // the next iteration; refresh the cancel
+                                // token snapshot from the run (the helper
+                                // minted a new one).
+                                let (new_tx, new_rx) = oneshot::channel();
+                                deps.approval_senders
+                                    .lock()
+                                    .await
+                                    .insert(run_id.clone(), new_tx);
+                                current_approval_rx = new_rx;
+                                current_cancel = run.read().await.cancel_token.clone();
+                                continue;
+                            }
+                            ReplanOutcome::Escalated { reason } => {
+                                // `HumanEscalation` already emitted by
+                                // the helper; run transitions to Failed.
+                                finalize_failed(&deps, &run, reason).await;
+                                return;
+                            }
+                            ReplanOutcome::Error(err) => {
+                                finalize_failed(&deps, &run, err).await;
+                                return;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -816,7 +924,12 @@ async fn record_approval(
                 // State will be set to Waiting by the dispatcher
                 // before it picks the ready set. Leave Proposed for
                 // now.
-            } else {
+            } else if s.state == SubtaskState::Proposed {
+                // Only skip still-proposed rows. On a Layer-2 replan
+                // the runtime contains Done/Failed subtasks from the
+                // prior dispatch pass; those are terminal and must
+                // not be overwritten by a blanket "wasn't approved
+                // this pass" skip.
                 s.mark_skipped();
                 skipped.push(s.id.clone());
             }
@@ -850,6 +963,343 @@ async fn record_approval(
         })
         .await;
 
+    Ok(())
+}
+
+// -- Layer-2 replan --------------------------------------------------
+
+/// Run one Layer-2 replan pass.
+///
+/// Called from the approval/dispatch loop when the dispatcher returns
+/// [`DispatchOutcome::NeedsReplan`]. Steps:
+///   1. Emit `ReplanStarted` so the UI can flip the master chip.
+///   2. Check the lineage cap (`count_replans_in_lineage >=
+///      [`REPLAN_LINEAGE_CAP`]`) — if hit, emit `HumanEscalation` and
+///      return [`ReplanOutcome::Escalated`].
+///   3. Build a [`ReplanContext`] from the failed subtask's runtime
+///      row, the worker log tail, and summaries of whatever
+///      already-completed subtasks landed in the prior pass.
+///   4. Call `master.replan`. An `Err` returns
+///      [`ReplanOutcome::Error`]; an `Ok` with an empty `subtasks`
+///      list means "infeasible" → emit `HumanEscalation` +
+///      [`ReplanOutcome::Escalated`].
+///   5. On success, assign fresh ids, persist new subtask rows,
+///      insert dependency + replan lineage edges, append runtime
+///      entries to [`Run::subtasks`] with `replaces = [failed_id]`,
+///      reset the run's cancel token to a fresh one (the dispatcher
+///      cancelled the previous one), re-emit `SubtasksProposed`,
+///      transition back to `AwaitingApproval`, and return
+///      [`ReplanOutcome::NewPlan`].
+///
+/// The helper does **not** install the approval sender — the caller
+/// does that (it owns the receiver too, so they belong in the same
+/// scope). The helper also does not wait on the approval; it just
+/// transitions the run back to `AwaitingApproval` so the next loop
+/// iteration blocks on the oneshot.
+#[allow(clippy::too_many_arguments)]
+async fn do_replan_subtask(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    master: &dyn AgentImpl,
+    run_id: &RunId,
+    task_text: &str,
+    repo_root: &std::path::Path,
+    failed_subtask_id: &SubtaskId,
+    kind: EscalateToMaster,
+) -> ReplanOutcome {
+    // 1. Emit ReplanStarted.
+    deps.event_sink
+        .emit(RunEvent::ReplanStarted {
+            run_id: run_id.clone(),
+            failed_subtask_id: failed_subtask_id.clone(),
+        })
+        .await;
+
+    // 2. Lineage-cap check.
+    let prior_replans = match deps
+        .storage
+        .count_replans_in_lineage(failed_subtask_id)
+        .await
+    {
+        Ok(n) => n,
+        Err(e) => {
+            return ReplanOutcome::Error(format!("count_replans_in_lineage: {e}"));
+        }
+    };
+    if prior_replans >= REPLAN_LINEAGE_CAP {
+        let reason = format!(
+            "retry budget exhausted: subtask already replanned {prior_replans} time(s) without success"
+        );
+        deps.event_sink
+            .emit(RunEvent::HumanEscalation {
+                run_id: run_id.clone(),
+                subtask_id: failed_subtask_id.clone(),
+                reason: reason.clone(),
+                suggested_action: None,
+            })
+            .await;
+        return ReplanOutcome::Escalated { reason };
+    }
+
+    // 3. Build ReplanContext from the current run state.
+    let ctx = match build_replan_context(
+        deps,
+        run,
+        task_text,
+        repo_root,
+        failed_subtask_id,
+        &kind,
+        prior_replans,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => return ReplanOutcome::Error(e),
+    };
+
+    // 4. Call master.replan.
+    //
+    // The dispatcher's earlier `cancel.cancel()` already fired the
+    // run's existing cancel token, so we must swap it for a fresh one
+    // *before* awaiting the master — otherwise the master call would
+    // short-circuit immediately. Do it now; if replan fails we still
+    // want the fresh token in place for subsequent operations, and
+    // the caller reads it from the run when reinstalling the
+    // approval receiver.
+    let fresh_cancel = CancellationToken::new();
+    {
+        let mut guard = run.write().await;
+        guard.cancel_token = fresh_cancel.clone();
+    }
+    let plan_result = tokio::select! {
+        p = master.replan(ctx, fresh_cancel.clone()) => p,
+        _ = fresh_cancel.cancelled() => Err(AgentError::Cancelled),
+    };
+
+    let plan = match plan_result {
+        Ok(p) => p,
+        Err(AgentError::Cancelled) => {
+            // User cancelled during the replan call. Fold the cancel
+            // back into the run so the outer loop's cancel branch
+            // catches it and finalizes.
+            fresh_cancel.cancel();
+            return ReplanOutcome::Error("replan cancelled".to_string());
+        }
+        Err(e) => {
+            return ReplanOutcome::Error(format!("master.replan failed: {e}"));
+        }
+    };
+
+    // 5. Handle empty plan (infeasible) vs new subtasks.
+    if plan.subtasks.is_empty() {
+        let reason = if plan.reasoning.trim().is_empty() {
+            "master returned an empty replan (no path forward proposed)".to_string()
+        } else {
+            plan.reasoning.trim().to_string()
+        };
+        deps.event_sink
+            .emit(RunEvent::HumanEscalation {
+                run_id: run_id.clone(),
+                subtask_id: failed_subtask_id.clone(),
+                reason: reason.clone(),
+                suggested_action: None,
+            })
+            .await;
+        return ReplanOutcome::Escalated { reason };
+    }
+
+    // 6. Persist the replacement subtasks + lineage edges, stamp
+    // runtime rows, re-emit SubtasksProposed, transition to
+    // AwaitingApproval.
+    if let Err(e) = install_replacement_subtasks(deps, run, run_id, failed_subtask_id, &plan).await
+    {
+        return ReplanOutcome::Error(e);
+    }
+
+    ReplanOutcome::NewPlan
+}
+
+/// Assemble a [`ReplanContext`] from the failed subtask's row, the
+/// dispatcher's escalation signal, the worker log tail (from storage),
+/// and summaries of already-completed subtasks.
+#[allow(clippy::too_many_arguments)]
+async fn build_replan_context(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    task_text: &str,
+    repo_root: &std::path::Path,
+    failed_subtask_id: &SubtaskId,
+    kind: &EscalateToMaster,
+    prior_replans: u32,
+) -> Result<ReplanContext, String> {
+    // Snapshot the failed subtask + completed-subtask summaries from
+    // the run under a read lock, then release before any async storage
+    // work. Holding the lock across `.await` would serialize every
+    // replan with every read in the run.
+    let (failed_title, failed_why, completed_summaries) = {
+        let guard = run.read().await;
+        let failed = guard
+            .find_subtask(failed_subtask_id)
+            .ok_or_else(|| format!("failed subtask {failed_subtask_id} not found in run"))?;
+        let title = failed.data.title.clone();
+        let why = failed.data.why.clone();
+        let summaries: Vec<String> = guard
+            .subtasks
+            .iter()
+            .filter(|s| s.is_done())
+            .map(|s| format!("{}: {}", s.data.title, s.data.why))
+            .collect();
+        (title, why, summaries)
+    };
+
+    // Fetch the worker log from storage and slice the tail.
+    let all_logs = deps
+        .storage
+        .get_subtask_logs(failed_subtask_id)
+        .await
+        .map_err(|e| format!("get_subtask_logs: {e}"))?;
+    let start = all_logs.len().saturating_sub(REPLAN_LOG_TAIL_LINES);
+    let worker_log_tail: String = all_logs[start..]
+        .iter()
+        .map(|l| l.line.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Attempt-error history. For Exhausted we ideally have both
+    // attempts; the first-attempt error was emitted as a log line
+    // prefixed with "[whalecode] retry: ..." by the retry ladder.
+    // Extract it if present so the master sees the full picture;
+    // otherwise pass only the most recent error.
+    let retry_marker = "[whalecode] retry: ";
+    let first_attempt_err: Option<String> = all_logs
+        .iter()
+        .map(|l| l.line.as_str())
+        .find(|line| line.starts_with(retry_marker))
+        .map(|line| line[retry_marker.len()..].to_string());
+    let most_recent_err = escalate_error_text(kind);
+    let mut attempt_errors = Vec::new();
+    if let Some(first) = first_attempt_err {
+        attempt_errors.push(first);
+    }
+    attempt_errors.push(most_recent_err);
+
+    // Available workers — same allow-list as initial plan.
+    let available_workers = deps.registry.available().await;
+    let _ = repo_root; // repo_root is carried for future use (master
+                       // may re-scan the tree); currently unused by the
+                       // replan prompt templates.
+
+    Ok(ReplanContext {
+        original_task: task_text.to_string(),
+        repo_root: repo_root.to_path_buf(),
+        failed_subtask_title: failed_title,
+        failed_subtask_why: failed_why,
+        attempt_errors,
+        worker_log_tail,
+        completed_subtask_summaries: completed_summaries,
+        // `attempt_counter` in the prompt is "this replan's index in
+        // the lineage, 1-based". The storage count is how many replans
+        // already fired (before this one), so add one.
+        attempt_counter: prior_replans + 1,
+        available_workers,
+    })
+}
+
+/// Append the master's replacement subtasks to the runtime + SQLite,
+/// record `subtask_replans` lineage edges, re-emit `SubtasksProposed`,
+/// and flip the run back to `AwaitingApproval`.
+async fn install_replacement_subtasks(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    failed_subtask_id: &SubtaskId,
+    plan: &Plan,
+) -> Result<(), String> {
+    // Assign fresh ids up-front so intra-batch dependency indices
+    // resolve cleanly under the write lock.
+    let new_ids: Vec<SubtaskId> = (0..plan.subtasks.len())
+        .map(|_| ulid_subtask_id())
+        .collect();
+
+    let (proposed_wire, storage_inserts, deps_edges, lineage_edges) = {
+        let mut guard = run.write().await;
+        let mut inserts = Vec::with_capacity(plan.subtasks.len());
+        let mut dep_edges = Vec::new();
+        let mut lineage = Vec::with_capacity(plan.subtasks.len());
+        for (i, ps) in plan.subtasks.iter().enumerate() {
+            let dep_ids: Vec<SubtaskId> = ps
+                .dependencies
+                .iter()
+                .filter_map(|idx| new_ids.get(*idx).cloned())
+                .collect();
+            for d in &dep_ids {
+                dep_edges.push((new_ids[i].clone(), d.clone()));
+            }
+            lineage.push((failed_subtask_id.clone(), new_ids[i].clone()));
+            let runtime = SubtaskRuntime::new_replacement(
+                new_ids[i].clone(),
+                ps.clone(),
+                dep_ids,
+                vec![failed_subtask_id.clone()],
+            );
+            inserts.push(NewSubtask {
+                id: new_ids[i].clone(),
+                run_id: run_id.clone(),
+                title: runtime.data.title.clone(),
+                why: Some(runtime.data.why.clone()).filter(|w| !w.is_empty()),
+                assigned_worker: runtime.data.assigned_worker,
+                state: SubtaskState::Proposed,
+            });
+            guard.subtasks.push(runtime);
+        }
+        // Flip status before dropping the lock so a racing read sees
+        // AwaitingApproval rather than a transient Running.
+        guard.status = RunStatus::AwaitingApproval;
+        let wire: Vec<SubtaskData> = guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
+        (wire, inserts, dep_edges, lineage)
+    };
+
+    for row in &storage_inserts {
+        deps.storage
+            .insert_subtask(row)
+            .await
+            .map_err(|e| format!("insert_subtask: {e}"))?;
+    }
+    for (child, parent) in &deps_edges {
+        deps.storage
+            .insert_dependency(child, parent)
+            .await
+            .map_err(|e| format!("insert_dependency: {e}"))?;
+    }
+    for (original, replacement) in &lineage_edges {
+        deps.storage
+            .insert_replan(
+                original,
+                replacement,
+                Some(plan.reasoning.trim())
+                    .filter(|s| !s.is_empty()),
+            )
+            .await
+            .map_err(|e| format!("insert_replan: {e}"))?;
+    }
+
+    deps.storage
+        .update_run_status(run_id, RunStatus::AwaitingApproval)
+        .await
+        .map_err(|e| format!("update_run_status: {e}"))?;
+
+    deps.event_sink
+        .emit(RunEvent::SubtasksProposed {
+            run_id: run_id.clone(),
+            subtasks: proposed_wire,
+        })
+        .await;
+    deps.event_sink
+        .emit(RunEvent::StatusChanged {
+            run_id: run_id.clone(),
+            status: RunStatus::AwaitingApproval,
+        })
+        .await;
     Ok(())
 }
 

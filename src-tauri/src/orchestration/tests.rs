@@ -948,6 +948,11 @@ async fn dispatcher_respects_concurrency_cap() {
 
 #[tokio::test]
 async fn worker_failure_fails_the_run_fast() {
+    // Phase 3 Step 4: a worker failure no longer fail-fasts the run
+    // directly — it triggers Layer 2 (master replan). To preserve this
+    // test's "fail-fast" intent, the master's replan is scripted to
+    // return an empty plan (infeasible), which the lifecycle surfaces
+    // as a `HumanEscalation` + finalizes the run to Failed.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(2)))
         .await
@@ -957,6 +962,8 @@ async fn worker_failure_fails_the_run_fast() {
             summary: "ok".into(),
             delay: Duration::from_millis(200),
         })
+        .await
+        .with_replan(ReplanScript::Empty)
         .await;
     let h = Harness::new(agent).await;
 
@@ -973,7 +980,21 @@ async fn worker_failure_fails_the_run_fast() {
     h.await_status(&run_id, RunStatus::Failed).await;
     let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
     assert_eq!(stored.status, RunStatus::Failed);
-    assert!(stored.error.as_deref().unwrap_or_default().contains("boom"));
+    // The run's error now reflects the Layer-3 escalation reason (the
+    // master's replan reasoning), not the worker's original error. The
+    // failing subtask still carries "boom" in its own error field.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        snap.iter()
+            .any(|e| matches!(e, RunEvent::HumanEscalation { .. })),
+        "expected HumanEscalation emit after empty replan",
+    );
+    let subs_after = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let failed = subs_after
+        .iter()
+        .find(|s| s.state == SubtaskState::Failed)
+        .expect("one subtask should end Failed");
+    assert!(failed.error.as_deref().unwrap_or_default().contains("boom"));
 }
 
 #[tokio::test]
@@ -1049,10 +1070,17 @@ async fn worker_failure_cleans_up_worktrees() {
     // Regression: finalize_failed must tear down worktrees the
     // dispatcher created for the failing (and any in-flight) subtask.
     // Before the fix these leaked on disk.
+    //
+    // Phase 3 Step 4: the failing subtask now routes through Layer 2;
+    // a scripted empty replan ensures we still end in Failed, so the
+    // cleanup contract (which runs in `finalize_failed`) remains
+    // testable end-to-end.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(1)))
         .await
         .with_execute("t0", ExecuteScript::Fail("boom".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
         .await;
     let h = Harness::new(agent).await;
 
@@ -1070,7 +1098,12 @@ async fn worker_failure_cleans_up_worktrees() {
 
     let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
     assert_eq!(stored.status, RunStatus::Failed);
-    assert!(stored.error.as_deref().unwrap_or_default().contains("boom"));
+    let subs_after = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let failed = subs_after
+        .iter()
+        .find(|s| s.state == SubtaskState::Failed)
+        .expect("the original subtask should end Failed");
+    assert!(failed.error.as_deref().unwrap_or_default().contains("boom"));
     assert!(
         !h.repo_path.join(".whalecode-worktrees").exists(),
         "worktrees must be cleaned after worker failure"
@@ -2332,9 +2365,12 @@ async fn retry_single_failure_then_success_transitions_through_retrying() {
 
 #[tokio::test]
 async fn retry_double_failure_escalates_and_fails_the_run() {
-    // Both attempts fail → Layer 1 exhausted → dispatcher fail-fast.
+    // Both attempts fail → Layer 1 exhausted → Layer 2 replan fires.
+    // Scripted replan returns empty (infeasible), which routes to
+    // Layer 3 (HumanEscalation) and finalizes the run Failed.
+    //
     // The retry event is still emitted before the terminal Failed;
-    // Phase 4 will intercept Exhausted for Layer 2 re-plan.
+    // the state trace is asserted below.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(1)))
         .await
@@ -2352,6 +2388,8 @@ async fn retry_double_failure_escalates_and_fails_the_run() {
         // the dispatcher might make — but the queue above has exactly 2
         // entries so this default should never be reached.
         .with_execute_default(ExecuteScript::Fail("unexpected 3rd call".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
         .await;
     let h = Harness::new(agent).await;
 
@@ -2378,7 +2416,9 @@ async fn retry_double_failure_escalates_and_fails_the_run() {
         .contains("still broken"));
 
     // State trace: Waiting → Running → Retrying → Failed. No second
-    // Running, no Done.
+    // Running, no Done. (The Layer-2 replan emits ReplanStarted + a
+    // fresh SubtasksProposed, but those are run-level events, not
+    // subtask-state transitions.)
     let snap = h.sink.snapshot().await;
     let states = subtask_state_events(&snap, &sub_id);
     assert_eq!(
@@ -2396,8 +2436,9 @@ async fn retry_double_failure_escalates_and_fails_the_run() {
 #[tokio::test]
 async fn retry_spawn_failed_short_circuits_layer_one() {
     // SpawnFailed is deterministic: the binary is missing or the OS
-    // refused execve. Retrying only burns time — skip Layer 1 and fail
-    // straight out. Retrying must NOT appear in the state trace.
+    // refused execve. Retrying only burns time — skip Layer 1 and
+    // escalate to Layer 2. Retrying must NOT appear in the state trace.
+    // The scripted replan returns empty so the run ends in Failed.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(1)))
         .await
@@ -2409,6 +2450,8 @@ async fn retry_spawn_failed_short_circuits_layer_one() {
         )
         .await
         .with_execute_default(ExecuteScript::Fail("should not be reached".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
         .await;
     let agent_handle = agent.clone();
     let h = Harness::new(agent).await;
@@ -2563,4 +2606,416 @@ async fn retry_emits_log_separator_before_second_attempt() {
         "retry marker should include previous error: {}",
         retry_logs[0]
     );
+}
+
+// -- Phase 3 Step 4: Layer-2 master replan integration tests ---------
+//
+// These exercise the full approve → dispatch → replan → re-approve
+// loop in lifecycle.rs. The scripted agent's `with_replan` queue
+// picks the outcome; assertions target:
+//   * `ReplanStarted` fires with the failed subtask's id
+//   * The replacement `SubtasksProposed` payload carries `replaces`
+//     populated with the failed lineage
+//   * The `subtask_replans` lineage row is persisted in SQLite
+//   * A second round of approve → dispatch runs the replacement to Done
+//   * A chained sequence of replans escalates to `HumanEscalation`
+//     once `REPLAN_LINEAGE_CAP` is hit, with the cap hit *before* the
+//     master is called
+//   * A master-level error during `replan()` finalizes the run Failed
+//     without hanging the lifecycle loop
+
+/// Poll until a subtask with this title appears on the run with the
+/// given state. Returns its id. Bounded at 3s so a regression that
+/// forgets to install the replacement surfaces as a timeout panic
+/// instead of hanging the test run forever.
+async fn await_subtask_with_title_in_state(
+    h: &Harness,
+    run_id: &RunId,
+    title: &str,
+    state: SubtaskState,
+) -> SubtaskId {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let subs = h.storage.list_subtasks_for_run(run_id).await.unwrap();
+        if let Some(s) = subs.iter().find(|s| s.title == title && s.state == state) {
+            return s.id.clone();
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for subtask title={title} state={state:?} on {run_id}. \
+                 Current rows: {subs:#?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn replan_happy_path_accepts_replacement_and_reaches_done() {
+    // t0 exhausts Layer 1 → master replan returns a single replacement
+    // "good" → user approves it → run completes and merges.
+    let replacement = Plan {
+        reasoning: "rewire through the other service".into(),
+        subtasks: vec![PlannedSubtask {
+            title: "good".into(),
+            why: "the replacement path".into(),
+            assigned_worker: AgentKind::Claude,
+            dependencies: vec![],
+        }],
+    };
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        // Both attempts on t0 fail → Layer 1 exhausted.
+        .with_fail_attempts(
+            "t0",
+            vec![
+                AgentError::TaskFailed {
+                    reason: "first fail".into(),
+                },
+                AgentError::TaskFailed {
+                    reason: "second fail".into(),
+                },
+            ],
+        )
+        .await
+        // "good" (replacement) writes a file so the merge phase has
+        // something to apply onto base.
+        .with_execute(
+            "good",
+            ExecuteScript::OkWrite {
+                summary: "fixed it".into(),
+                files: vec![(PathBuf::from("out.txt"), "repaired\n".into())],
+            },
+        )
+        .await
+        .with_replan(ReplanScript::OkPlan(replacement))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("needs replan".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let initial = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = initial[0].id.clone();
+
+    // Approve the original subtask — the only proposal on the table.
+    h.orch
+        .approve_subtasks(&run_id, vec![t0_id.clone()])
+        .await
+        .unwrap();
+
+    // Wait for the replacement to land in SQLite as Proposed.
+    let good_id =
+        await_subtask_with_title_in_state(&h, &run_id, "good", SubtaskState::Proposed).await;
+
+    // ReplanStarted fired with the failed subtask's id.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        snap.iter().any(|e| matches!(
+            e,
+            RunEvent::ReplanStarted { run_id: r, failed_subtask_id }
+            if r == &run_id && failed_subtask_id == &t0_id
+        )),
+        "expected ReplanStarted for {t0_id}, events: {snap:#?}",
+    );
+
+    // The most recent SubtasksProposed payload includes the new
+    // subtask with `replaces = [t0_id]`. The failed t0 is still in
+    // the list but carries its final state on the wire.
+    let last_proposed = last_proposed_payload(&h, &run_id).await;
+    let good_wire = last_proposed
+        .iter()
+        .find(|s| s.title == "good")
+        .expect("good must appear in latest SubtasksProposed");
+    assert_eq!(
+        good_wire.replaces,
+        vec![t0_id.clone()],
+        "replacement subtask must carry the failed lineage id on the wire",
+    );
+    assert!(
+        last_proposed.iter().any(|s| s.title == "t0"),
+        "the failed subtask must still be on the proposed list so the UI can render the lineage",
+    );
+
+    // Storage lineage matches the wire.
+    let storage_lineage = h.storage.get_replaces_for_subtask(&good_id).await.unwrap();
+    assert_eq!(storage_lineage, vec![t0_id.clone()]);
+    assert_eq!(
+        h.storage.count_replans_in_lineage(&good_id).await.unwrap(),
+        1,
+        "one replan edge: t0 → good",
+    );
+
+    // The full `ReplanContext` composition is asserted in the unit
+    // test `scripted_agent_replan_queue_pops_in_order`; here we stay
+    // at the orchestrator-level observable contract (events + storage).
+
+    // Approve the replacement; the run should merge cleanly.
+    h.orch
+        .approve_subtasks(&run_id, vec![good_id.clone()])
+        .await
+        .unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // Final storage: t0 Failed (its attempt error preserved), good Done.
+    let final_subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0 = final_subs.iter().find(|s| s.title == "t0").unwrap();
+    let good = final_subs.iter().find(|s| s.title == "good").unwrap();
+    assert_eq!(t0.state, SubtaskState::Failed);
+    assert!(t0
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("second fail"));
+    assert_eq!(good.state, SubtaskState::Done);
+
+    // Merged content landed on main.
+    assert_eq!(
+        tokio::fs::read_to_string(h.repo_path.join("out.txt"))
+            .await
+            .unwrap(),
+        "repaired\n",
+    );
+    // Worktrees cleaned up.
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+    // No HumanEscalation was emitted on the happy path.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        !snap
+            .iter()
+            .any(|e| matches!(e, RunEvent::HumanEscalation { .. })),
+        "happy-path replan must not escalate to a human",
+    );
+}
+
+#[tokio::test]
+async fn replan_lineage_cap_escalates_after_chained_replans() {
+    // Chain: t0 fails → replan returns r1 → r1 fails → replan returns
+    // r2 → r2 fails → lineage cap (2) is hit on the third replan
+    // attempt, which emits `HumanEscalation` *without* calling the
+    // master again and finalizes the run Failed.
+    //
+    // The `with_replan` queue holds exactly two OkPlan entries. A
+    // regression that forgets the cap check would call replan a third
+    // time and panic (empty queue).
+    let make_plan = |title: &str, why: &str| Plan {
+        reasoning: format!("try {title}"),
+        subtasks: vec![PlannedSubtask {
+            title: title.into(),
+            why: why.into(),
+            assigned_worker: AgentKind::Claude,
+            dependencies: vec![],
+        }],
+    };
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        // Every attempt on every subtask in the lineage fails twice.
+        // Using `with_execute_default` catches whichever title the
+        // master happens to invent (the scripted replan uses "r1"/"r2"
+        // below, but default covers surprises).
+        .with_fail_attempts(
+            "t0",
+            vec![
+                AgentError::TaskFailed { reason: "t0-a".into() },
+                AgentError::TaskFailed { reason: "t0-b".into() },
+            ],
+        )
+        .await
+        .with_fail_attempts(
+            "r1",
+            vec![
+                AgentError::TaskFailed { reason: "r1-a".into() },
+                AgentError::TaskFailed { reason: "r1-b".into() },
+            ],
+        )
+        .await
+        .with_fail_attempts(
+            "r2",
+            vec![
+                AgentError::TaskFailed { reason: "r2-a".into() },
+                AgentError::TaskFailed { reason: "r2-b".into() },
+            ],
+        )
+        .await
+        .with_execute_default(ExecuteScript::Fail("unexpected extra call".into()))
+        .await
+        .with_replan(ReplanScript::OkPlan(make_plan("r1", "replacement 1")))
+        .await
+        .with_replan(ReplanScript::OkPlan(make_plan("r2", "replacement 2")))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("chain".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // Round 1: approve t0.
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![t0_id.clone()])
+        .await
+        .unwrap();
+
+    // Round 2: approve r1 once it lands as Proposed.
+    let r1_id =
+        await_subtask_with_title_in_state(&h, &run_id, "r1", SubtaskState::Proposed).await;
+    h.orch
+        .approve_subtasks(&run_id, vec![r1_id.clone()])
+        .await
+        .unwrap();
+
+    // Round 3: approve r2 — this one should trigger the cap check on
+    // failure.
+    let r2_id =
+        await_subtask_with_title_in_state(&h, &run_id, "r2", SubtaskState::Proposed).await;
+    h.orch
+        .approve_subtasks(&run_id, vec![r2_id.clone()])
+        .await
+        .unwrap();
+
+    // Run finalizes Failed; HumanEscalation fires for r2 with a
+    // reason mentioning the exhausted retry budget.
+    h.await_status(&run_id, RunStatus::Failed).await;
+
+    let snap = h.sink.snapshot().await;
+    let escalation = snap
+        .iter()
+        .find_map(|e| match e {
+            RunEvent::HumanEscalation {
+                subtask_id,
+                reason,
+                run_id: r,
+                ..
+            } if r == &run_id => Some((subtask_id.clone(), reason.clone())),
+            _ => None,
+        })
+        .expect("expected HumanEscalation when lineage cap is hit");
+    assert_eq!(escalation.0, r2_id, "escalation must point at r2");
+    assert!(
+        escalation.1.contains("retry budget") || escalation.1.contains("replan"),
+        "escalation reason should mention the cap; got {:?}",
+        escalation.1,
+    );
+
+    // Only two replans actually happened — the third was short-
+    // circuited by the cap. Storage reflects exactly two lineage edges
+    // (t0→r1, r1→r2); count_replans_in_lineage(r2) == 2.
+    assert_eq!(
+        h.storage.count_replans_in_lineage(&r2_id).await.unwrap(),
+        2,
+        "lineage depth must be exactly 2; a 3rd replan would bump this",
+    );
+    assert_eq!(
+        h.storage.get_replaces_for_subtask(&r1_id).await.unwrap(),
+        vec![t0_id.clone()],
+    );
+    assert_eq!(
+        h.storage.get_replaces_for_subtask(&r2_id).await.unwrap(),
+        vec![r1_id.clone()],
+    );
+
+    // All three subtasks ended Failed — no Done anywhere in the chain.
+    let final_subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    for s in &final_subs {
+        assert_eq!(
+            s.state,
+            SubtaskState::Failed,
+            "every subtask in the lineage should be Failed; {} was {:?}",
+            s.title,
+            s.state,
+        );
+    }
+    // Worktrees cleaned up on the Failed finalize.
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+}
+
+#[tokio::test]
+async fn replan_master_error_finalizes_run_failed() {
+    // If `master.replan()` itself errors (not a cancel, not an empty
+    // plan — a hard error from the CLI / API), the lifecycle must
+    // finalize the run Failed with the error text surfaced on the run
+    // row. The loop must NOT retry the replan automatically.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_fail_attempts(
+            "t0",
+            vec![
+                AgentError::TaskFailed { reason: "worker a".into() },
+                AgentError::TaskFailed { reason: "worker b".into() },
+            ],
+        )
+        .await
+        .with_execute_default(ExecuteScript::Fail("unreachable".into()))
+        .await
+        .with_replan(ReplanScript::Fail(AgentError::TaskFailed {
+            reason: "master OOM".into(),
+        }))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("master dies".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![t0_id.clone()])
+        .await
+        .unwrap();
+
+    h.await_status(&run_id, RunStatus::Failed).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Failed);
+    assert!(
+        stored
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("master OOM"),
+        "run error should surface the master's replan failure, got {:?}",
+        stored.error,
+    );
+
+    // ReplanStarted fired (we reached the replan call) but no
+    // HumanEscalation (the error is a hard-fail, not an infeasibility
+    // signal). The t0 subtask stays Failed with the worker's error.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        snap.iter()
+            .any(|e| matches!(e, RunEvent::ReplanStarted { .. })),
+        "expected ReplanStarted before the master failed",
+    );
+    assert!(
+        !snap
+            .iter()
+            .any(|e| matches!(e, RunEvent::HumanEscalation { .. })),
+        "master hard-error should not masquerade as a human-escalation signal",
+    );
+    // No replacement subtask was persisted.
+    let final_subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    assert_eq!(final_subs.len(), 1, "no replacement should be installed");
+    assert_eq!(final_subs[0].id, t0_id);
+    assert_eq!(final_subs[0].state, SubtaskState::Failed);
+    // Cleanup ran.
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
 }
