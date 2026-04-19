@@ -41,41 +41,94 @@ Phase 2 must be shipped and stable:
 Phase 2's orchestrator had a linear flow. Phase 3 makes it branching:
 
 ```
-      ┌──── Planning ────┐
-      │                  ↓
-      │            AwaitingApproval ──── (edits / adds / removes)
-      │                  ↓
-      │              Running
-      │                  ↓
-      │     ┌─── worker fails ───┐
-      │     ↓                    │
-      │  Retrying (Layer 1)      │
-      │     ↓                    │
-      │     ├── succeeds → done  │
-      │     └── fails twice      │
-      │        ↓                 │
-      │    Escalating (Layer 2)  │
-      │        ↓                 │
-      └───  master re-plans  ←───┘
-           ↓
-      AwaitingApproval (of the re-plan)
-           ↓
-         Running (new subtasks)
-           ↓
-      ... or if re-plan also fails ...
-           ↓
-      HumanEscalation (Layer 3)
-           ↓
-      user: Manual fix / Skip / Abort
+      ┌──── Planning ────────────┐
+      │                          ↓
+      │                    AwaitingApproval  ← update/add/remove via IPC
+      │                          ↓
+      │                       Running
+      │                          ↓
+      │             ┌── worker fails (non-Spawn) ──┐
+      │             ↓                              │
+      │       Retrying (Layer 1)                   │
+      │             ├── succeeds → Running → Done  │
+      │             └── fails                      │
+      │                 ↓                          │
+      │                 │      ┌─ SpawnFailed ────┘
+      │                 ↓      ↓
+      │        Planning (re-plan context)  ← Layer 2 reuses the existing status
+      │                 ↓
+      └─────  master produces replacement subtasks  ─────┘
+           (new rows in `subtask_replans`, `SubtasksProposed` re-emitted)
+                          ↓
+                ... or replan cap hit / master fails ...
+                          ↓
+                HumanEscalation (Layer 3)
+                          ↓
+                user: Manual fix / Skip / Abort
 ```
 
+Key architectural deltas vs the earlier draft:
+- **No `Escalating` run status.** Layer 2 reuses `Running → Planning → AwaitingApproval`, same as initial planning.
+- **No new "re-plan" events.** The `run:subtasks_proposed` event carries replacement subtasks (with an optional `replaces?: SubtaskId[]` field per subtask).
+- **Retry count lives in the store** (`subtaskRetryCounts: Map<string, number>`), not in the XState machine. Phase 1's `MAX_RETRIES` / `canRetry` guard is removed in Step 3a.
+- **Re-plan count is server-authoritative.** `COUNT(*) FROM subtask_replans` walked back to the chain root — the frontend reads it as a derived field.
+- **`SpawnFailed` skips Layer 1** and escalates directly to Layer 2. Retry on a missing binary cannot change the outcome.
+
 The graph store must support:
-- Marking a subtask as "edited by user" (signal to master, useful for telemetry)
-- Inserting new subtasks dynamically (both user-added and re-planned)
-- Tracking re-plan count per subtask for loop protection
-- A "why master re-planned this" message attached to re-planned subtasks
+- Routing `SubtaskState::Retrying` through `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` events on the node machine (Step 3a)
+- Incrementing `subtaskRetryCounts` on `Retrying` transitions
+- Routing `run:human_escalation` through an `ESCALATE` event on the node machine (Step 8)
+- Appending replacement subtasks via the existing `handleSubtasksProposed` (no new handler)
 
 ## Step-by-step tasks
+
+### Prerequisite: Storage migration M002
+
+Phase 3 needs new columns on `subtasks` and a new table for tracking re-plan relationships. Land this migration before any Step 1 persistence code — the edit commands (`update_subtask`, `add_subtask`) and the re-plan logic (Step 4) all depend on it.
+
+**File:** `src-tauri/src/storage/migrations.rs` — append as `M002`, leave `M001` untouched.
+
+```sql
+-- Add user-edit tracking to subtasks
+ALTER TABLE subtasks ADD COLUMN edited_by_user BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE subtasks ADD COLUMN added_by_user BOOLEAN NOT NULL DEFAULT 0;
+
+-- Normalized replan relationships
+CREATE TABLE subtask_replans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  original_subtask_id TEXT NOT NULL,
+  replacement_subtask_id TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (original_subtask_id) REFERENCES subtasks(id) ON DELETE CASCADE,
+  FOREIGN KEY (replacement_subtask_id) REFERENCES subtasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_subtask_replans_original ON subtask_replans(original_subtask_id);
+CREATE INDEX idx_subtask_replans_replacement ON subtask_replans(replacement_subtask_id);
+```
+
+**Why a separate table for re-plans:** a re-plan is an event with a relationship (`original → replacement`) plus a reason and a timestamp — not just a counter on the original row. The normalized shape:
+- keeps "how many times has this been re-planned?" as `COUNT(*)` on the join, no inconsistency risk
+- enables Phase 6 run-history queries like "show the full replacement chain for subtask X" without adding columns later
+- handles the "one original → multiple replacements" case cleanly (when master splits a failed subtask into several)
+
+**What the frontend reads:**
+The existing `SubtaskData` shape on the frontend keeps `replanCount: number` and `replanReason?: string` for UI display (Step 4's "replaces #3" badge and "this has been re-planned twice already" text). Both are derived server-side from `subtask_replans` and delivered via `run:subtasks_proposed` — the frontend does not query the table directly.
+
+**Enum variants do NOT need a migration.** `RunStatus` and `SubtaskState` are persisted as text; adding `SubtaskState::Retrying` (Step 3) or any new re-plan-era status just writes the new string value. Any code that switch-matches on these enums is the real migration surface — tracked in the enum audit below.
+
+**Enum audit (prerequisite before Step 3):** every new variant has five call sites. List them explicitly so the work is bounded:
+
+| Call site | `SubtaskState::Retrying` |
+|---|---|
+| Rust enum | `src-tauri/src/ipc/mod.rs` — add `Retrying` variant |
+| zod schema | `src/lib/ipc.ts` — add to `subtaskStateSchema` |
+| Status mapper | `src/state/graphStore.ts` — `eventsForSubtaskState` handles the new variant |
+| XState bridge | see Step 3 — machine receives `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` |
+| SQLite persistence | implicit (text column); no schema change |
+
+Run this audit *before* adding each new variant, not after.
 
 ### Step 1: Subtask editing — store and XState changes
 
@@ -86,11 +139,13 @@ The graph store must support:
 // src/state/graphStore.ts (additions)
 interface GraphStoreActions {
   // ... existing ...
-  updateSubtask: (id: string, patch: Partial<SubtaskData>) => void;
-  addSubtask: (data: Omit<SubtaskData, 'id'>) => string; // returns new id
-  removeSubtask: (id: string) => void;
+  updateSubtask: (id: string, patch: SubtaskPatch) => Promise<void>;  // → update_subtask IPC
+  addSubtask: (data: SubtaskDraft) => Promise<string>;                // → add_subtask IPC, returns new id
+  removeSubtask: (id: string) => Promise<void>;                       // → remove_subtask IPC
 }
 ```
+
+Each action wraps the matching IPC call (see **IPC changes** below). The store does NOT mutate `subtasks` optimistically — the backend re-emits `run:subtasks_proposed` with the updated list, which the existing `handleSubtasksProposed` applies. This keeps Phase 2's event-sourced discipline: the backend is the source of truth, the store is a mirror.
 
 **XState guard:**
 Add a guard on the `PROPOSE` → `APPROVE` transition that checks for invalid edits. A subtask must have:
@@ -112,25 +167,82 @@ interface SubtaskData {
 ```
 
 **IPC changes:**
-Approve command must include the final subtask list (post-edit), not just IDs:
+
+`approve_subtasks` **stays exactly as Phase 2 shipped it:**
+
 ```rust
-// src-tauri/src/ipc/mod.rs
-async fn approve_subtasks(
+#[tauri::command(rename_all = "camelCase")]
+pub async fn approve_subtasks(
+    orch: State<'_, Arc<Orchestrator>>,
     run_id: RunId,
-    subtasks: Vec<SubtaskFinalized>,  // the EDITED plan
-) -> Result<(), String>
+    subtask_ids: Vec<SubtaskId>,
+) -> Result<(), String>;
 ```
 
-The orchestrator applies the user's edited plan, not the original one.
+Approval finalizes whatever subtask state is *currently persisted server-side*. It does not carry plan contents — edits commit ahead of time via three new dedicated commands.
+
+**Three new edit commands** (add to `src-tauri/src/ipc/commands.rs`, register in `lib.rs::generate_handler!`):
+
+```rust
+#[tauri::command(rename_all = "camelCase")]
+pub async fn update_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+    patch: SubtaskPatch,      // { title?, why?, assigned_worker? }
+) -> Result<(), String>;
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn add_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    data: SubtaskDraft,       // { title, why, assigned_worker, dependencies }
+) -> Result<SubtaskId, String>;
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn remove_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String>;
+```
+
+Mirror the Rust shapes in `src/lib/ipc.ts` with zod schemas, matching Phase 2's wire-contract discipline.
+
+**Semantics:**
+
+- **`update_subtask`** — patches `title`, `why`, or `assigned_worker` on a single row. Sets `edited_by_user = 1` (see M002). No-op if the run is not in `AwaitingApproval` — edits are rejected once workers dispatch. Re-emits `run:subtasks_proposed` with the full list on success.
+- **`add_subtask`** — inserts a new row in `proposed` state with `added_by_user = 1`, a fresh `ulid` id, and caller-supplied fields. Returns the new id. Re-emits `run:subtasks_proposed`. Caller-supplied dependencies must reference existing subtask ids or the command fails.
+- **`remove_subtask`** — deletes the row (CASCADE drops dependencies). Fails if any other subtask depends on it — caller must remove dependents first, or remove them in reverse topological order. Re-emits `run:subtasks_proposed`.
+
+**Why this split** (vs the "approve carries the finalized plan" alternative from the earlier draft):
+
+- Inline edit UX (Step 2) calls `update_subtask` on each blur/Enter, not a batch on approve. Users see backend confirmation per field.
+- `add_subtask` / `remove_subtask` are distinct user intents; batching them into `approve_subtasks` muddied the approval surface.
+- `approve_subtasks` stays "dispatch the workers" — one responsibility. Matches Phase 2's shipped shape; no re-wiring of existing tests.
+- The backend keeps one authoritative copy of the plan. No "which version wins if edits and approve race?" ambiguity.
+
+**Concurrency note:** `update_subtask`, `add_subtask`, `remove_subtask`, and `approve_subtasks` all take the run's `RwLock` in write mode. The orchestrator serializes them, so rapid inline edits followed by an approve click land in order.
 
 **Tests:**
-- Store: adding, updating, removing subtasks mutates state correctly
-- XState: invalid edit (empty title) blocks approval
-- Integration: edit a subtask, approve, verify orchestrator runs the edited version
+- Rust: `update_subtask` rejects empty title, rejects after approval, sets `edited_by_user`
+- Rust: `add_subtask` rejects dangling dependency ids, assigns fresh ulid, sets `added_by_user`
+- Rust: `remove_subtask` rejects when dependents exist, CASCADEs correctly when last leaf
+- Rust: concurrent `update_subtask` + `approve_subtasks` interleaves — edits land before approval dispatches workers
+- Store: each action invokes the matching IPC and applies the re-emitted `run:subtasks_proposed`
+- XState: invalid edit (empty title) blocks approval at the store layer
+- Integration: edit a subtask, approve, verify orchestrator runs the edited version (worker receives the edited title/why)
 
 ### Step 2: Inline edit UI
 
 Editing happens inline in the WorkerNode, not in a separate dialog. This preserves context.
+
+**IPC wiring recap (from Step 1):**
+- Every committed edit (blur / Enter on `title` or `why`, selection on `assigned_worker`) calls `updateSubtask(id, patch)` → `update_subtask` IPC.
+- Clicking "+ Add subtask" calls `addSubtask(draft)` → `add_subtask` IPC → the returned id is used to pre-focus the new node's title input.
+- Remove-button confirmation calls `removeSubtask(id)` → `remove_subtask` IPC.
+
+The UI does NOT mutate the store optimistically. It awaits the IPC promise, and the visual update arrives via the re-emitted `run:subtasks_proposed`. This matches Phase 2's event-sourced pattern — no divergent local state. The "edit saved" visual beat is the node re-rendering from the new props, not a local flash.
 
 **Editable regions within a proposed WorkerNode:**
 
@@ -187,113 +299,249 @@ Editing happens inline in the WorkerNode, not in a separate dialog. This preserv
 
 ### Step 3: Worker-level retry (Layer 1)
 
-**Goal:** When a worker fails, retry once with the error in context. Most transient failures self-resolve.
+**Goal:** When a worker fails, retry once with the error in context. Most transient failures self-resolve. Retry decisions live in the backend; the frontend reflects state.
 
-**Orchestrator changes (Rust):**
+#### 3a. Machine refactor
+
+Phase 1's `nodeMachine.ts` carried a frontend retry budget (`MAX_RETRIES = 0`, `canRetry` guard, `incrementRetries` action). Phase 3 **removes all three**. The machine becomes a pure reflection of backend state.
+
+**Remove from `src/state/nodeMachine.ts`:**
+- `MAX_RETRIES` constant
+- `canRetry` guard
+- `incrementRetries` action
+- The `running --FAIL→` transition's conditional branch on `canRetry` (collapse to single `running → failed` edge via `FAIL`)
+
+**Add to `src/state/nodeMachine.ts`:**
+- `START_RETRY` event: `running → retrying` (fired when backend emits `SubtaskState::Retrying`)
+- `RETRY_SUCCESS` event: `retrying → running` (backend transitions `Retrying → Running` → a new attempt is live)
+- `RETRY_FAIL` event: `retrying → failed` (backend transitions `Retrying → Failed` → Layer 1 exhausted)
+
+**`FAIL` stays as the direct-failure event** for the deterministic case (e.g., `SpawnFailed`, see 3d) where the backend never enters `Retrying` in the first place: `running → failed` directly.
+
+**Retry counter moves to `graphStore`:**
+
+```typescript
+// src/state/graphStore.ts (additions)
+type GraphState = {
+  // ... existing ...
+  subtaskRetryCounts: Map<string, number>;
+};
+```
+
+Incremented in `handleSubtaskStateChanged` when the incoming state is `Retrying`. Read by `WorkerNode` for the "Retry 1" badge display. Reset by `reset()` (and not persisted — the backend's `subtasks.state` column is the persistent source; on crash recovery, any `Retrying` row is swept to `Failed` by the existing recovery path).
+
+**Store bridge (`eventsForSubtaskState` in `graphStore.ts`):**
+
+| Backend `SubtaskState` | Current machine state | Events sent |
+|---|---|---|
+| `Retrying` | `running` | `START_RETRY` |
+| `Running` | `retrying` | `RETRY_SUCCESS` |
+| `Failed` | `retrying` | `RETRY_FAIL` |
+| `Failed` | `running` | `FAIL` (existing, unchanged) |
+
+No other cross-bridge paths change. Phase 2's `proposed → approved → waiting → running → done` mapping stays intact.
+
+#### 3b. Backend changes (Rust)
+
+Add `SubtaskState::Retrying` to `src-tauri/src/orchestration/run.rs` and `src-tauri/src/ipc/mod.rs` (the enum-audit table in the prerequisite section lists every call site).
+
+**Orchestrator flow** (in `src-tauri/src/orchestration/dispatcher.rs`):
 
 ```rust
 async fn execute_subtask_with_retry(
     subtask: &SubtaskRuntime,
     agent: &dyn AgentImpl,
     worktree_path: &Path,
-    notes: Arc<SharedNotes>,
+    notes: &SharedNotes,
+    log_tx: mpsc::Sender<String>,
+    events: &dyn EventSink,
+    cancel: CancellationToken,
 ) -> Result<ExecutionResult, EscalateToMaster> {
-    let first_attempt = agent.execute(subtask, worktree_path, &notes.read().await?, log_tx.clone()).await;
+    // Attempt 1
+    let first = agent
+        .execute(subtask, worktree_path, &notes.read().await?, /* extra_context: */ None, log_tx.clone(), cancel.clone())
+        .await;
 
-    match first_attempt {
-        Ok(result) => Ok(result),
-        Err(err) => {
-            // Emit retry state
-            events.emit(RunEvent::SubtaskStateChanged {
-                subtask_id: subtask.id.clone(),
-                state: SubtaskState::Retrying,
-            });
+    let err = match first {
+        Ok(result) => return Ok(result),
+        Err(AgentError::Cancelled) => return Err(EscalateToMaster::cancelled()),
+        Err(AgentError::SpawnFailed { .. }) => return Err(EscalateToMaster::deterministic(err)), // 3d — skip Layer 1
+        Err(e) => e,
+    };
 
-            // Augment context with error
-            let retry_context = format!(
-                "Previous attempt failed with: {}\n\nPlease retry with awareness of the above error.",
-                err
-            );
+    // Transition to Retrying (persisted + emitted). Frontend's nodeMachine
+    // receives START_RETRY via eventsForSubtaskState bridge and flips
+    // the node visual to retrying; subtaskRetryCounts[subtask.id] increments.
+    storage.update_subtask_state(subtask.id, SubtaskState::Retrying).await?;
+    events.emit(RunEvent::SubtaskStateChanged { subtask_id: subtask.id.clone(), state: SubtaskState::Retrying });
 
-            let retry_result = agent.execute_with_extra_context(
-                subtask,
-                worktree_path,
-                &notes.read().await?,
-                &retry_context,
-                log_tx,
-            ).await;
+    // Attempt 2
+    let retry_context = format!(
+        "Previous attempt failed with: {err}\n\nPlease retry with awareness of the above error."
+    );
+    let retry = agent
+        .execute(subtask, worktree_path, &notes.read().await?, Some(&retry_context), log_tx, cancel)
+        .await;
 
-            match retry_result {
-                Ok(result) => Ok(result),
-                Err(_) => Err(EscalateToMaster),
-            }
+    match retry {
+        Ok(result) => {
+            // Transition Retrying → Running. Frontend flips retrying → running
+            // via RETRY_SUCCESS. The worker will complete shortly, flipping to Done.
+            storage.update_subtask_state(subtask.id, SubtaskState::Running).await?;
+            events.emit(RunEvent::SubtaskStateChanged { subtask_id: subtask.id.clone(), state: SubtaskState::Running });
+            Ok(result)
+        }
+        Err(e) => {
+            // Transition Retrying → Failed. Layer 1 exhausted; caller
+            // handles Layer 2 escalation. Frontend flips retrying → failed
+            // via RETRY_FAIL.
+            storage.update_subtask_state(subtask.id, SubtaskState::Failed).await?;
+            events.emit(RunEvent::SubtaskStateChanged { subtask_id: subtask.id.clone(), state: SubtaskState::Failed });
+            Err(EscalateToMaster::exhausted(e))
         }
     }
 }
 ```
 
-**Agent trait extension:**
-Add `execute_with_extra_context` method or a parameter to existing `execute` that accepts additional system-level context. Existing adapters update their prompts to include the retry context prominently.
+#### 3c. Agent trait extension
 
-**UI: Retrying state:**
-Already designed in Phase 1's design system (`status-retry` amber border, retry badge). Phase 1 UI was driven by mock; now it's driven by real events from orchestrator.
+Extend the existing `AgentImpl::execute` signature with an optional `extra_context` parameter:
+
+```rust
+// src-tauri/src/agents/mod.rs
+async fn execute(
+    &self,
+    subtask: &Subtask,
+    worktree_path: &Path,
+    shared_notes: &str,
+    extra_context: Option<&str>,   // NEW — retry prompt augmentation
+    log_tx: mpsc::Sender<String>,
+    cancel: CancellationToken,
+) -> Result<ExecutionResult, AgentError>;
+```
+
+Adapters render `extra_context` into the prompt when `Some`, otherwise proceed as today. One signature, one code path per adapter — no `execute_with_extra_context` sibling method.
+
+Test fixture: `ScriptedAgent` grows a "fail-on-attempt-N" mode. See **Testing** below.
+
+#### 3d. Uniform retry policy, with a SpawnFailed exception
+
+Layer 1 retry fires **uniformly** for these `AgentError` variants:
+
+- `ProcessCrashed`
+- `TaskFailed`
+- `ParseFailed`
+- `Timeout`
+
+One variant is exempt:
+
+- **`SpawnFailed`** — the binary is missing, permissions are wrong, or the OS rejected `execve`. This state is deterministic: a retry cannot change the outcome and only wastes tokens + time. On `SpawnFailed`, the subtask skips Layer 1 entirely and escalates directly to Layer 2 (master re-plan).
+
+`Cancelled` short-circuits before Layer 1 — cancellation comes from outside the worker, not from a worker failure, and retrying violates the user's intent.
+
+**The taxonomy is retained** for UI display and logging — even though the retry policy is flat, the user-facing error surface distinguishes the variants. See the Layer 3 display mapping in Step 5.
+
+#### 3e. UI: retrying state
+
+`status-retry` amber border and retry badge (already in Phase 1's design system). Phase 1 was driven by mock state; Phase 3 drives it from real `SubtaskStateChanged` events through the `START_RETRY` bridge.
+
+**Retry counter badge:** `WorkerNode` reads `graphStore.subtaskRetryCounts[id]` and renders "Retry N" in the header row when `N > 0`. For Phase 3 this only reaches `N = 1` (single retry per worker attempt); Phase 4+ can extend without breaking the badge.
 
 **Logs must show the retry:**
-- Last line of first attempt's log + a visual separator + first line of retry
-- Users can see WHAT failed and how the retry is adjusting
+- Last line of the first attempt's log + a visual separator (a thin `border-b` row with text "retrying after failure")
+- First line of the retry attempt
+- Users see WHAT failed AND how the retry is adjusting
 
-**Tests:**
-- Fake adapter that fails once then succeeds: verify retry triggers, final state is `done`
-- Fake adapter that fails twice: verify escalation triggers
+#### 3f. Tests
+
+- Machine: `START_RETRY` from `running` lands in `retrying`; `RETRY_SUCCESS` returns to `running`; `RETRY_FAIL` terminates in `failed`.
+- Machine: `FAIL` from `running` terminates directly in `failed` (no retry state visited — deterministic failure path).
+- Store bridge: `eventsForSubtaskState(Retrying, running)` returns `['START_RETRY']`; `subtaskRetryCounts` increments exactly once per `Retrying` event.
+- Rust: fake adapter fails once (`Timeout`) then succeeds → `SubtaskStateChanged(Retrying)` then `SubtaskStateChanged(Running)` then `SubtaskStateChanged(Done)` in order.
+- Rust: fake adapter fails twice (`Timeout` + `Timeout`) → `Retrying` then `Failed`; dispatcher returns `EscalateToMaster::exhausted`.
+- Rust: fake adapter returns `SpawnFailed` on attempt 1 → NO `Retrying` emitted; dispatcher returns `EscalateToMaster::deterministic`.
+- Rust: fake adapter returns `Cancelled` → NO `Retrying`, NO Layer 2 — the run's cancel path handles it.
+- Test fixture: extend `ScriptedAgent` with `.fail_attempts(vec![AgentError::Timeout])` builder so tests can script per-attempt outcomes without reinventing the fake each time.
 
 ### Step 4: Master re-planning (Layer 2)
 
-**Goal:** When a subtask fails its retry, master reviews the situation and proposes a new plan.
+**Goal:** When Layer 1 is exhausted (worker failed its retry, or `SpawnFailed` short-circuited it), master reviews the situation and proposes replacement subtasks. **Layer 2 reuses the existing proposal flow — no new machine states and no new events.**
 
-**Orchestrator flow:**
-1. Subtask fails twice (Layer 1 exhausted)
-2. Subtask state → `escalating`
-3. Master wakes up: collect context (original task, failed subtask, error history, what other workers completed)
-4. Call `master.replan(context)` — returns new `Plan` with replacement subtask(s)
-5. Insert new subtasks into the run as children of master (siblings to the original subtasks)
-6. Mark the original failed subtask with `state: Failed` and `replanCount++`
-7. Transition run to `AwaitingApproval` of the re-plan
-8. User approves the re-plan → dispatch new subtasks
-9. If re-plan subtask also fails twice: repeat, unless loop limit hit
+#### 4a. Reuse SubtasksProposed, don't invent new events
 
-**Loop protection:**
-- Max 2 re-plans per original subtask (track via `replanCount`)
-- If a subtask has been re-planned twice and the replacement still fails: skip to Layer 3 immediately, no third re-plan
+Layer 2 does not need `run:replan_started` or `run:replan_proposed`. The existing `run:subtasks_proposed` event already carries everything a replacement plan needs: the list of new subtasks, their dependencies, their assigned workers. The frontend's `handleSubtasksProposed` handler already knows how to append new nodes and transition the run back to `AwaitingApproval`.
 
-**Master prompt for re-planning:**
-A new prompt template: `src-tauri/src/agents/prompts/replan_{agent}.md`
+What the backend does:
+1. Status transitions `Running → Planning` (re-using the existing status, which drives master node to `thinking` visually).
+2. Master produces replacement subtasks.
+3. Status transitions `Planning → AwaitingApproval` (re-using the existing approval gate).
+4. `run:subtasks_proposed` emitted with the new subtasks.
+5. User clicks Approve → same `approve_subtasks` IPC — same dispatch path.
+
+No new event types. No new machine states. The only *new* frontend behavior is rendering a "replaces #3" badge on the replacement subtasks, driven by the normalized `subtask_replans` table (M002).
+
+#### 4b. Orchestrator flow
+
+1. Layer 1 returns `EscalateToMaster` (exhausted or deterministic).
+2. Original subtask's state is `Failed` (emitted from Step 3 path).
+3. Run status transitions `Running → Planning` (persisted + emitted).
+4. Master is called (see Step 6 for failure-handling — master can itself fail here).
+5. Context gathered: original task, failed subtask id, error history, logs tail, summaries from other completed subtasks.
+6. `master.replan(context)` returns a new `Plan` with replacement subtask(s). Prompt template: `src-tauri/src/agents/prompts/replan_{agent}.md`.
+7. For each replacement subtask:
+   - Insert into `subtasks` table with fresh ulid id, dependencies pointing at existing subtask ids where appropriate.
+   - Insert a row into `subtask_replans` (M002): `(original_subtask_id, replacement_subtask_id, reason, created_at)`.
+8. Status transitions `Planning → AwaitingApproval`.
+9. `run:subtasks_proposed` emitted with the combined current list (the failed subtask stays in the list, marked `Failed`, so the frontend can render the "replaces #3" edge).
+10. User approves (same flow as initial approval) → dispatcher resumes with the new subtasks.
+
+If the replacement subtask itself fails twice, this same flow runs again — bounded by loop protection (4c).
+
+**Concurrency:** Layer 2 runs while other subtasks may still be progressing (a parallel subtask's worker isn't affected by one peer entering Layer 2). The dispatcher's existing `tokio::select!` loop handles this — re-planning is just a pause between dispatcher cycles.
+
+#### 4c. Loop protection
+
+- Max 2 re-plans per original subtask. `COUNT(*) FROM subtask_replans WHERE original_subtask_id = :id` gives the authoritative count.
+- On Layer 1 exhaustion, the orchestrator checks this count:
+  - `0 or 1` → proceed with Layer 2 (master re-plan).
+  - `2` → skip Layer 2 and escalate directly to Layer 3 (Step 5).
+- The "original" anchor is the *root* of the re-plan chain. If subtask A was re-planned as A', and A' fails, the count attributed to A goes up by 1 (A' counts against A). This is handled by walking the `subtask_replans` table backwards from the failing replacement to its root.
+
+#### 4d. Master prompt for re-planning
+
+New prompt template per adapter: `src-tauri/src/agents/prompts/replan_{agent}.md`.
 
 Key elements:
-- Original task
+- Original task description
 - Original subtask that failed (title, why)
-- All error messages from attempts
-- Logs from the worker (last 50 lines)
+- All error messages from attempts (Layer 1 attempt 1 + attempt 2)
+- Worker logs tail (last 50 lines)
 - What OTHER subtasks completed (their summaries from shared notes)
+- Flags: `edited_by_user` and `added_by_user` from M002 — tells master "user cared about this" so the re-plan preserves intent.
 - Instructions: "Propose a replacement approach. It might be: splitting the subtask further, using a different approach, or marking it as not-feasible (empty plan)."
 
-**Empty re-plan case:**
-- Master may legitimately conclude "this subtask can't be automated, skip it"
-- Plan returned with empty subtasks + reasoning
-- UI: failed subtask shows master's note: "Master suggests skipping this — it requires manual handling"
-- User has the choice: accept the skip, or intervene manually
+#### 4e. Empty re-plan case
 
-**UI changes:**
-- When re-plan triggers, master node returns to `thinking` state (visually "planning again")
-- New subtasks appear as siblings to the original, with a subtle visual cue: small dashed line from the failed node to the replacement, OR a badge on the new subtask "replaces subtask #3"
-- Approval bar returns with a different message: "Master proposes 2 replacement subtasks after a failure. Approve to continue."
+Master may legitimately conclude "this subtask can't be automated, skip it" and return a `Plan` with `subtasks: []` plus a reasoning string.
 
-**Event additions:**
-- `run:replan_started { run_id, failed_subtask_id }`
-- `run:replan_proposed { run_id, new_subtasks, reasoning }`
+- UI: failed subtask shows master's note in the expanded body: "Master suggests skipping this — it requires manual handling."
+- Inline buttons on the failed node: "Skip this subtask" and "Override — I'll fix it manually" (routes to Layer 3 Manual Fix).
+- This IS a terminal outcome for that subtask from Layer 2's perspective. Empty re-plans do NOT consume a replan slot (nothing was persisted in `subtask_replans`), so the count stays unchanged.
 
-**Tests:**
-- Fake adapter: master plans A, worker fails twice → master re-plans with A' → A' succeeds
-- Loop protection: A fails, re-plan A', A' fails, re-plan A'', A'' fails → escalate to Layer 3 (no A''')
+#### 4f. UI changes
+
+- When Layer 2 triggers, master node returns to `thinking` state via the existing `STATUS_CHANGED(Planning)` path. Visually: "planning again."
+- Replacement subtasks appear as additional nodes via `SubtasksProposed`, with the existing layout algorithm.
+- Visual cue: small "replaces #3" badge on the replacement node's header, with a dashed edge from the failed node to the replacement. The edge + badge data comes from the frontend joining `subtasks` with the `subtask_replans`-derived shape on the backend (exposed via an additional field in the `SubtasksProposed` payload: each subtask optionally carries `replaces?: SubtaskId[]`).
+- Approval bar message: "Master proposes N replacement subtasks after a failure. Approve to continue." Single `ApprovalBar` component with a `variant: 'initial' | 'replan'` prop handles the copy swap (see file list below — no separate `ReplanApprovalBar` component).
+
+#### 4g. Tests
+
+- Fake adapter: master plans A, worker fails twice on A → master re-plans with A' → A' succeeds. Verify: `subtask_replans` has one row; `run:subtasks_proposed` fires once for re-plan; run reaches `Done`.
+- Loop protection: A fails, re-plan A', A' fails, re-plan A'', A'' fails → escalate to Layer 3 (no A'''). Verify: `subtask_replans` has two rows; `human_escalation` state emitted for A''.
+- Empty re-plan: master returns empty plan → UI shows skip/override options; no `subtask_replans` row inserted.
+- Parallel progression: 2 subtasks in flight, one enters Layer 2 → the other continues to `Done` without pause.
+- Persistence: kill app mid-re-plan (between `Planning` and `AwaitingApproval`) → recovery marks run `Failed`, `subtask_replans` rows left intact for audit. (Phase 2 recovery is cleanup-only; full resume is v2.5.)
 
 ### Step 5: Human escalation (Layer 3)
 
@@ -308,12 +556,28 @@ Key elements:
 The failed subtask node enters `human_escalation` state:
 - Red border (`status-failed`)
 - Auto-expanded node body showing:
-  - Short error summary ("Worker failed twice; master couldn't recover")
+  - Short error summary (see display mapping below)
   - Expandable "Show full error" section with raw logs
 - Three inline buttons inside the node body:
   - **Manual fix** — opens an external editor at the most-recently-edited file in the worktree (best-effort; may need tauri-plugin-shell)
   - **Skip subtask** — marks as `skipped`, run continues without it
   - **Abort run** — kills the whole run, cleanup everything
+
+**AgentError display mapping:**
+
+The uniform Layer 1 retry (Step 3) keeps the taxonomy intact for exactly this surface. Each variant renders a human-readable summary; the raw body goes into the "Show full error" expander.
+
+| `AgentError` variant | UI message |
+|---|---|
+| `ProcessCrashed { exit_code, signal }` | `Worker crashed (exit {n}, signal {s})` |
+| `TaskFailed { reason }` | `Agent declined: {reason}` |
+| `ParseFailed { raw_output }` | `Agent returned malformed output` + expandable raw |
+| `Timeout { after_secs }` | `Worker timed out after {n}s` |
+| `SpawnFailed { cause }` | `Could not start {agent}: {cause}` |
+
+`Cancelled` never reaches Layer 3 — cancellation bypasses the escalation ladder entirely.
+
+For `SpawnFailed` specifically, the "Manual fix" button is less useful (the binary isn't there to fix) — prefer showing a direct call-to-action: "Check agent install → Settings → Agents". Implementation note: this is copy in the Layer-3 panel, not a separate code path. Same three buttons, just contextual sub-text.
 
 **Manual fix flow:**
 - User clicks "Manual fix"
@@ -383,15 +647,27 @@ pub fn is_action_safe(action: &AgentAction) -> bool {
 
 ### Step 8: Store integration for Layer 1-3
 
-Update the Zustand store to handle the new event types and state transitions.
+Update the Zustand store to handle the new state transitions. **Most of Layer 1–2 rides the existing event vocabulary** — Phase 3 adds only one new event.
 
-New event handlers:
-- `run:subtask_retrying` — transition node to retrying state via XState
-- `run:replan_started` — master node back to thinking
-- `run:replan_proposed` — insert new subtasks, status → awaiting_approval
-- `run:human_escalation` — transition node to human_escalation state
+**Reused events (no new frontend wiring needed):**
+- `run:status_changed` — `Running → Planning` drives master back to thinking; `Planning → AwaitingApproval` gates the re-plan approval.
+- `run:subtasks_proposed` — carries Layer 2's replacement subtasks (optionally with `replaces?: SubtaskId[]` for the "replaces #3" badge).
+- `run:subtask_state_changed` — carries `Retrying`, mapped through `eventsForSubtaskState` to `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` (Step 3a).
 
-Update XState machine if needed to support the Layer 2 path (escalating → back to proposed via re-plan, not just retrying → running).
+**One new event:**
+- `run:human_escalation { run_id, subtask_id, error, options }` — transitions the node's machine to `human_escalation` (Step 5). This is the only Layer-3 event.
+
+**Store additions:**
+- `subtaskRetryCounts: Map<string, number>` — incremented in `handleSubtaskStateChanged` when state is `Retrying`.
+- `handleHumanEscalation` — sends the node actor the `ESCALATE` event and stores the error for display.
+
+**XState machine additions** (`src/state/nodeMachine.ts`):
+- `running → retrying → running | failed` paths via `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` (Step 3a).
+- `failed → human_escalation` via `ESCALATE`.
+- `human_escalation → skipped | done | failed` via `SKIP` / `MANUAL_FIX_DONE` / `ABORT`.
+- Remove the removed pieces from 3a: `MAX_RETRIES`, `canRetry`, `incrementRetries`.
+
+No `escalating → proposed` path is needed — Layer 2 reuses `SubtasksProposed` to add replacement subtasks directly, which spawn fresh actors. The failed original stays in `failed`.
 
 ### Step 9: Polish and verification
 
@@ -425,10 +701,17 @@ Phase 3 ships when:
 ```
 src-tauri/src/
 ├── agents/
+│   ├── mod.rs (execute signature gains extra_context: Option<&str>)
 │   └── prompts/replan_{agent}.md
 ├── orchestration/
-│   ├── mod.rs (extended with retry + replan logic)
-│   └── escalation.rs (new — Layer 2 & 3 handling)
+│   ├── dispatcher.rs (execute_subtask_with_retry + SpawnFailed short-circuit)
+│   ├── escalation.rs (new — Layer 2 re-plan + Layer 3 human escalation)
+│   └── run.rs (SubtaskState::Retrying added)
+├── storage/
+│   └── migrations.rs (M002: edited_by_user, added_by_user, subtask_replans)
+├── ipc/
+│   ├── commands.rs (update_subtask, add_subtask, remove_subtask; approve_subtasks unchanged)
+│   └── mod.rs (SubtaskPatch, SubtaskDraft, human_escalation event)
 └── safety/mod.rs (stub for Phase 7)
 
 src/
@@ -438,17 +721,16 @@ src/
 │   │   ├── Dropdown.tsx
 │   │   └── Badge.tsx
 │   ├── nodes/
-│   │   ├── WorkerNode.tsx (extended: inline editing)
+│   │   ├── WorkerNode.tsx (extended: inline editing + retry badge + "replaces #N" badge)
 │   │   └── EscalationActions.tsx (Layer 3 buttons)
 │   └── approval/
-│       ├── ApprovalBar.tsx (extended: "+ Add subtask")
-│       └── ReplanApprovalBar.tsx (new variant for re-plan approvals)
+│       └── ApprovalBar.tsx (extended: variant: 'initial' | 'replan', "+ Add subtask" in initial)
 ├── hooks/
 │   ├── useInlineEdit.ts
 │   └── useExternalEditor.ts (for manual fix)
 └── state/
-    ├── nodeMachine.ts (extended: escalating → proposed path)
-    └── graphStore.ts (extended: add/update/remove + new event handlers)
+    ├── nodeMachine.ts (retry refactor: remove MAX_RETRIES/canRetry; add START_RETRY/RETRY_SUCCESS/RETRY_FAIL; add ESCALATE)
+    └── graphStore.ts (add/update/remove actions → IPC; subtaskRetryCounts; human_escalation handler)
 ```
 
 Estimated LOC: ~1500 Rust, ~2000 TypeScript. Frontend-heavy because editing UX is the bulk.
@@ -456,11 +738,15 @@ Estimated LOC: ~1500 Rust, ~2000 TypeScript. Frontend-heavy because editing UX i
 ## Common pitfalls
 
 - **Inline edit UX is unforgiving.** If Escape doesn't cancel reliably, or blur saves unexpectedly, users rage-quit. Test keyboard edge cases exhaustively: Tab while editing, clicking outside, rapid enter/escape.
-- **Re-plan loop is a footgun.** Without the loop limit, a pathological case could burn an entire budget on re-plans. Enforce the limit at the orchestrator level, not just UI.
-- **Edited subtasks must persist through re-planning.** If user edits subtask #3 and it fails, the re-plan should know "user cared about this" in its prompt context.
-- **Editor detection varies by OS.** Don't hardcode `code`. Respect `$EDITOR`, then fall back to platform defaults (`open` on macOS, `xdg-open` on Linux, associated app on Windows).
+- **Re-plan loop is a footgun.** Without the loop limit, a pathological case could burn an entire budget on re-plans. Enforce the limit at the orchestrator level, not just UI — the authoritative count is `COUNT(*) FROM subtask_replans` walked back to the chain root.
+- **Edited subtasks must persist through re-planning.** The `edited_by_user` flag (M002) lives in `subtasks`; the re-plan prompt reads it so master knows "user cared about this."
+- **Retry counter belongs in the store, not the machine.** Phase 1's `MAX_RETRIES` / `canRetry` guard is removed in 3a. Don't port it back in — the machine is a reflection of backend state, retry accounting lives in `graphStore.subtaskRetryCounts`.
+- **SpawnFailed is the retry exception, not the rule.** The orchestrator's retry function must short-circuit `SpawnFailed` before emitting `Retrying`. Uniform retry for everything else.
+- **Layer 2 reuses events, doesn't invent them.** Don't add `run:replan_started` / `run:replan_proposed` — the status transition back to `Planning` plus a fresh `SubtasksProposed` is sufficient. New events here would duplicate Phase 2's wiring.
+- **Editor detection varies by OS.** Don't hardcode `code`. Fallback chain: `settings.editor` → `$EDITOR` env var → platform default (`open -a` on macOS, `xdg-open` on Linux, `Start-Process` on Windows) → "copy path to clipboard" as last resort.
 - **Safety gate hooks must be real even if Phase 3's implementation is trivial.** Phase 7 should only need to fill in `is_action_safe` — not refactor the architecture.
 - **Don't let auto-approve silently swallow failures.** Auto-approve bypasses approvals, not errors. All three layers still apply.
+- **React Flow intercepts pointer events on custom nodes.** Before inline-edit work lands, verify input focus and keyboard events reach nested `<input>` / `<textarea>` elements against a `pnpm tauri build` binary — Phase 2 Step 11 surfaced dev-vs-prod divergence in this exact surface area.
 
 ## Open questions deferred to Phase 4
 
