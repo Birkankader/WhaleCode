@@ -104,6 +104,14 @@ export function WorkerNode({ id, data }: NodeProps) {
   );
 }
 
+// Backend emits this reserved-prefix marker on the log channel right
+// before the second (retry) attempt begins — see
+// `execute_subtask_with_retry` in dispatcher.rs. We render it as a
+// thin horizontal rule with the previous error inline rather than a
+// normal log line so the user can see where attempt 1 ended and
+// attempt 2 began.
+const RETRY_LOG_MARKER = '[whalecode] retry';
+
 function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateCursor: boolean }) {
   const tail = lines.slice(-3);
   return (
@@ -122,6 +130,14 @@ function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateC
     >
       {tail.map((line, i) => {
         const isLast = i === tail.length - 1;
+        if (line.startsWith(RETRY_LOG_MARKER)) {
+          return (
+            <RetrySeparator
+              key={`${i}-retry`}
+              prevError={extractRetryError(line)}
+            />
+          );
+        }
         return (
           <div key={`${i}-${line}`} className="truncate">
             <LogLine line={line} />
@@ -129,6 +145,35 @@ function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateC
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Strip the `[whalecode] retry: ` prefix, leaving the failure message. */
+function extractRetryError(line: string): string {
+  const rest = line.slice(RETRY_LOG_MARKER.length);
+  return rest.startsWith(':') ? rest.slice(1).trim() : rest.trim();
+}
+
+function RetrySeparator({ prevError }: { prevError: string }) {
+  return (
+    <div
+      className="flex items-center gap-2 truncate"
+      style={{
+        color: 'var(--color-status-retry)',
+        borderTop: '1px dashed var(--color-status-retry)',
+        paddingTop: 2,
+        marginTop: 2,
+      }}
+      data-testid="worker-log-retry-separator"
+      title={prevError}
+    >
+      <span>── retrying after failure</span>
+      {prevError ? (
+        <span className="truncate text-fg-tertiary" style={{ fontStyle: 'italic' }}>
+          {prevError}
+        </span>
+      ) : null}
     </div>
   );
 }

@@ -62,13 +62,18 @@ impl ClaudeAdapter {
 
     /// Worker-side prompt: enough context to carry out one subtask
     /// without needing to ask follow-up questions.
+    ///
+    /// When `extra_context` is `Some`, it is appended as a final
+    /// "# Retry context" block so the worker sees why the previous
+    /// attempt failed before starting the new one.
     pub fn build_execute_prompt(
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
     ) -> String {
         let why = subtask.why.as_deref().unwrap_or("(no rationale given)");
-        format!(
+        let mut prompt = format!(
             "You are a WhaleCode worker running inside a git worktree at \
              {worktree_path}. Stay strictly within this directory — do \
              not touch files outside it.\n\n\
@@ -83,7 +88,13 @@ impl ClaudeAdapter {
              stop — don't ask for confirmation.\n",
             worktree_path = worktree_path.display(),
             title = subtask.title,
-        )
+        );
+        if let Some(ctx) = extra_context {
+            prompt.push_str("\n# Retry context\n");
+            prompt.push_str(ctx);
+            prompt.push('\n');
+        }
+        prompt
     }
 }
 
@@ -129,10 +140,11 @@ impl AgentImpl for ClaudeAdapter {
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
         log_tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError> {
-        let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes);
+        let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes, extra_context);
         let args = vec![
             "--print".into(),
             "--dangerously-skip-permissions".into(),
@@ -347,12 +359,41 @@ mod tests {
             finished_at: None,
             error: None,
         };
-        let prompt =
-            ClaudeAdapter::build_execute_prompt(&subtask, Path::new("/tmp/wt"), "# shared notes");
+        let prompt = ClaudeAdapter::build_execute_prompt(
+            &subtask,
+            Path::new("/tmp/wt"),
+            "# shared notes",
+            None,
+        );
         assert!(prompt.contains("Write ThemeProvider"));
         assert!(prompt.contains("/tmp/wt"));
         assert!(prompt.contains("react context needed"));
         assert!(prompt.contains("# shared notes"));
+        // No retry block when extra_context is None.
+        assert!(!prompt.contains("# Retry context"));
+    }
+
+    #[test]
+    fn build_execute_prompt_appends_retry_context_when_present() {
+        let subtask = Subtask {
+            id: "st1".into(),
+            run_id: "r1".into(),
+            title: "Write ThemeProvider".into(),
+            why: Some("react context needed".into()),
+            assigned_worker: AgentKind::Claude,
+            state: SubtaskState::Running,
+            started_at: None,
+            finished_at: None,
+            error: None,
+        };
+        let prompt = ClaudeAdapter::build_execute_prompt(
+            &subtask,
+            Path::new("/tmp/wt"),
+            "# shared notes",
+            Some("Previous attempt failed with: Timeout after 600s"),
+        );
+        assert!(prompt.contains("# Retry context"));
+        assert!(prompt.contains("Timeout after 600s"));
     }
 
     #[test]

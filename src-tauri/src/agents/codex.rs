@@ -60,9 +60,10 @@ impl CodexAdapter {
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
     ) -> String {
         let why = subtask.why.as_deref().unwrap_or("(no rationale given)");
-        format!(
+        let mut prompt = format!(
             "You are a WhaleCode worker. Working directory: {worktree_path}. \
              All edits must stay inside this directory.\n\n\
              # Subtask\n**{title}**\n\nWhy: {why}\n\n\
@@ -72,7 +73,13 @@ impl CodexAdapter {
              changed in one or two sentences and stop.\n",
             worktree_path = worktree_path.display(),
             title = subtask.title,
-        )
+        );
+        if let Some(ctx) = extra_context {
+            prompt.push_str("\n# Retry context\n");
+            prompt.push_str(ctx);
+            prompt.push('\n');
+        }
+        prompt
     }
 }
 
@@ -118,10 +125,11 @@ impl AgentImpl for CodexAdapter {
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
         log_tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError> {
-        let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes);
+        let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes, extra_context);
         let args = vec![
             "exec".into(),
             "--json".into(),
@@ -387,9 +395,33 @@ mod tests {
             finished_at: None,
             error: None,
         };
-        let p = CodexAdapter::build_execute_prompt(&subtask, Path::new("/tmp/wt"), "notes");
+        let p = CodexAdapter::build_execute_prompt(&subtask, Path::new("/tmp/wt"), "notes", None);
         assert!(p.contains("/tmp/wt"));
         assert!(p.contains("stay inside this directory"));
         assert!(p.contains("Add handler"));
+        assert!(!p.contains("# Retry context"));
+    }
+
+    #[test]
+    fn build_execute_prompt_appends_retry_context_when_present() {
+        let subtask = Subtask {
+            id: "s".into(),
+            run_id: "r".into(),
+            title: "Add handler".into(),
+            why: Some("new route".into()),
+            assigned_worker: AgentKind::Codex,
+            state: SubtaskState::Running,
+            started_at: None,
+            finished_at: None,
+            error: None,
+        };
+        let p = CodexAdapter::build_execute_prompt(
+            &subtask,
+            Path::new("/tmp/wt"),
+            "notes",
+            Some("Previous attempt failed with: parse error"),
+        );
+        assert!(p.contains("# Retry context"));
+        assert!(p.contains("parse error"));
     }
 }

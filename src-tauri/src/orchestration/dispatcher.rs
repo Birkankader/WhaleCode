@@ -80,6 +80,189 @@ enum WorkerOutcome {
     Cancelled,
 }
 
+/// Layer-1 escalation signal. Produced by [`execute_subtask_with_retry`]
+/// when the worker failed and can't recover locally; the dispatcher
+/// maps it onto [`WorkerOutcome::Failed`] / [`WorkerOutcome::Cancelled`]
+/// for Phase 2's fail-fast behaviour. Phase 4 (master re-plan) will
+/// branch on the discriminant to route `Exhausted` / `Deterministic`
+/// into Layer 2 while still short-circuiting `UserCancelled` — the
+/// variant split is deliberately coarse-grained so the retry function
+/// stays a stable contract across phases.
+#[derive(Debug)]
+#[allow(dead_code)] // Fields inspected in Step 4 (Layer 2 routing).
+pub enum EscalateToMaster {
+    /// Cancellation came from outside (user, run token). No retry
+    /// happened; no Layer 2 will happen. The dispatcher's cancel path
+    /// handles cleanup.
+    UserCancelled,
+    /// Retry would deterministically fail (e.g. `SpawnFailed`). Layer
+    /// 1 was skipped; Layer 2 should pick this up directly.
+    Deterministic(AgentError),
+    /// Layer 1 ran and both attempts failed. The second (retry)
+    /// failure is the one carried here — most recent, most diagnostic.
+    Exhausted(AgentError),
+}
+
+impl EscalateToMaster {
+    fn cancelled() -> Self {
+        Self::UserCancelled
+    }
+    fn deterministic(err: AgentError) -> Self {
+        Self::Deterministic(err)
+    }
+    fn exhausted(err: AgentError) -> Self {
+        Self::Exhausted(err)
+    }
+}
+
+/// Log-stream marker the frontend treats as a "retry" visual
+/// separator. Kept as a reserved prefix (no new IPC field) so
+/// existing log plumbing carries it end-to-end without a schema
+/// change. See `WorkerNode` log rendering.
+const RETRY_LOG_MARKER: &str = "[whalecode] retry";
+
+/// Layer-1 retry ladder for one subtask.
+///
+/// Runs `agent.execute` up to twice:
+///   * Attempt 1 with `extra_context: None`.
+///   * If the error is retryable (anything except `Cancelled` and
+///     `SpawnFailed`), persist + emit `SubtaskState::Retrying`, then
+///     attempt 2 with the first error folded into `extra_context`.
+///   * On retry success, persist + emit `SubtaskState::Running`; the
+///     worker path then follows its normal `Done` transition.
+///   * On retry failure, persist + emit `SubtaskState::Failed` and
+///     surface `EscalateToMaster::Exhausted` so the dispatcher can
+///     fail-fast the run (Phase 2 behaviour preserved until Step 4).
+///
+/// Phase 3 Decision 2: the retry count lives on the frontend
+/// (`graphStore.subtaskRetryCounts`, bumped by the `Retrying` event).
+/// This function does not manage an attempt counter of its own — it
+/// is hard-coded to "one retry", matching phase-3-spec.md §3d.
+#[allow(clippy::too_many_arguments)]
+async fn execute_subtask_with_retry(
+    storage: &Storage,
+    event_sink: &dyn EventSink,
+    run_id: &RunId,
+    subtask_row: &Subtask,
+    agent: &dyn AgentImpl,
+    worktree_path: &Path,
+    shared_notes: &str,
+    log_tx: mpsc::Sender<String>,
+    cancel: CancellationToken,
+) -> Result<ExecutionResult, EscalateToMaster> {
+    // Attempt 1: no retry context, behaves exactly like Phase 2.
+    let first = agent
+        .execute(
+            subtask_row,
+            worktree_path,
+            shared_notes,
+            None,
+            log_tx.clone(),
+            cancel.clone(),
+        )
+        .await;
+    let err = match first {
+        Ok(result) => return Ok(result),
+        // Cancellation short-circuits Layer 1 — user intent wins.
+        Err(AgentError::Cancelled) => return Err(EscalateToMaster::cancelled()),
+        // Deterministic failures (binary missing, permission error)
+        // skip Layer 1 and escalate straight to Layer 2 — retrying
+        // only burns time without changing the outcome.
+        Err(e @ AgentError::SpawnFailed { .. }) => {
+            return Err(EscalateToMaster::deterministic(e))
+        }
+        Err(e) => e,
+    };
+
+    let prev_err = format!("{err}");
+
+    // Transition Running -> Retrying (persisted + emitted). Frontend
+    // bridge sees `Retrying` and sends `START_RETRY` to the node
+    // machine; `subtaskRetryCounts` increments exactly once per emit.
+    if let Err(e) = storage
+        .update_subtask_state(&subtask_row.id, SubtaskState::Retrying, None)
+        .await
+    {
+        eprintln!(
+            "[dispatcher] update_subtask_state(retrying, {}) failed: {e}",
+            subtask_row.id
+        );
+    }
+    event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: subtask_row.id.clone(),
+            state: SubtaskState::Retrying,
+        })
+        .await;
+
+    // Log separator — the frontend's WorkerNode renders a thin rule
+    // when it sees this marker so the user can see the boundary
+    // between attempts. Prefix is reserved, see RETRY_LOG_MARKER.
+    let separator = format!("{RETRY_LOG_MARKER}: {prev_err}");
+    let _ = storage.append_log(&subtask_row.id, &separator).await;
+    event_sink
+        .emit(RunEvent::SubtaskLog {
+            run_id: run_id.clone(),
+            subtask_id: subtask_row.id.clone(),
+            line: separator,
+        })
+        .await;
+
+    // Attempt 2: previous error folded into the prompt.
+    let retry_context = format!(
+        "Previous attempt failed with: {prev_err}\n\nPlease retry with awareness of the above error."
+    );
+    let retry = agent
+        .execute(
+            subtask_row,
+            worktree_path,
+            shared_notes,
+            Some(&retry_context),
+            log_tx,
+            cancel,
+        )
+        .await;
+
+    match retry {
+        Ok(result) => {
+            // Flip Retrying -> Running so the frontend (and the rest
+            // of the dispatcher) sees the normal "worker executing"
+            // state again. `on_worker_done` will take it to Done.
+            if let Err(e) = storage
+                .update_subtask_state(&subtask_row.id, SubtaskState::Running, None)
+                .await
+            {
+                eprintln!(
+                    "[dispatcher] update_subtask_state(running-after-retry, {}) failed: {e}",
+                    subtask_row.id
+                );
+            }
+            event_sink
+                .emit(RunEvent::SubtaskStateChanged {
+                    run_id: run_id.clone(),
+                    subtask_id: subtask_row.id.clone(),
+                    state: SubtaskState::Running,
+                })
+                .await;
+            Ok(result)
+        }
+        // Retry cancelled — treat like first-attempt cancellation
+        // so the dispatcher drains cleanly. We do *not* emit
+        // `Failed`; cancellation is not a retry outcome.
+        Err(AgentError::Cancelled) => Err(EscalateToMaster::cancelled()),
+        Err(e) => {
+            // Leave the subtask in the transient `Retrying` state in
+            // storage and do *not* emit `Failed` here — the dispatcher
+            // owns the terminal transition (it also stamps `finished_at`
+            // on the in-memory `SubtaskRuntime` and cascades the fail-
+            // fast to the rest of the run). This keeps the event
+            // sequence Retrying → Failed with exactly one `Failed` emit.
+            Err(EscalateToMaster::exhausted(e))
+        }
+    }
+}
+
 /// Entry point. Blocks until every subtask is terminal, the run is
 /// cancelled, or the first subtask fails (fail-fast).
 pub async fn run_dispatcher(
@@ -394,11 +577,30 @@ async fn dispatch_one(
     let sub_cancel = cancel.clone();
     let sub_id_owned = sub_id.clone();
     let run_id_owned = run_id.clone();
+    let storage = deps.storage.clone();
+    let event_sink = deps.event_sink.clone();
     join_set.spawn(async move {
-        let outcome = match worker
-            .execute(&subtask_row, &worktree_path, &notes_snapshot, log_tx, sub_cancel)
-            .await
-        {
+        // Phase 3 Step 3b: route through the Layer-1 retry ladder
+        // instead of calling `execute` directly. `execute_subtask_with_retry`
+        // owns the Retrying/Running transitions and log separator; on
+        // success (first attempt or recovered retry) it returns the
+        // same `ExecutionResult` the direct call used to. On escalation
+        // it maps onto `WorkerOutcome::Failed` so Phase 2's fail-fast
+        // dispatcher behaviour is preserved until Step 4 adds Layer 2.
+        let execute_result = execute_subtask_with_retry(
+            storage.as_ref(),
+            event_sink.as_ref(),
+            &run_id_owned,
+            &subtask_row,
+            worker.as_ref(),
+            &worktree_path,
+            &notes_snapshot,
+            log_tx,
+            sub_cancel,
+        )
+        .await;
+
+        let outcome = match execute_result {
             // Real-world CLI agents rarely commit their own work — the
             // worktree is an implementation detail and we don't want to
             // rely on prompt discipline across three different CLIs. So
@@ -425,8 +627,9 @@ async fn dispatch_one(
                 }
                 Err(e) => WorkerOutcome::Failed(format!("commit failed: {e}")),
             },
-            Err(AgentError::Cancelled) => WorkerOutcome::Cancelled,
-            Err(e) => WorkerOutcome::Failed(format!("{e}")),
+            Err(EscalateToMaster::UserCancelled) => WorkerOutcome::Cancelled,
+            Err(EscalateToMaster::Deterministic(e)) => WorkerOutcome::Failed(format!("{e}")),
+            Err(EscalateToMaster::Exhausted(e)) => WorkerOutcome::Failed(format!("{e}")),
         };
         (sub_id_owned, outcome)
     });

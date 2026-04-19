@@ -152,11 +152,19 @@ pub trait AgentImpl: Send + Sync {
     /// Each line the CLI emits is sent through `log_tx`; dropped lines
     /// don't fail the run (best-effort). Same cancellation semantics
     /// as [`plan`].
+    ///
+    /// `extra_context` carries Phase-3 retry context: on the first
+    /// attempt it is `None`; on a Layer-1 retry the dispatcher fills it
+    /// with a summary of the previous failure so the adapter can
+    /// render it into the worker prompt. Adapters must tolerate
+    /// `None` (the normal path) and fold `Some` text into the prompt
+    /// when present — no sibling method, one code path.
     async fn execute(
         &self,
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
         log_tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError>;

@@ -74,6 +74,7 @@ impl AgentImpl for MockMaster {
         _subtask: &Subtask,
         _worktree_path: &Path,
         _shared_notes: &str,
+        _extra_context: Option<&str>,
         _log_tx: mpsc::Sender<String>,
         _cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError> {

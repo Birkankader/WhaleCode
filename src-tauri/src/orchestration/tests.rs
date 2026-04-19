@@ -109,6 +109,19 @@ struct ScriptedAgent {
     concurrency: Arc<Mutex<Option<Arc<ConcurrencyProbe>>>>,
     /// Canned `summarize()` return. If `None`, `summarize` panics.
     summarize_outcome: Arc<Mutex<Option<Result<String, AgentError>>>>,
+    /// Phase-3 retry fixture: per-subtask-title queues of scripted
+    /// failures consumed one-per-`execute` call before the normal
+    /// `execute_scripts` / `execute_default` path takes over. When a
+    /// subtask's queue is non-empty, the next call pops the front and
+    /// returns it as an `Err(AgentError)`. When empty, the normal path
+    /// runs — so a `fail_attempts(vec![Timeout])` + `with_execute(Ok)`
+    /// combination models "fail once, then succeed".
+    fail_attempts: Arc<Mutex<std::collections::HashMap<String, Vec<AgentError>>>>,
+    /// Captures every `extra_context` value the dispatcher passes, in
+    /// call order. Tests assert on this to verify retry prompts carry
+    /// the previous error. `None` entries are also recorded so tests
+    /// can assert "first attempt was contextless, second had context".
+    extra_context_log: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl ScriptedAgent {
@@ -121,6 +134,8 @@ impl ScriptedAgent {
             execute_default: Arc::new(Mutex::new(None)),
             concurrency: Arc::new(Mutex::new(None)),
             summarize_outcome: Arc::new(Mutex::new(None)),
+            fail_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            extra_context_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -152,6 +167,24 @@ impl ScriptedAgent {
     async fn with_concurrency_probe(self, probe: Arc<ConcurrencyProbe>) -> Self {
         *self.concurrency.lock().await = Some(probe);
         self
+    }
+
+    /// Queue a sequence of scripted failures for `title`. Each
+    /// `execute()` call pops the front of the queue; once empty, the
+    /// normal `execute_scripts` / `execute_default` path runs.
+    async fn with_fail_attempts(self, title: &str, errors: Vec<AgentError>) -> Self {
+        self.fail_attempts
+            .lock()
+            .await
+            .insert(title.to_string(), errors);
+        self
+    }
+
+    /// Snapshot of every `extra_context` value seen by `execute`, in
+    /// call order. Used by retry tests to verify the retry prompt is
+    /// wired through.
+    async fn extra_context_calls(&self) -> Vec<Option<String>> {
+        self.extra_context_log.lock().await.clone()
     }
 }
 
@@ -188,9 +221,28 @@ impl AgentImpl for ScriptedAgent {
         subtask: &Subtask,
         _worktree_path: &Path,
         _shared_notes: &str,
+        extra_context: Option<&str>,
         _log_tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError> {
+        self.extra_context_log
+            .lock()
+            .await
+            .push(extra_context.map(str::to_string));
+
+        // Pop a scripted failure off the per-title queue if present.
+        // Each call consumes at most one entry so a `vec![Timeout]`
+        // fixture fails attempt 1 and lets attempt 2 fall through to
+        // the normal execute path below.
+        if let Some(err) = {
+            let mut table = self.fail_attempts.lock().await;
+            table
+                .get_mut(&subtask.title)
+                .and_then(|queue| (!queue.is_empty()).then(|| queue.remove(0)))
+        } {
+            return Err(err);
+        }
+
         let script = {
             let table = self.execute_scripts.lock().await;
             table.get(&subtask.title).cloned()
@@ -2036,4 +2088,341 @@ async fn edit_after_approve_race_surfaces_wrong_state() {
 
     h.orch.cancel_run(&run_id).await.unwrap();
     h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+// -- Phase 3 Step 3b-f: worker-level retry ladder (Layer 1) ----------
+//
+// The retry function lives in dispatcher.rs and is exercised here
+// end-to-end via the public Orchestrator API. The scripted agent's
+// `with_fail_attempts` queue pops one scripted error per `execute`
+// call before the normal `with_execute` script runs, which lets a
+// single fixture model "fail once, then succeed" / "fail twice".
+//
+// Assertions focus on the observable contract:
+//   * `SubtaskStateChanged` events fire in the spec-mandated order.
+//   * Deterministic short-circuits (`SpawnFailed`) skip `Retrying`.
+//   * `Cancelled` skips `Retrying` and doesn't mark the subtask Failed.
+//   * The retry prompt carries the previous error.
+// Phase 2 fail-fast is preserved — exhaustion still fails the run.
+
+fn subtask_state_events(snap: &[RunEvent], sub_id: &SubtaskId) -> Vec<SubtaskState> {
+    snap.iter()
+        .filter_map(|e| match e {
+            RunEvent::SubtaskStateChanged {
+                subtask_id, state, ..
+            } if subtask_id == sub_id => Some(*state),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn retry_single_failure_then_success_transitions_through_retrying() {
+    // t0 fails once (Timeout) then succeeds. The retry ladder should
+    // emit Running → Retrying → Running → Done in that order.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_fail_attempts(
+            "t0",
+            vec![AgentError::Timeout { after_secs: 1 }],
+        )
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "recovered on retry".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let agent_handle = agent.clone();
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("one".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let sub_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![sub_id.clone()])
+        .await
+        .unwrap();
+
+    h.await_status(&run_id, RunStatus::Merging).await;
+    await_all_subtasks_terminal(&h, &run_id).await;
+
+    // Final persisted state is Done.
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    assert_eq!(subs[0].state, SubtaskState::Done);
+
+    // Event ordering: Waiting → Running → Retrying → Running → Done.
+    let snap = h.sink.snapshot().await;
+    let states = subtask_state_events(&snap, &sub_id);
+    assert_eq!(
+        states,
+        vec![
+            SubtaskState::Waiting,
+            SubtaskState::Running,
+            SubtaskState::Retrying,
+            SubtaskState::Running,
+            SubtaskState::Done,
+        ],
+        "unexpected state sequence: {states:?}"
+    );
+
+    // Retry prompt was actually wired: attempt 2 carried extra_context
+    // with the previous error's message.
+    let ctx_calls = agent_handle.extra_context_calls().await;
+    assert_eq!(ctx_calls.len(), 2, "expected exactly two execute calls");
+    assert!(ctx_calls[0].is_none(), "first attempt must be contextless");
+    let retry_ctx = ctx_calls[1]
+        .as_ref()
+        .expect("second attempt must carry retry context");
+    assert!(
+        retry_ctx.contains("Previous attempt failed"),
+        "retry context missing preamble: {retry_ctx}"
+    );
+    assert!(
+        retry_ctx.contains("timed out"),
+        "retry context must include previous error: {retry_ctx}"
+    );
+}
+
+#[tokio::test]
+async fn retry_double_failure_escalates_and_fails_the_run() {
+    // Both attempts fail → Layer 1 exhausted → dispatcher fail-fast.
+    // The retry event is still emitted before the terminal Failed;
+    // Phase 4 will intercept Exhausted for Layer 2 re-plan.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_fail_attempts(
+            "t0",
+            vec![
+                AgentError::Timeout { after_secs: 1 },
+                AgentError::TaskFailed {
+                    reason: "still broken".into(),
+                },
+            ],
+        )
+        .await
+        // Default covers both "we didn't pop a fail" and any extra calls
+        // the dispatcher might make — but the queue above has exactly 2
+        // entries so this default should never be reached.
+        .with_execute_default(ExecuteScript::Fail("unexpected 3rd call".into()))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("boom".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let sub_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![sub_id.clone()])
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Failed).await;
+
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    assert_eq!(subs[0].state, SubtaskState::Failed);
+    assert!(subs[0]
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("still broken"));
+
+    // State trace: Waiting → Running → Retrying → Failed. No second
+    // Running, no Done.
+    let snap = h.sink.snapshot().await;
+    let states = subtask_state_events(&snap, &sub_id);
+    assert_eq!(
+        states,
+        vec![
+            SubtaskState::Waiting,
+            SubtaskState::Running,
+            SubtaskState::Retrying,
+            SubtaskState::Failed,
+        ],
+        "unexpected state sequence: {states:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_spawn_failed_short_circuits_layer_one() {
+    // SpawnFailed is deterministic: the binary is missing or the OS
+    // refused execve. Retrying only burns time — skip Layer 1 and fail
+    // straight out. Retrying must NOT appear in the state trace.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_fail_attempts(
+            "t0",
+            vec![AgentError::SpawnFailed {
+                cause: "no such file or directory".into(),
+            }],
+        )
+        .await
+        .with_execute_default(ExecuteScript::Fail("should not be reached".into()))
+        .await;
+    let agent_handle = agent.clone();
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("spawn-fail".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let sub_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![sub_id.clone()])
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Failed).await;
+
+    // Exactly one execute call — no retry was attempted.
+    let ctx_calls = agent_handle.extra_context_calls().await;
+    assert_eq!(
+        ctx_calls.len(),
+        1,
+        "SpawnFailed must short-circuit Layer 1 (expected 1 execute, got {})",
+        ctx_calls.len()
+    );
+
+    let snap = h.sink.snapshot().await;
+    let states = subtask_state_events(&snap, &sub_id);
+    assert!(
+        !states.contains(&SubtaskState::Retrying),
+        "SpawnFailed must not emit Retrying; got {states:?}"
+    );
+    assert_eq!(
+        states.last().copied(),
+        Some(SubtaskState::Failed),
+        "expected terminal Failed; got {states:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_cancelled_first_attempt_does_not_retry() {
+    // Cancellation comes from outside the worker; retrying would
+    // violate user intent. The run ends Cancelled with NO Retrying
+    // event and NO Failed transition for the subtask.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        // Block until cancel fires, then return Cancelled.
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let agent_handle = agent.clone();
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cancel-me".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let sub_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![sub_id.clone()])
+        .await
+        .unwrap();
+
+    // Give the dispatcher time to enter execute() on the worker.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    // Exactly one execute call — the Cancelled error bypassed Layer 1.
+    let ctx_calls = agent_handle.extra_context_calls().await;
+    assert_eq!(
+        ctx_calls.len(),
+        1,
+        "Cancelled must not trigger a retry (expected 1 execute, got {})",
+        ctx_calls.len()
+    );
+
+    let snap = h.sink.snapshot().await;
+    let states = subtask_state_events(&snap, &sub_id);
+    assert!(
+        !states.contains(&SubtaskState::Retrying),
+        "Cancelled must not emit Retrying; got {states:?}"
+    );
+    assert!(
+        !states.contains(&SubtaskState::Failed),
+        "Cancelled must not mark subtask Failed; got {states:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_emits_log_separator_before_second_attempt() {
+    // The `[whalecode] retry` marker on the log stream is how the
+    // frontend draws the visual separator between attempts. Assert
+    // it shows up exactly once, between the two Running transitions
+    // (i.e. after Retrying is emitted, before the recovered Running).
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_fail_attempts(
+            "t0",
+            vec![AgentError::TaskFailed {
+                reason: "flaky call".into(),
+            }],
+        )
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "ok second time".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("log-sep".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let sub_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![sub_id.clone()])
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Merging).await;
+    await_all_subtasks_terminal(&h, &run_id).await;
+
+    let snap = h.sink.snapshot().await;
+    let retry_logs: Vec<&String> = snap
+        .iter()
+        .filter_map(|e| match e {
+            RunEvent::SubtaskLog {
+                subtask_id, line, ..
+            } if subtask_id == &sub_id && line.starts_with("[whalecode] retry") => Some(line),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        retry_logs.len(),
+        1,
+        "expected exactly one retry log marker, got {retry_logs:?}"
+    );
+    assert!(
+        retry_logs[0].contains("flaky call"),
+        "retry marker should include previous error: {}",
+        retry_logs[0]
+    );
 }

@@ -72,9 +72,10 @@ impl GeminiAdapter {
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
     ) -> String {
         let why = subtask.why.as_deref().unwrap_or("(no rationale given)");
-        format!(
+        let mut prompt = format!(
             "You are a WhaleCode worker running in a sandboxed git \
              worktree at {worktree_path}. Do not edit anything outside \
              this directory.\n\n\
@@ -86,7 +87,13 @@ impl GeminiAdapter {
              summary and stop — do not ask follow-up questions.\n",
             worktree_path = worktree_path.display(),
             title = subtask.title,
-        )
+        );
+        if let Some(ctx) = extra_context {
+            prompt.push_str("\n# Retry context\n");
+            prompt.push_str(ctx);
+            prompt.push('\n');
+        }
+        prompt
     }
 }
 
@@ -131,10 +138,11 @@ impl AgentImpl for GeminiAdapter {
         subtask: &Subtask,
         worktree_path: &Path,
         shared_notes: &str,
+        extra_context: Option<&str>,
         log_tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError> {
-        let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes);
+        let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes, extra_context);
         let args = vec![
             "--output-format".into(),
             "text".into(),
@@ -381,10 +389,34 @@ mod tests {
             finished_at: None,
             error: None,
         };
-        let p = GeminiAdapter::build_execute_prompt(&subtask, Path::new("/tmp/wt"), "notes");
+        let p = GeminiAdapter::build_execute_prompt(&subtask, Path::new("/tmp/wt"), "notes", None);
         assert!(p.contains("/tmp/wt"));
         assert!(p.contains("Update README"));
         assert!(p.contains("missing section"));
         assert!(p.contains("outside this directory"));
+        assert!(!p.contains("# Retry context"));
+    }
+
+    #[test]
+    fn build_execute_prompt_appends_retry_context_when_present() {
+        let subtask = Subtask {
+            id: "s".into(),
+            run_id: "r".into(),
+            title: "Update README".into(),
+            why: Some("missing section".into()),
+            assigned_worker: AgentKind::Gemini,
+            state: SubtaskState::Running,
+            started_at: None,
+            finished_at: None,
+            error: None,
+        };
+        let p = GeminiAdapter::build_execute_prompt(
+            &subtask,
+            Path::new("/tmp/wt"),
+            "notes",
+            Some("Previous attempt failed with: RESOURCE_EXHAUSTED"),
+        );
+        assert!(p.contains("# Retry context"));
+        assert!(p.contains("RESOURCE_EXHAUSTED"));
     }
 }
