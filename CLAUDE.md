@@ -12,15 +12,16 @@ This is **v2** — a full redesign from the original multi-agent tool into a foc
 
 ## Tech stack
 
-- **Shell:** Tauri v2 (Rust core + WebView frontend)
+- **Shell:** Tauri v2 (Rust core + WebView frontend), `tauri-plugin-dialog` for native pickers, `tauri-plugin-opener` for revealing paths, `tauri-plugin-sql` for frontend SQLite access
 - **Frontend:** React 19 + TypeScript + Vite
 - **Styling:** Tailwind CSS v4 (tokens declared via `@theme` CSS directive — **no shadcn**, write custom minimal components)
 - **State:** Zustand (app state) + XState (graph/node state machines)
 - **Graph:** React Flow (`@xyflow/react`) with custom nodes and Dagre (`@dagrejs/dagre`) auto-layout
 - **Animation:** Framer Motion (spring-based)
 - **Icons:** Lucide (used minimally)
-- **Storage:** SQLite (via Tauri SQL plugin) for runs, templates, cost logs
-- **Config:** YAML files under `.whalecode/` in the target repo
+- **Storage:** SQLite via `tauri-plugin-sql` + a Rust-side `sqlx` pool against the same DB file. Schema migrations live in `src-tauri/src/storage/migrations.rs`.
+- **IDs:** `ulid` for run/subtask identifiers (sortable, URL-safe). `uuid` is pulled in for Tauri plumbing only — do not use `uuid` for domain ids.
+- **Config:** YAML files under `.whalecode/` in the target repo; app-level settings as JSON at `app_config_dir/settings.json`.
 - **Package manager:** pnpm (single source of truth; npm/yarn lockfiles must not be committed)
 
 ## The 7 architectural decisions
@@ -60,17 +61,25 @@ whalecode/
 │   ├── architecture.md          # 7 decisions in depth
 │   ├── design-system.md         # Colors, typography, spacing, animation
 │   ├── ux-flows.md              # User journeys, approval moment, fail handling
-│   ├── phase-1-spec.md          # Current phase spec
+│   ├── phase-1-spec.md          # Phase 1 (shipped)
+│   ├── phase-2-spec.md          # Phase 2 (shipped)
+│   ├── phase-3-spec.md          # Phase 3 (current)
+│   ├── phase-3-spec-review.md   # Concerns flagged after Phase 2
+│   ├── KNOWN_ISSUES.md          # Debt ledger — deferred items + target phase + severity
+│   ├── retrospectives/          # Post-phase retros
 │   └── roadmap.md               # All 8 phases + v2.5/v3 track
 ├── src-tauri/                   # Rust backend
 │   ├── src/
-│   │   ├── agents/              # Agent process management (Claude Code, Gemini, Codex adapters)
-│   │   ├── orchestration/       # Master/worker coordination, shared notes, retry logic
+│   │   ├── agents/              # Agent adapters (claude/codex/gemini) + trait, prompts/, plan_parser, process spawn
+│   │   ├── orchestration/       # Orchestrator, lifecycle task, dispatcher, registry, run state, shared notes, events
 │   │   ├── worktree/            # Git worktree lifecycle (hidden from user)
-│   │   ├── storage/             # SQLite schema, run history, cost logs
-│   │   ├── detection/           # Mono-repo detector (pnpm, turbo, nx, cargo, go.work)
-│   │   ├── safety/              # Destructive command gates, budget enforcement
-│   │   └── tokenizer/           # Per-provider token counting + pricing
+│   │   ├── storage/             # SQLite schema + migrations, runs/subtasks/logs tables (cost tables land in Phase 6)
+│   │   ├── detection/           # CLI agent detector (PATH scan + version probe for claude/codex/gemini)
+│   │   ├── settings.rs          # App-level settings (lastRepo, masterAgent, binary paths)
+│   │   ├── repo.rs              # Repo picker + validation
+│   │   ├── gitignore.rs         # `.whalecode/` gitignore helper
+│   │   ├── ipc/                 # Command handlers + event contract mirror
+│   │   └── lib.rs               # Tauri setup, plugin init, handler registration
 │   └── Cargo.toml
 ├── src/                         # React frontend
 │   ├── components/
@@ -116,16 +125,18 @@ whalecode/
 
 1. You already have this file. Don't re-read it unless I say so.
 2. For any specific area, read the matching `docs/` file. Don't read all of them.
-3. If the task is in a specific phase, read `docs/phase-1-spec.md` (or current phase) first.
+3. If the task is in a specific phase, read `docs/phase-3-spec.md` (current) first; cross-check with `docs/phase-3-spec-review.md` for known concerns.
 4. When in doubt about design decisions, check `docs/architecture.md` section 11.
 5. For UI specifics (colors, spacing, animation timing), check `docs/design-system.md`.
+6. Before starting work, skim `docs/KNOWN_ISSUES.md` so you don't re-open already-triaged debt.
 
 ## Current status
 
-**Active phase:** Phase 1 — Graph Foundation
-**Target:** Working demo of mock master-worker orchestration rendered as execution graph
+**Active phase:** Phase 3 — Approval flow and progressive retry
+**Last shipped:** Phase 2 — agent integration (`8f7f895`, 2026-04-19)
+**Target:** Inline subtask editing, three-layer retry ladder (worker retry → master re-plan → human escalation), auto-approve bypass point.
 
-See `docs/phase-1-spec.md` for the actionable spec.
+See `docs/phase-3-spec.md` for the actionable spec, and `docs/phase-3-spec-review.md` for concerns flagged after Phase 2. Phase 2 retrospective lives at `docs/retrospectives/phase-2.md`; carry-over debt is tracked in `docs/KNOWN_ISSUES.md`.
 
 ## Useful commands
 
