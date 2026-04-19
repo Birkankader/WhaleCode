@@ -29,7 +29,7 @@ use chrono::{DateTime, Utc};
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::PlannedSubtask;
-use crate::ipc::{AgentKind, RunId, RunStatus, SubtaskId, SubtaskState};
+use crate::ipc::{AgentKind, RunId, RunStatus, SubtaskData, SubtaskId, SubtaskState};
 use crate::orchestration::notes::SharedNotes;
 use crate::worktree::WorktreeManager;
 
@@ -111,6 +111,21 @@ impl SubtaskRuntime {
     pub fn mark_skipped(&mut self) {
         self.state = SubtaskState::Skipped;
         self.finished_at = Some(Utc::now());
+    }
+
+    /// Project a runtime row onto the wire-facing
+    /// [`SubtaskData`]. Used for the initial `SubtasksProposed`
+    /// emit (lifecycle step) and the Phase 3 re-emit after an edit
+    /// (orchestrator step). An empty `why` maps to `None` so the
+    /// frontend doesn't render a zero-length reasoning block.
+    pub fn to_data(&self) -> SubtaskData {
+        SubtaskData {
+            id: self.id.clone(),
+            title: self.data.title.clone(),
+            why: Some(self.data.why.clone()).filter(|w| !w.is_empty()),
+            assigned_worker: self.data.assigned_worker,
+            dependencies: self.dependency_ids.clone(),
+        }
     }
 }
 

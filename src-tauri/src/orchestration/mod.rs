@@ -25,9 +25,12 @@ use std::sync::Arc;
 
 use tokio::sync::{oneshot, Mutex, RwLock};
 
-use crate::ipc::{AgentKind, RecoveryEntry, RunId, RunStatus, SubtaskId};
+use crate::ipc::{
+    AgentKind, RecoveryEntry, RunId, RunStatus, SubtaskData, SubtaskDraft, SubtaskId, SubtaskPatch,
+    SubtaskState,
+};
 use crate::settings::SettingsStore;
-use crate::storage::models::NewRun;
+use crate::storage::models::{NewRun, NewSubtask};
 use crate::storage::Storage;
 
 pub mod context;
@@ -79,6 +82,18 @@ pub enum OrchestratorError {
         state: RunStatus,
         expected: &'static str,
     },
+    #[error("subtask {0} not found")]
+    SubtaskNotFound(SubtaskId),
+    #[error("subtask {subtask_id} is in state {state:?}, expected {expected}")]
+    WrongSubtaskState {
+        subtask_id: SubtaskId,
+        state: SubtaskState,
+        expected: &'static str,
+    },
+    #[error("invalid edit: {0}")]
+    InvalidEdit(String),
+    #[error("subtask {0} has dependents in the plan; remove them first")]
+    HasDependents(SubtaskId),
     #[error("agent unavailable: {0}")]
     AgentUnavailable(String),
     #[error("storage: {0}")]
@@ -451,6 +466,268 @@ impl Orchestrator {
         token.cancel();
         Ok(())
     }
+
+    // -- Phase 3 edit commands ------------------------------------------
+    //
+    // Locking discipline: each of the three methods acquires the run's
+    // write lock, validates the status + subtask state, mutates the
+    // in-memory runtime + SQLite row, snapshots the new subtask list,
+    // releases the lock, and emits `SubtasksProposed`. That means a
+    // concurrent `approve_subtasks` sees a fully-consistent plan — the
+    // oneshot sender stays valid until it's taken, and the approval
+    // path doesn't touch the runtime until after the lifecycle task
+    // wakes up. If `approve_subtasks` wins the race first, subsequent
+    // edits trip [`OrchestratorError::WrongState`] because the lifecycle
+    // task flips status off `AwaitingApproval` on its next tick.
+
+    /// Update the editable fields of a proposed subtask. The run must
+    /// be `AwaitingApproval` and the subtask `Proposed`; any other
+    /// state is a [`WrongState`] / [`WrongSubtaskState`] error. The
+    /// subtask's dependency list is not exposed for editing in
+    /// Phase 3 (Q1 deferral) — see [`SubtaskPatch`].
+    pub async fn update_subtask(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+        patch: SubtaskPatch,
+    ) -> Result<(), OrchestratorError> {
+        // Validate `assigned_worker` against the registry *before*
+        // taking the lock. `registry.available()` probes the detector,
+        // which can be slow (PATH walks, version spawns); we don't want
+        // to hold the run lock for that.
+        let available: Vec<AgentKind> = self.registry.available().await;
+        validate_patch(&patch, &available)?;
+
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+
+        let (storage_op, emit) = {
+            let mut guard = run_arc.write().await;
+            if guard.status != RunStatus::AwaitingApproval {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-approval",
+                });
+            }
+            let sub = guard
+                .find_subtask_mut(subtask_id)
+                .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+            if sub.state != SubtaskState::Proposed {
+                return Err(OrchestratorError::WrongSubtaskState {
+                    subtask_id: subtask_id.clone(),
+                    state: sub.state,
+                    expected: "proposed",
+                });
+            }
+            // Apply the patch to the runtime row. `title`, `why`, and
+            // `assigned_worker` mirror their `SubtaskPatch` counterparts;
+            // absent fields pass through unchanged.
+            if let Some(new_title) = patch.title.as_ref() {
+                sub.data.title = new_title.trim().to_string();
+            }
+            if let Some(new_why) = patch.why.as_ref() {
+                sub.data.why = new_why.clone();
+            }
+            if let Some(new_worker) = patch.assigned_worker {
+                sub.data.assigned_worker = new_worker;
+            }
+            let title = sub.data.title.clone();
+            // Empty string on the wire means "clear to None" — see the
+            // doc on [`SubtaskPatch::why`].
+            let why_for_storage: Option<String> = Some(sub.data.why.clone()).filter(|w| !w.is_empty());
+            let worker = sub.data.assigned_worker;
+            let sub_id = sub.id.clone();
+            let proposed: Vec<SubtaskData> =
+                guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
+            (
+                (sub_id, title, why_for_storage, worker),
+                RunEvent::SubtasksProposed {
+                    run_id: run_id.clone(),
+                    subtasks: proposed,
+                },
+            )
+        };
+
+        let (sub_id, title, why, worker) = storage_op;
+        self.storage
+            .update_subtask_fields(&sub_id, &title, why.as_deref(), worker)
+            .await
+            .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
+        self.event_sink.emit(emit).await;
+        Ok(())
+    }
+
+    /// Append a user-drafted subtask to the pending plan. The run must
+    /// be `AwaitingApproval`. Returns the server-coined ulid so the
+    /// frontend can address the new row (e.g. immediately open it for
+    /// editing again).
+    pub async fn add_subtask(
+        &self,
+        run_id: &RunId,
+        draft: SubtaskDraft,
+    ) -> Result<SubtaskId, OrchestratorError> {
+        let available: Vec<AgentKind> = self.registry.available().await;
+        validate_draft(&draft, &available)?;
+
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+
+        let new_id = ulid::Ulid::new().to_string();
+        let new_title = draft.title.trim().to_string();
+        let new_why = draft.why.clone().unwrap_or_default();
+        let new_worker = draft.assigned_worker;
+
+        let (emit_payload, new_subtask_row) = {
+            let mut guard = run_arc.write().await;
+            if guard.status != RunStatus::AwaitingApproval {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-approval",
+                });
+            }
+            let runtime = SubtaskRuntime::new(
+                new_id.clone(),
+                crate::agents::PlannedSubtask {
+                    title: new_title.clone(),
+                    why: new_why.clone(),
+                    assigned_worker: new_worker,
+                    dependencies: vec![],
+                },
+                // Phase 3 Q1: user-added subtasks never depend on
+                // anything — always a leaf.
+                vec![],
+            );
+            guard.subtasks.push(runtime);
+            let proposed: Vec<SubtaskData> =
+                guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
+            let row = NewSubtask {
+                id: new_id.clone(),
+                run_id: guard.id.clone(),
+                title: new_title,
+                why: Some(new_why).filter(|w| !w.is_empty()),
+                assigned_worker: new_worker,
+                state: SubtaskState::Proposed,
+            };
+            (
+                RunEvent::SubtasksProposed {
+                    run_id: run_id.clone(),
+                    subtasks: proposed,
+                },
+                row,
+            )
+        };
+
+        self.storage
+            .insert_user_added_subtask(&new_subtask_row)
+            .await
+            .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
+        self.event_sink.emit(emit_payload).await;
+        Ok(new_id)
+    }
+
+    /// Remove a proposed subtask from the pending plan. Rejects if
+    /// another `Proposed` subtask declares it as a dependency —
+    /// requiring the user to remove dependents first keeps the DAG
+    /// consistent without asking the orchestrator to invent a new
+    /// topology.
+    pub async fn remove_subtask(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+
+        let emit = {
+            let mut guard = run_arc.write().await;
+            if guard.status != RunStatus::AwaitingApproval {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-approval",
+                });
+            }
+            let pos = guard
+                .subtasks
+                .iter()
+                .position(|s| &s.id == subtask_id)
+                .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+            if guard.subtasks[pos].state != SubtaskState::Proposed {
+                return Err(OrchestratorError::WrongSubtaskState {
+                    subtask_id: subtask_id.clone(),
+                    state: guard.subtasks[pos].state,
+                    expected: "proposed",
+                });
+            }
+            if guard
+                .subtasks
+                .iter()
+                .any(|s| s.state == SubtaskState::Proposed && s.dependency_ids.contains(subtask_id))
+            {
+                return Err(OrchestratorError::HasDependents(subtask_id.clone()));
+            }
+            guard.subtasks.remove(pos);
+            let proposed: Vec<SubtaskData> =
+                guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
+            RunEvent::SubtasksProposed {
+                run_id: run_id.clone(),
+                subtasks: proposed,
+            }
+        };
+
+        self.storage
+            .delete_subtask(subtask_id)
+            .await
+            .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
+        self.event_sink.emit(emit).await;
+        Ok(())
+    }
+}
+
+/// Shared validation for [`SubtaskPatch`] and [`SubtaskDraft`] — the
+/// rules are the same on both, and pulling them out keeps the public
+/// methods focused on locking and side-effects.
+fn validate_patch(
+    patch: &SubtaskPatch,
+    available_workers: &[AgentKind],
+) -> Result<(), OrchestratorError> {
+    if let Some(title) = patch.title.as_ref() {
+        if title.trim().is_empty() {
+            return Err(OrchestratorError::InvalidEdit("title must not be empty".into()));
+        }
+    }
+    if let Some(worker) = patch.assigned_worker {
+        if !available_workers.contains(&worker) {
+            return Err(OrchestratorError::InvalidEdit(format!(
+                "assigned worker {worker:?} is not available",
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_draft(
+    draft: &SubtaskDraft,
+    available_workers: &[AgentKind],
+) -> Result<(), OrchestratorError> {
+    if draft.title.trim().is_empty() {
+        return Err(OrchestratorError::InvalidEdit("title must not be empty".into()));
+    }
+    if !available_workers.contains(&draft.assigned_worker) {
+        return Err(OrchestratorError::InvalidEdit(format!(
+            "assigned worker {:?} is not available",
+            draft.assigned_worker,
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

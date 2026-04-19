@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::ipc::{RunStatus, SubtaskState};
+use crate::ipc::{AgentKind, RunStatus, SubtaskState};
 
 pub mod error;
 pub mod migrations;
@@ -54,6 +54,16 @@ impl Storage {
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
         Self::bootstrap(&pool).await?;
         Ok(Self { pool })
+    }
+
+    /// Test-only accessor for the underlying sqlx pool. Cross-module
+    /// tests (e.g. orchestration integration tests) need raw SQL to
+    /// probe columns without a dedicated read method — think the M002
+    /// sticky flags (`edited_by_user`, `added_by_user`). Production
+    /// code must go through typed Storage methods.
+    #[cfg(test)]
+    pub(crate) fn pool_for_tests(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// In-memory DB for tests. `max_connections=1` because :memory: databases
@@ -241,6 +251,76 @@ impl Storage {
         .bind(subtask_state_to_str(new.state))
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Insert a user-added subtask, stamping `added_by_user = 1` at
+    /// birth. Phase 3 edit flow only — the master's initial plan uses
+    /// [`Self::insert_subtask`], which leaves both M002 flags at the
+    /// column default (`0`).
+    pub async fn insert_user_added_subtask(&self, new: &NewSubtask) -> StorageResult<()> {
+        sqlx::query(
+            "INSERT INTO subtasks \
+             (id, run_id, title, why, assigned_worker, state, added_by_user) \
+             VALUES (?, ?, ?, ?, ?, ?, 1)",
+        )
+        .bind(&new.id)
+        .bind(&new.run_id)
+        .bind(&new.title)
+        .bind(new.why.as_deref())
+        .bind(agent_kind_to_str(new.assigned_worker))
+        .bind(subtask_state_to_str(new.state))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update the user-editable fields of a subtask and flip
+    /// `edited_by_user` to `1`. Intended for the Phase 3
+    /// `update_subtask` IPC: the orchestrator has already validated
+    /// the run is `AwaitingApproval` and the subtask is `Proposed`;
+    /// this is just the row write.
+    ///
+    /// The flag is sticky — once set, a later edit that happens to
+    /// restore the master's original values still leaves the flag at
+    /// `1`. That matches "did the user touch this?", not "does the
+    /// current value equal the master's proposal?".
+    pub async fn update_subtask_fields(
+        &self,
+        id: &str,
+        title: &str,
+        why: Option<&str>,
+        assigned_worker: AgentKind,
+    ) -> StorageResult<()> {
+        let res = sqlx::query(
+            "UPDATE subtasks \
+             SET title = ?, why = ?, assigned_worker = ?, edited_by_user = 1 \
+             WHERE id = ?",
+        )
+        .bind(title)
+        .bind(why)
+        .bind(agent_kind_to_str(assigned_worker))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if res.rows_affected() == 0 {
+            return Err(StorageError::NotFound(format!("subtask {id}")));
+        }
+        Ok(())
+    }
+
+    /// Delete a subtask by id. `subtask_dependencies` rows referencing
+    /// it on either side, and `subtask_logs` / `subtask_replans` rows
+    /// pointing at it, cascade away via the M001/M002 foreign keys —
+    /// no manual cleanup needed.
+    pub async fn delete_subtask(&self, id: &str) -> StorageResult<()> {
+        let res = sqlx::query("DELETE FROM subtasks WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(StorageError::NotFound(format!("subtask {id}")));
+        }
         Ok(())
     }
 
@@ -676,6 +756,96 @@ mod tests {
         let s = Storage::in_memory().await.unwrap();
         Storage::bootstrap(&s.pool).await.expect("first re-bootstrap");
         Storage::bootstrap(&s.pool).await.expect("second re-bootstrap");
+    }
+
+    #[tokio::test]
+    async fn insert_user_added_subtask_sets_added_flag() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_user_added_subtask(&sample_subtask("s1", "r1"))
+            .await
+            .unwrap();
+        let flags: (i64, i64) = sqlx::query_as(
+            "SELECT edited_by_user, added_by_user FROM subtasks WHERE id = ?",
+        )
+        .bind("s1")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(flags, (0, 1));
+    }
+
+    #[tokio::test]
+    async fn update_subtask_fields_flips_edited_flag() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("s1", "r1")).await.unwrap();
+        s.update_subtask_fields("s1", "new title", Some("new why"), AgentKind::Codex)
+            .await
+            .unwrap();
+        let sub = s.get_subtask("s1").await.unwrap().unwrap();
+        assert_eq!(sub.title, "new title");
+        assert_eq!(sub.why.as_deref(), Some("new why"));
+        assert_eq!(sub.assigned_worker, AgentKind::Codex);
+        let edited: i64 =
+            sqlx::query_scalar("SELECT edited_by_user FROM subtasks WHERE id = ?")
+                .bind("s1")
+                .fetch_one(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(edited, 1);
+    }
+
+    #[tokio::test]
+    async fn update_subtask_fields_clears_why_when_none() {
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("s1", "r1")).await.unwrap();
+        s.update_subtask_fields("s1", "t", None, AgentKind::Claude)
+            .await
+            .unwrap();
+        let sub = s.get_subtask("s1").await.unwrap().unwrap();
+        assert!(sub.why.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_subtask_fields_missing_id_is_not_found() {
+        let s = Storage::in_memory().await.unwrap();
+        let err = s
+            .update_subtask_fields("ghost", "t", None, AgentKind::Claude)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_subtask_cascades_dependencies_and_logs() {
+        // subtask_dependencies references subtasks(id) on both sides ON
+        // DELETE CASCADE (M001), so removing a subtask cleans rows it
+        // participates in whether as depender or dependent.
+        let s = Storage::in_memory().await.unwrap();
+        s.insert_run(&sample_run("r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("s1", "r1")).await.unwrap();
+        s.insert_subtask(&sample_subtask("s2", "r1")).await.unwrap();
+        s.insert_dependency("s2", "s1").await.unwrap();
+        s.append_log("s1", "log line").await.unwrap();
+
+        s.delete_subtask("s1").await.unwrap();
+
+        assert!(s.get_subtask("s1").await.unwrap().is_none());
+        // s2's dependency row went with s1.
+        assert!(s.get_dependencies("s2").await.unwrap().is_empty());
+        // Logs cascade on subtask deletion.
+        assert!(s.get_subtask_logs("s1").await.unwrap().is_empty());
+        // Sibling row untouched.
+        assert!(s.get_subtask("s2").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_subtask_missing_id_is_not_found() {
+        let s = Storage::in_memory().await.unwrap();
+        let err = s.delete_subtask("ghost").await.unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
     }
 
     #[tokio::test]

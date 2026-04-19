@@ -123,6 +123,42 @@ pub struct RunSummary {
     pub commits_created: u32,
 }
 
+/// Partial update for a proposed subtask. Every field is independently
+/// optional — absent / JSON `null` on the wire means "leave this field
+/// alone". For [`Self::why`], `Some(s)` where `s` is empty is treated
+/// as "clear to `None`" by the orchestrator; this matches the Phase 3
+/// edit-row UI, which has a single textbox that turns empty on
+/// clearing.
+///
+/// Phase 3 Q1 deferral: dependencies are not exposed here. The
+/// original subtask keeps whatever dep list the master assigned;
+/// user edits cannot reshape the DAG.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskPatch {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub why: Option<String>,
+    #[serde(default)]
+    pub assigned_worker: Option<AgentKind>,
+}
+
+/// Full definition for a user-added subtask. The orchestrator
+/// allocates the id server-side (so the frontend doesn't have to
+/// coin ULIDs) and returns it alongside the re-emitted plan.
+///
+/// Same Phase 3 Q1 deferral as [`SubtaskPatch`]: no dependencies —
+/// a user-added subtask is always a leaf in the DAG.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskDraft {
+    pub title: String,
+    #[serde(default)]
+    pub why: Option<String>,
+    pub assigned_worker: AgentKind,
+}
+
 /// One entry in the boot-time recovery report: a run that was
 /// non-terminal when the app last exited. The backend marks it
 /// `Failed` and sweeps worktrees before populating this; the

@@ -22,7 +22,7 @@ use super::*;
 use crate::agents::{
     AgentError, AgentImpl, ExecutionResult, Plan, PlannedSubtask, PlanningContext,
 };
-use crate::ipc::{AgentKind, RunStatus, SubtaskState};
+use crate::ipc::{AgentKind, RunStatus, SubtaskDraft, SubtaskPatch, SubtaskState};
 use crate::orchestration::events::{EventSink, RecordingEventSink, RunEvent};
 use crate::orchestration::registry::{AgentRegistry, RegistryError};
 use crate::settings::SettingsStore;
@@ -1496,4 +1496,544 @@ async fn submit_task_emits_nothing_before_returning_run_id() {
     // Clean up the pending run so the harness doesn't leave a 60-second
     // planner hanging after the test body returns.
     h.orch.cancel_run(&run_id).await.ok();
+}
+
+// -- Phase 3 edit commands --------------------------------------------
+//
+// These exercise the trio introduced in Step 1 of the Phase 3 spec:
+// `update_subtask`, `add_subtask`, `remove_subtask`. Each drives a
+// real run through Planning → AwaitingApproval (using `ScriptedAgent`
+// with a canned plan) and then exercises the edit methods through the
+// public Orchestrator API. Assertions target:
+//
+// - the in-memory runtime state mutates as promised
+// - the SQLite row reflects the edit with the correct sticky flag
+// - `SubtasksProposed` is re-emitted with the full updated list
+// - state-gate violations surface typed errors
+// - dependencies block removal when upstream
+//
+// The scripted registry advertises [Claude, Codex] as available
+// workers — Gemini is used below as the "unavailable" case.
+
+/// Drive a fresh run to AwaitingApproval with a canned plan. Returns
+/// the harness, run id, and the current snapshot of subtask rows
+/// (already persisted — the lifecycle task flushes before emitting
+/// `StatusChanged{AwaitingApproval}`).
+async fn harness_awaiting(
+    plan: Plan,
+) -> (Harness, RunId, Vec<crate::storage::models::Subtask>) {
+    let agent = ScriptedAgent::new(AgentKind::Claude).with_plan(Ok(plan)).await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("edit tests".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    (h, run_id, subs)
+}
+
+/// Count `SubtasksProposed` events for a given run on the sink — one
+/// is fired by the lifecycle task on entering AwaitingApproval; every
+/// successful edit adds another. The arithmetic matters: edits that
+/// fail with a typed error must NOT re-emit.
+async fn count_subtasks_proposed(h: &Harness, run_id: &RunId) -> usize {
+    h.sink
+        .snapshot()
+        .await
+        .into_iter()
+        .filter(|e| matches!(e, RunEvent::SubtasksProposed { run_id: r, .. } if r == run_id))
+        .count()
+}
+
+/// Last `SubtasksProposed` payload for a run — pin the post-edit shape
+/// after the re-emit.
+async fn last_proposed_payload(
+    h: &Harness,
+    run_id: &RunId,
+) -> Vec<crate::ipc::SubtaskData> {
+    h.sink
+        .snapshot()
+        .await
+        .into_iter()
+        .filter_map(|e| match e {
+            RunEvent::SubtasksProposed { run_id: r, subtasks } if &r == run_id => Some(subtasks),
+            _ => None,
+        })
+        .next_back()
+        .expect("no SubtasksProposed event found for run")
+}
+
+#[tokio::test]
+async fn update_subtask_happy_path_re_emits_and_flips_flag() {
+    let (h, run_id, subs) = harness_awaiting(plan_of(2)).await;
+    let target = subs[0].id.clone();
+    let before = count_subtasks_proposed(&h, &run_id).await;
+    assert_eq!(before, 1, "baseline should be the initial proposal emit");
+
+    h.orch
+        .update_subtask(
+            &run_id,
+            &target,
+            SubtaskPatch {
+                title: Some("renamed".into()),
+                why: Some("fresh rationale".into()),
+                assigned_worker: Some(AgentKind::Codex),
+            },
+        )
+        .await
+        .unwrap();
+
+    // In-memory runtime reflects the edit.
+    let run_arc = h.orch.get_run(&run_id).await.unwrap();
+    let guard = run_arc.read().await;
+    let sub = guard.find_subtask(&target).unwrap();
+    assert_eq!(sub.data.title, "renamed");
+    assert_eq!(sub.data.why, "fresh rationale");
+    assert_eq!(sub.data.assigned_worker, AgentKind::Codex);
+    drop(guard);
+
+    // SQLite row matches and the sticky flag fired.
+    let stored = h.storage.get_subtask(&target).await.unwrap().unwrap();
+    assert_eq!(stored.title, "renamed");
+    assert_eq!(stored.why.as_deref(), Some("fresh rationale"));
+    assert_eq!(stored.assigned_worker, AgentKind::Codex);
+    let edited: i64 =
+        sqlx::query_scalar("SELECT edited_by_user FROM subtasks WHERE id = ?")
+            .bind(&target)
+            .fetch_one(h.storage.pool_for_tests())
+            .await
+            .unwrap();
+    assert_eq!(edited, 1, "edited_by_user must be set after update");
+
+    // Re-emit carries the new title.
+    let after = count_subtasks_proposed(&h, &run_id).await;
+    assert_eq!(after, before + 1, "successful edit should re-emit exactly once");
+    let payload = last_proposed_payload(&h, &run_id).await;
+    assert_eq!(payload.len(), 2);
+    let edited_row = payload.iter().find(|s| s.id == target).unwrap();
+    assert_eq!(edited_row.title, "renamed");
+    assert_eq!(edited_row.why.as_deref(), Some("fresh rationale"));
+    assert_eq!(edited_row.assigned_worker, AgentKind::Codex);
+
+    // Clean up.
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn update_subtask_why_can_be_cleared_with_empty_string() {
+    // Wire semantics: `why: Some("")` clears the rationale. The
+    // orchestrator normalizes to `None` before persisting and before
+    // the re-emit payload.
+    let (h, run_id, subs) = harness_awaiting(plan_of(1)).await;
+    let target = subs[0].id.clone();
+
+    h.orch
+        .update_subtask(
+            &run_id,
+            &target,
+            SubtaskPatch {
+                title: None,
+                why: Some(String::new()),
+                assigned_worker: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let stored = h.storage.get_subtask(&target).await.unwrap().unwrap();
+    assert!(stored.why.is_none(), "empty-string why must clear the column");
+    let payload = last_proposed_payload(&h, &run_id).await;
+    assert!(payload[0].why.is_none());
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn update_subtask_missing_run_is_run_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .update_subtask(&"nope".into(), &"nope".into(), SubtaskPatch::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}
+
+#[tokio::test]
+async fn update_subtask_missing_subtask_is_subtask_not_found() {
+    let (h, run_id, _subs) = harness_awaiting(plan_of(1)).await;
+    let err = h
+        .orch
+        .update_subtask(&run_id, &"ghost".into(), SubtaskPatch::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::SubtaskNotFound(_)));
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn update_subtask_empty_title_rejected_and_no_re_emit() {
+    let (h, run_id, subs) = harness_awaiting(plan_of(1)).await;
+    let target = subs[0].id.clone();
+    let before = count_subtasks_proposed(&h, &run_id).await;
+
+    let err = h
+        .orch
+        .update_subtask(
+            &run_id,
+            &target,
+            SubtaskPatch {
+                title: Some("   ".into()),
+                why: None,
+                assigned_worker: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+
+    // No re-emit on validation failure.
+    let after = count_subtasks_proposed(&h, &run_id).await;
+    assert_eq!(after, before);
+    // Row untouched.
+    let stored = h.storage.get_subtask(&target).await.unwrap().unwrap();
+    assert_eq!(stored.title, subs[0].title);
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn update_subtask_unavailable_worker_rejected() {
+    // Scripted registry advertises [Claude, Codex]; Gemini is absent.
+    let (h, run_id, subs) = harness_awaiting(plan_of(1)).await;
+    let target = subs[0].id.clone();
+
+    let err = h
+        .orch
+        .update_subtask(
+            &run_id,
+            &target,
+            SubtaskPatch {
+                title: None,
+                why: None,
+                assigned_worker: Some(AgentKind::Gemini),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+    // Row untouched.
+    let stored = h.storage.get_subtask(&target).await.unwrap().unwrap();
+    assert_eq!(stored.assigned_worker, AgentKind::Claude);
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn update_subtask_after_approval_is_wrong_state() {
+    // Approve → run flips to Running → subsequent edit must be
+    // refused. We can't rely on `AwaitingApproval` timing after
+    // `approve_subtasks` returns because the lifecycle task flips
+    // status asynchronously, so wait for the `Running` transition
+    // before asserting.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute_default(ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("approve-then-edit".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let target = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![target.clone()])
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+
+    let err = h
+        .orch
+        .update_subtask(
+            &run_id,
+            &target,
+            SubtaskPatch {
+                title: Some("too late".into()),
+                why: None,
+                assigned_worker: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::WrongState { .. }));
+
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+#[tokio::test]
+async fn add_subtask_happy_path_returns_id_and_sets_flag() {
+    let (h, run_id, subs) = harness_awaiting(plan_of(1)).await;
+    let before = count_subtasks_proposed(&h, &run_id).await;
+
+    let new_id = h
+        .orch
+        .add_subtask(
+            &run_id,
+            SubtaskDraft {
+                title: "user-added".into(),
+                why: Some("because user".into()),
+                assigned_worker: AgentKind::Codex,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Server-coined id is a non-empty ULID (26 chars).
+    assert_eq!(new_id.len(), 26);
+    assert_ne!(new_id, subs[0].id);
+
+    // Runtime has the new leaf with no deps.
+    let run_arc = h.orch.get_run(&run_id).await.unwrap();
+    let guard = run_arc.read().await;
+    assert_eq!(guard.subtasks.len(), 2);
+    let added = guard.find_subtask(&new_id).unwrap();
+    assert!(added.dependency_ids.is_empty());
+    assert_eq!(added.data.assigned_worker, AgentKind::Codex);
+    assert_eq!(added.state, SubtaskState::Proposed);
+    drop(guard);
+
+    // SQLite row with added_by_user = 1, edited_by_user = 0.
+    let flags: (i64, i64) = sqlx::query_as(
+        "SELECT edited_by_user, added_by_user FROM subtasks WHERE id = ?",
+    )
+    .bind(&new_id)
+    .fetch_one(h.storage.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(flags, (0, 1));
+    let stored = h.storage.get_subtask(&new_id).await.unwrap().unwrap();
+    assert_eq!(stored.title, "user-added");
+    assert_eq!(stored.why.as_deref(), Some("because user"));
+    assert_eq!(stored.run_id, run_id);
+
+    // Re-emit contains the new id.
+    let after = count_subtasks_proposed(&h, &run_id).await;
+    assert_eq!(after, before + 1);
+    let payload = last_proposed_payload(&h, &run_id).await;
+    assert!(payload.iter().any(|s| s.id == new_id));
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn add_subtask_empty_title_rejected() {
+    let (h, run_id, _subs) = harness_awaiting(plan_of(1)).await;
+    let err = h
+        .orch
+        .add_subtask(
+            &run_id,
+            SubtaskDraft {
+                title: "   ".into(),
+                why: None,
+                assigned_worker: AgentKind::Claude,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn add_subtask_unavailable_worker_rejected() {
+    let (h, run_id, _subs) = harness_awaiting(plan_of(1)).await;
+    let err = h
+        .orch
+        .add_subtask(
+            &run_id,
+            SubtaskDraft {
+                title: "ok".into(),
+                why: None,
+                assigned_worker: AgentKind::Gemini, // not in [Claude, Codex]
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn add_subtask_missing_run_is_run_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .add_subtask(
+            &"nope".into(),
+            SubtaskDraft {
+                title: "t".into(),
+                why: None,
+                assigned_worker: AgentKind::Claude,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}
+
+#[tokio::test]
+async fn remove_subtask_happy_path_deletes_and_re_emits() {
+    let (h, run_id, subs) = harness_awaiting(plan_of(2)).await;
+    let target = subs[0].id.clone();
+    let keep = subs[1].id.clone();
+    let before = count_subtasks_proposed(&h, &run_id).await;
+
+    h.orch.remove_subtask(&run_id, &target).await.unwrap();
+
+    // Runtime shrinks.
+    let run_arc = h.orch.get_run(&run_id).await.unwrap();
+    let guard = run_arc.read().await;
+    assert_eq!(guard.subtasks.len(), 1);
+    assert_eq!(guard.subtasks[0].id, keep);
+    drop(guard);
+
+    // Row is gone.
+    assert!(h.storage.get_subtask(&target).await.unwrap().is_none());
+    // Sibling survives.
+    assert!(h.storage.get_subtask(&keep).await.unwrap().is_some());
+
+    // Re-emit without the target.
+    let after = count_subtasks_proposed(&h, &run_id).await;
+    assert_eq!(after, before + 1);
+    let payload = last_proposed_payload(&h, &run_id).await;
+    assert_eq!(payload.len(), 1);
+    assert!(payload.iter().all(|s| s.id != target));
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn remove_subtask_with_dependent_rejected() {
+    // t1 depends on t0; removing t0 must fail with HasDependents so
+    // the user fixes the DAG explicitly (spec Q1 deferral — the
+    // orchestrator refuses to invent new topology).
+    let (h, run_id, subs) = harness_awaiting(plan_with_deps(&[("t0", &[]), ("t1", &[0])])).await;
+    let t0 = subs.iter().find(|s| s.title == "t0").unwrap().id.clone();
+
+    let before = count_subtasks_proposed(&h, &run_id).await;
+    let err = h.orch.remove_subtask(&run_id, &t0).await.unwrap_err();
+    assert!(matches!(err, OrchestratorError::HasDependents(_)));
+
+    // Row still present; no re-emit.
+    assert!(h.storage.get_subtask(&t0).await.unwrap().is_some());
+    assert_eq!(count_subtasks_proposed(&h, &run_id).await, before);
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn remove_subtask_missing_is_subtask_not_found() {
+    let (h, run_id, _subs) = harness_awaiting(plan_of(1)).await;
+    let err = h
+        .orch
+        .remove_subtask(&run_id, &"ghost".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::SubtaskNotFound(_)));
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn remove_subtask_missing_run_is_run_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .remove_subtask(&"nope".into(), &"nope".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}
+
+#[tokio::test]
+async fn edit_after_approve_race_surfaces_wrong_state() {
+    // Contention: a user approves, then an in-flight edit lands
+    // after the lifecycle task has already flipped off
+    // `AwaitingApproval`. The orchestrator must reject the edit
+    // rather than silently mutating a plan that's already running.
+    //
+    // We drive this deterministically by blocking the worker so
+    // `Running` is a stable observation point, then firing the edit.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute_default(ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("race".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let target = subs[0].id.clone();
+
+    h.orch
+        .approve_subtasks(&run_id, vec![target.clone()])
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+
+    // Both update and remove must refuse once status has moved off
+    // AwaitingApproval.
+    let e1 = h
+        .orch
+        .update_subtask(&run_id, &target, SubtaskPatch {
+            title: Some("late".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(e1, OrchestratorError::WrongState { .. }));
+
+    let e2 = h.orch.remove_subtask(&run_id, &target).await.unwrap_err();
+    assert!(matches!(e2, OrchestratorError::WrongState { .. }));
+
+    let e3 = h
+        .orch
+        .add_subtask(
+            &run_id,
+            SubtaskDraft {
+                title: "late-add".into(),
+                why: None,
+                assigned_worker: AgentKind::Claude,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(e3, OrchestratorError::WrongState { .. }));
+
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
 }

@@ -30,7 +30,9 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use super::{AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SubtaskId};
+use super::{
+    AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SubtaskDraft, SubtaskId, SubtaskPatch,
+};
 use crate::detection::Detector;
 use crate::orchestration::Orchestrator;
 use crate::settings::{Settings, SettingsStore};
@@ -87,6 +89,48 @@ pub async fn cancel_run(
     run_id: RunId,
 ) -> Result<(), String> {
     orch.cancel_run(&run_id).await.map_err(|e| e.to_string())
+}
+
+// -- Phase 3 plan-edit commands ---------------------------------------
+//
+// These three are only valid while a run is in `AwaitingApproval`
+// (the window between `run:subtasks_proposed` and `approve_subtasks` /
+// `reject_run`). The orchestrator enforces the state gate and the
+// validation rules; here we stay thin — deserialize, dispatch, map the
+// error to a string for the frontend banner.
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn update_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+    patch: SubtaskPatch,
+) -> Result<(), String> {
+    orch.update_subtask(&run_id, &subtask_id, patch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn add_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    draft: SubtaskDraft,
+) -> Result<SubtaskId, String> {
+    orch.add_subtask(&run_id, draft)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn remove_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.remove_subtask(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -736,7 +736,7 @@ async fn initialize_run_from_plan(
                 dep_ids,
             ));
         }
-        let proposed: Vec<SubtaskData> = runtimes.iter().map(to_subtask_data).collect();
+        let proposed: Vec<SubtaskData> = runtimes.iter().map(SubtaskRuntime::to_data).collect();
         guard.subtasks = runtimes;
         (run_id, proposed, deps_edges)
     };
@@ -971,16 +971,6 @@ async fn finalize_failed(deps: &LifecycleDeps, run: &Arc<RwLock<Run>>, error: St
 }
 
 // -- Helpers ---------------------------------------------------------
-
-fn to_subtask_data(runtime: &SubtaskRuntime) -> SubtaskData {
-    SubtaskData {
-        id: runtime.id.clone(),
-        title: runtime.data.title.clone(),
-        why: Some(runtime.data.why.clone()).filter(|w| !w.is_empty()),
-        assigned_worker: runtime.data.assigned_worker,
-        dependencies: runtime.dependency_ids.clone(),
-    }
-}
 
 fn ulid_subtask_id() -> SubtaskId {
     // Reuse ULID for subtask ids too: sortable + globally unique,
