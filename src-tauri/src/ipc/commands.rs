@@ -34,6 +34,7 @@ use super::{
     AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SubtaskDraft, SubtaskId, SubtaskPatch,
 };
 use crate::detection::Detector;
+use crate::editor::EditorResult;
 use crate::orchestration::Orchestrator;
 use crate::settings::{Settings, SettingsStore};
 
@@ -169,4 +170,60 @@ pub async fn consume_recovery_report(
     orch: State<'_, Arc<Orchestrator>>,
 ) -> Result<Vec<RecoveryEntry>, String> {
     Ok(orch.consume_recovery_report().await)
+}
+
+// -- Phase 3 Step 5 Layer-3 escalation commands -----------------------
+//
+// Surfaced when a subtask has entered `HumanEscalation`. The frontend
+// drives the user through one of three choices: open the file in an
+// editor and mark it fixed, skip the subtask (and its dependents), or
+// ask the master for another replan attempt (only visible when
+// `replan_count < 2`).
+//
+// Commit 1 wires the IPC skeleton; Commit 2 fills in the orchestrator
+// logic. See `src/editor.rs` for the fallback chain returned by
+// `manual_fix_subtask`.
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn manual_fix_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<EditorResult, String> {
+    orch.manual_fix_subtask(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn mark_subtask_fixed(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.mark_subtask_fixed(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn skip_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.skip_subtask(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn try_replan_again(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.try_replan_again(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
 }

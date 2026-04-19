@@ -1,5 +1,6 @@
 mod agents;
 mod detection;
+mod editor;
 mod gitignore;
 mod ipc;
 mod orchestration;
@@ -88,6 +89,10 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::consume_recovery_report,
+            commands::manual_fix_subtask,
+            commands::mark_subtask_fixed,
+            commands::skip_subtask,
+            commands::try_replan_again,
             repo::pick_repo,
             repo::validate_repo,
         ])

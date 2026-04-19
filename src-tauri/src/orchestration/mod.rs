@@ -691,6 +691,89 @@ impl Orchestrator {
         self.event_sink.emit(emit).await;
         Ok(())
     }
+
+    // -- Phase 3 Step 5 Layer-3 escalation skeletons ---------------------
+    //
+    // Commit 1 wires the IPC surface only; the orchestration logic
+    // (transition the subtask out of human-escalation, cascade-skip
+    // dependents, replan again) lands in commit 2. Each stub validates
+    // that the run exists so the frontend gets an honest error, then
+    // returns [`OrchestratorError::InvalidEdit`] to make the "not yet
+    // implemented" edge obvious if anything in the UI wires up early.
+
+    /// Open the subtask's escalation worktree file in the user's
+    /// editor. Returns the tier that actually succeeded so the
+    /// frontend can surface the correct status line (or switch to
+    /// clipboard-only behaviour).
+    pub async fn manual_fix_subtask(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<crate::editor::EditorResult, OrchestratorError> {
+        let _ = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let _ = subtask_id;
+        Err(OrchestratorError::InvalidEdit(
+            "manual_fix_subtask not yet implemented (Phase 3 Step 5 commit 2)".into(),
+        ))
+    }
+
+    /// User finished editing by hand and confirmed the subtask is
+    /// green. Transitions the subtask `human_escalation → done` and
+    /// lets the dispatcher pick up any subtasks unblocked by it.
+    pub async fn mark_subtask_fixed(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let _ = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let _ = subtask_id;
+        Err(OrchestratorError::InvalidEdit(
+            "mark_subtask_fixed not yet implemented (Phase 3 Step 5 commit 2)".into(),
+        ))
+    }
+
+    /// Skip the subtask and every subtask that transitively depends on
+    /// it. Commit 2 walks the DAG with BFS and surfaces the count to
+    /// the confirm dialog on the frontend; this skeleton just validates
+    /// the run.
+    pub async fn skip_subtask(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let _ = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let _ = subtask_id;
+        Err(OrchestratorError::InvalidEdit(
+            "skip_subtask not yet implemented (Phase 3 Step 5 commit 2)".into(),
+        ))
+    }
+
+    /// Ask the master for one more replan. Only legal when
+    /// `subtask.replan_count < 2`; the frontend hides the button
+    /// otherwise but the backend double-checks.
+    pub async fn try_replan_again(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let _ = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let _ = subtask_id;
+        Err(OrchestratorError::InvalidEdit(
+            "try_replan_again not yet implemented (Phase 3 Step 5 commit 2)".into(),
+        ))
+    }
 }
 
 /// Shared validation for [`SubtaskPatch`] and [`SubtaskDraft`] — the

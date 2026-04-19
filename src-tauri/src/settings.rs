@@ -46,6 +46,13 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[allow(dead_code)]
     pub gemini_binary_path: Option<String>,
+    /// Preferred editor binary for Layer-3 human escalation. Passed to
+    /// [`crate::editor::open_in_editor`] as the first tier of the
+    /// resolution chain. `None` (absent / null) skips straight to
+    /// `$EDITOR` / platform default / clipboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub editor: Option<String>,
 }
 
 impl Default for Settings {
@@ -56,6 +63,7 @@ impl Default for Settings {
             claude_binary_path: None,
             codex_binary_path: None,
             gemini_binary_path: None,
+            editor: None,
         }
     }
 }
@@ -107,6 +115,7 @@ pub fn apply_patch(settings: &mut Settings, patch: &serde_json::Value) -> Result
             "claudeBinaryPath" => settings.claude_binary_path = from_nullable_string(key, value)?,
             "codexBinaryPath" => settings.codex_binary_path = from_nullable_string(key, value)?,
             "geminiBinaryPath" => settings.gemini_binary_path = from_nullable_string(key, value)?,
+            "editor" => settings.editor = from_nullable_string(key, value)?,
             _ => {} // ignore unknown keys
         }
     }
@@ -188,6 +197,7 @@ mod tests {
             claude_binary_path: Some("/usr/local/bin/claude".into()),
             codex_binary_path: None,
             gemini_binary_path: None,
+            editor: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         assert!(json.contains("\"lastRepo\":\"/tmp/repo\""));
@@ -228,6 +238,7 @@ mod tests {
             claude_binary_path: None,
             codex_binary_path: Some("/usr/bin/codex".into()),
             gemini_binary_path: None,
+            editor: None,
         };
         save_to(&original, &path).unwrap();
         let reloaded = load_from(&path);
@@ -275,5 +286,30 @@ mod tests {
         let mut s = Settings::default();
         let err = apply_patch(&mut s, &serde_json::json!({ "lastRepo": 42 })).unwrap_err();
         assert!(err.contains("lastRepo"));
+    }
+
+    #[test]
+    fn patch_sets_and_clears_editor() {
+        let mut s = Settings::default();
+        apply_patch(&mut s, &serde_json::json!({ "editor": "code" })).unwrap();
+        assert_eq!(s.editor.as_deref(), Some("code"));
+        apply_patch(&mut s, &serde_json::json!({ "editor": null })).unwrap();
+        assert!(s.editor.is_none());
+    }
+
+    #[test]
+    fn editor_field_round_trips_via_json() {
+        let s = Settings {
+            editor: Some("code".into()),
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"editor\":\"code\""));
+        // Absent field deserializes back to None without complaint.
+        let without: Settings = serde_json::from_str(
+            r#"{"lastRepo":null,"masterAgent":"claude"}"#,
+        )
+        .unwrap();
+        assert!(without.editor.is_none());
     }
 }
