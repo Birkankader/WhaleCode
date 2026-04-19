@@ -58,6 +58,10 @@ export function WorkerNode({ id, data }: NodeProps) {
       agentColor={color}
       width={width}
       height={height}
+      // Whole-card click is a mouse affordance for toggling selection in
+      // the proposed state. The checkbox is the accessible truth — it
+      // stops propagation below so a direct click doesn't double-toggle.
+      onClick={isProposed ? () => toggle(id) : undefined}
     >
       <Handle type="target" position={Position.Top} className="!border-0 !bg-transparent" />
       <header className="flex items-center justify-between">
@@ -67,6 +71,7 @@ export function WorkerNode({ id, data }: NodeProps) {
               type="checkbox"
               checked={isSelected}
               onChange={() => toggle(id)}
+              onClick={(e) => e.stopPropagation()}
               aria-label={`Select ${d.title}`}
               className="size-3 cursor-pointer accent-[var(--color-agent-master)]"
             />

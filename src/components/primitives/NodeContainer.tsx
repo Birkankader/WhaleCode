@@ -1,4 +1,4 @@
-import type { CSSProperties, PropsWithChildren } from 'react';
+import type { CSSProperties, MouseEventHandler, PropsWithChildren } from 'react';
 
 import type { NodeState } from '../../state/nodeMachine';
 
@@ -10,6 +10,13 @@ type Props = {
   agentColor: string;
   width: number;
   height: number;
+  /**
+   * Optional click handler. Used by WorkerNode in `proposed` state to make
+   * the whole card a selection toggle — the checkbox alone is too small a
+   * click target. Keyboard + screen-reader semantics live on the inner
+   * checkbox; this is a mouse affordance only.
+   */
+  onClick?: MouseEventHandler<HTMLDivElement>;
 };
 
 /**
@@ -23,13 +30,15 @@ export function NodeContainer({
   agentColor,
   width,
   height,
+  onClick,
   children,
 }: PropsWithChildren<Props>) {
   const style = styleForState(variant, state, agentColor);
   return (
     <div
       className="flex h-full w-full flex-col gap-1 rounded-md bg-bg-elevated px-3 py-2"
-      style={{ width, height, ...style }}
+      style={{ width, height, cursor: onClick ? 'pointer' : undefined, ...style }}
+      onClick={onClick}
     >
       {children}
     </div>
