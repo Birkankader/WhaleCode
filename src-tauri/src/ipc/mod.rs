@@ -116,3 +116,16 @@ pub struct RunSummary {
     pub commits_created: u32,
 }
 
+/// One entry in the boot-time recovery report: a run that was
+/// non-terminal when the app last exited. The backend marks it
+/// `Failed` and sweeps worktrees before populating this; the
+/// frontend reads it once on startup to show a heads-up banner.
+/// Intentionally minimal — `task` and `repo_path` are enough to
+/// identify which run the user lost.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryEntry {
+    pub task: String,
+    pub repo_path: String,
+}
+

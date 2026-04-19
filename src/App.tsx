@@ -10,6 +10,7 @@ import { RepoPicker } from './components/shell/RepoPicker';
 import { TopBar } from './components/shell/TopBar';
 import { WindowTooSmall } from './components/shell/WindowTooSmall';
 import { useRepoPickerShortcut } from './hooks/useRepoPickerShortcut';
+import { consumeRecoveryReport } from './lib/ipc';
 import { useAgentStore } from './state/agentStore';
 import { useGraphStore } from './state/graphStore';
 import { useRepoStore } from './state/repoStore';
@@ -25,6 +26,32 @@ export default function App() {
   useEffect(() => {
     init();
   }, [init]);
+
+  useEffect(() => {
+    // Boot-time heads-up for crash recovery. The backend already
+    // marked any active-at-crash runs as `Failed` and swept their
+    // worktrees in `lib.rs` setup; we just consume the report and
+    // surface a banner so the user knows something happened —
+    // silently cleaning behind the user was the prior UX gap that
+    // made "recovery" feel invisible. Read-once by contract, so
+    // StrictMode's double-fire is harmless: the second run gets
+    // `[]` and does nothing.
+    void consumeRecoveryReport()
+      .then((entries) => {
+        if (entries.length === 0) return;
+        const label =
+          entries.length === 1
+            ? `Previous run "${entries[0].task}" was interrupted at ${entries[0].repoPath} and has been marked failed. Worktrees cleaned up — you can start a fresh task.`
+            : `${entries.length} previous runs were interrupted and have been marked failed. Worktrees cleaned up — you can start a fresh task.`;
+        useGraphStore.setState({ currentError: label });
+      })
+      .catch((err) => {
+        // Best-effort: the banner is a nicety, not a correctness
+        // requirement. Log and move on — the user still has a
+        // working app, just no recovery notice.
+        console.error('[App] consumeRecoveryReport failed', err);
+      });
+  }, []);
 
   useRepoPickerShortcut(pickInteractively);
 

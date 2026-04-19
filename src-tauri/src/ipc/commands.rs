@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use super::{AgentDetectionResult, AgentKind, RunId, SubtaskId};
+use super::{AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SubtaskId};
 use crate::detection::Detector;
 use crate::orchestration::Orchestrator;
 use crate::settings::{Settings, SettingsStore};
@@ -115,4 +115,14 @@ pub fn set_settings(
     patch: serde_json::Value,
 ) -> Result<Settings, String> {
     settings.update(&patch)
+}
+
+/// Drain the boot-time recovery report. The frontend calls this
+/// once on startup (see App.tsx init) and surfaces a heads-up
+/// banner if the list is non-empty. Subsequent calls return `[]`.
+#[tauri::command]
+pub async fn consume_recovery_report(
+    orch: State<'_, Arc<Orchestrator>>,
+) -> Result<Vec<RecoveryEntry>, String> {
+    Ok(orch.consume_recovery_report().await)
 }

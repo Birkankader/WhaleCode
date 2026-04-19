@@ -183,6 +183,20 @@ export const baseBranchDirtySchema = z.object({
 });
 export type BaseBranchDirty = z.infer<typeof baseBranchDirtySchema>;
 
+// ---------- Recovery ----------
+
+/**
+ * One entry in the boot-time recovery report: a run that was
+ * non-terminal when the app last exited. The backend has already
+ * marked it `Failed` and swept worktrees by the time the frontend
+ * reads this — the banner is a heads-up, not an action prompt.
+ */
+export const recoveryEntrySchema = z.object({
+  task: z.string(),
+  repoPath: z.string(),
+});
+export type RecoveryEntry = z.infer<typeof recoveryEntrySchema>;
+
 // ---------- Settings ----------
 
 export const settingsSchema = z.object({
@@ -293,6 +307,18 @@ export async function pickRepo(): Promise<RepoInfo | null> {
 export async function validateRepo(path: string): Promise<RepoValidation> {
   const raw = await invoke<unknown>('validate_repo', { path });
   return repoValidationSchema.parse(raw);
+}
+
+/**
+ * Drain the boot-time recovery report. Called once from App.tsx's
+ * init effect; the backend has already marked any active-at-crash
+ * runs as `Failed` and swept their worktrees, this just surfaces
+ * the fact so the user knows a cleanup happened. Read-once: a
+ * second call returns `[]`.
+ */
+export async function consumeRecoveryReport(): Promise<RecoveryEntry[]> {
+  const raw = await invoke<unknown>('consume_recovery_report');
+  return z.array(recoveryEntrySchema).parse(raw);
 }
 
 // Event subscription lives in `runSubscription.ts` — this file exports

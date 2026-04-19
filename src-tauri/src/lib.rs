@@ -84,6 +84,7 @@ pub fn run() {
             commands::set_master_agent,
             commands::get_settings,
             commands::set_settings,
+            commands::consume_recovery_report,
             repo::pick_repo,
             repo::validate_repo,
         ])

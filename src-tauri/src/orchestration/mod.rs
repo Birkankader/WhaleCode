@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tokio::sync::{oneshot, Mutex, RwLock};
 
-use crate::ipc::{AgentKind, RunId, RunStatus, SubtaskId};
+use crate::ipc::{AgentKind, RecoveryEntry, RunId, RunStatus, SubtaskId};
 use crate::settings::SettingsStore;
 use crate::storage::models::NewRun;
 use crate::storage::Storage;
@@ -115,6 +115,13 @@ pub struct Orchestrator {
     /// before auto-discarding. Defaults to [`APPLY_TIMEOUT`]; tests
     /// override this so the timeout path is observable in seconds.
     pub(crate) apply_timeout: std::time::Duration,
+    /// Runs that were non-terminal when the app last exited.
+    /// Populated by [`recover_active_runs`] at boot, consumed once
+    /// by the frontend via the `consume_recovery_report` IPC so a
+    /// heads-up banner can acknowledge the sweep. Drained on read
+    /// (read-once semantics) — a second boot without new recovery
+    /// work returns an empty Vec.
+    pub(crate) recovery_report: Arc<Mutex<Vec<RecoveryEntry>>>,
 }
 
 impl Orchestrator {
@@ -134,6 +141,7 @@ impl Orchestrator {
             apply_senders: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_workers: MAX_CONCURRENT_WORKERS,
             apply_timeout: APPLY_TIMEOUT,
+            recovery_report: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -164,6 +172,7 @@ impl Orchestrator {
             }
         };
         let count = active.len();
+        let mut entries: Vec<RecoveryEntry> = Vec::with_capacity(count);
         for run in active {
             let now = chrono::Utc::now();
             let err_msg = "App restarted while run was active";
@@ -202,8 +211,25 @@ impl Orchestrator {
                     run.repo_path
                 );
             }
+            entries.push(RecoveryEntry {
+                task: run.task,
+                repo_path: run.repo_path,
+            });
         }
+        // Stash for the frontend's boot-time banner. If the frontend
+        // never asks (e.g. headless test), the entries sit harmlessly
+        // until the process exits.
+        *self.recovery_report.lock().await = entries;
         count
+    }
+
+    /// Drain the boot-time recovery report. Read-once: the second
+    /// call returns an empty Vec. Wired to the `consume_recovery_report`
+    /// IPC command so the frontend can render a heads-up banner
+    /// exactly once per app launch.
+    pub async fn consume_recovery_report(&self) -> Vec<RecoveryEntry> {
+        let mut guard = self.recovery_report.lock().await;
+        std::mem::take(&mut *guard)
     }
 
     // -- Read APIs -------------------------------------------------------
@@ -609,5 +635,34 @@ mod init_tests {
         }
         // Cleanup ran (idempotent across repeated calls for the same repo).
         assert!(!repo_path.join(".whalecode-worktrees").exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_report_is_populated_and_drained_once() {
+        // Frontend UX hook: on boot we want to tell the user their
+        // previous run was interrupted. This test pins the contract
+        // `consume_recovery_report` drains the stash so a subsequent
+        // call (or second listener) won't re-show the banner.
+        let (orch, storage, _repo, repo_path) = make_with_repo().await;
+        let repo_str = repo_path.to_string_lossy().to_string();
+        seed_active_run(&storage, "01CRASHED", &repo_str, RunStatus::Running).await;
+        // Task field we seeded above is "seeded"; assert against it.
+
+        assert!(
+            orch.consume_recovery_report().await.is_empty(),
+            "report is empty before recovery runs"
+        );
+
+        let recovered = orch.recover_active_runs().await;
+        assert_eq!(recovered, 1);
+
+        let report = orch.consume_recovery_report().await;
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].task, "seeded");
+        assert_eq!(report[0].repo_path, repo_str);
+
+        // Read-once: a second consume must return empty.
+        let again = orch.consume_recovery_report().await;
+        assert!(again.is_empty(), "second consume drains to empty");
     }
 }
