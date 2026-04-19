@@ -402,6 +402,56 @@ describe('graphStore — apply / conflict / completed', () => {
     expect(state().status).toBe('applied');
   });
 
+  it('submitTask after a completed/applied run resets stale state and starts fresh', async () => {
+    // Regression: after Apply succeeds, `handleCompleted` sets status to
+    // `applied` and detaches the subscription, but leaves `runId`
+    // populated. App.tsx routes back to EmptyState, the user types a new
+    // task and hits Enter — without this fix the submitTask guard threw
+    // "A run is already active" and EmptyState silently swallowed the
+    // error, so the UI looked frozen. Step 11 of Phase 2 verification
+    // (submit another task → reach final → click Discard) was unreachable.
+    await state().submitTask('x');
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+    });
+    emit(EVENT_COMPLETED, {
+      runId: BACKEND_RUN_ID,
+      summary: {
+        runId: BACKEND_RUN_ID,
+        subtaskCount: 1,
+        filesChanged: 1,
+        durationSecs: 2,
+        commitsCreated: 1,
+      },
+    });
+    expect(state().status).toBe('applied');
+
+    await state().submitTask('next task');
+
+    const s = state();
+    expect(s.taskInput).toBe('next task');
+    expect(s.runId).toBe(BACKEND_RUN_ID);
+    expect(s.status).toBe('planning');
+    expect(s.activeSubscription).not.toBeNull();
+    expect(snap(MASTER_ID)?.value).toBe('thinking');
+  });
+
+  it('submitTask after a failed run resets stale state and starts fresh', async () => {
+    // Same rationale as the applied-run case: failed is also terminal
+    // and must unblock the next submit from EmptyState.
+    await state().submitTask('x');
+    emit(EVENT_FAILED, {
+      runId: BACKEND_RUN_ID,
+      error: 'master crashed',
+    });
+    expect(state().status).toBe('failed');
+
+    await state().submitTask('next task');
+    expect(state().status).toBe('planning');
+    expect(state().taskInput).toBe('next task');
+  });
+
   it('BaseBranchDirty surfaces via currentError without touching finalNode', async () => {
     // Regression for the step-11 failure mode: pre-flight refuses the
     // merge because the user's base branch has tracked WIP. Unlike a

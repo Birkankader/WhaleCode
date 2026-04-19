@@ -499,10 +499,24 @@ export const useGraphStore = create<GraphState>((set, get) => {
     },
 
     async submitTask(input, masterAgent) {
-      if (get().runId !== null) {
-        throw new Error(
-          'A run is already active. Reset or discard the current run before submitting again.',
-        );
+      // `handleCompleted` / `handleFailed` mark the run terminal but
+      // leave `runId` populated (the final graph is still on-screen
+      // until the user acts). Once App.tsx routes back to EmptyState
+      // (on `applied` / `rejected` / `failed`) the user can legally
+      // submit a new task — clean up the stale run first. Only refuse
+      // when there's genuinely a live run in flight.
+      const { runId: priorRunId, status: priorStatus } = get();
+      if (priorRunId !== null) {
+        const priorIsTerminal =
+          priorStatus === 'applied' ||
+          priorStatus === 'rejected' ||
+          priorStatus === 'failed';
+        if (!priorIsTerminal) {
+          throw new Error(
+            'A run is already active. Reset or discard the current run before submitting again.',
+          );
+        }
+        get().reset();
       }
 
       const repoPath = useRepoStore.getState().currentRepo?.path;
