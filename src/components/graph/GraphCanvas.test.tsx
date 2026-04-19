@@ -60,4 +60,14 @@ describe('GraphCanvas — pointer-events unblock', () => {
     const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
     expect(typeof props.onNodeClick).toBe('function');
   });
+
+  // Step 2 inline-edit guard: RF's default `deleteKeyCode="Backspace"` would
+  // let Backspace inside an input fall through to a graph-level delete if
+  // `elementsSelectable` ever flipped back on. Setting it to null removes
+  // that footgun permanently.
+  it('disables RF deleteKeyCode so Backspace/Delete inside inputs can never delete graph elements', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(props.deleteKeyCode).toBeNull();
+  });
 });

@@ -143,3 +143,25 @@ body {
     opacity: 0;
   }
 }
+
+/* Validation shake — 4 oscillations at ±3px over 300ms per design-system.md.
+   Triggered when a save attempt fails validation (empty title, etc.) so the
+   error is felt, not just read. */
+@keyframes inline-edit-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  12.5% {
+    transform: translateX(-3px);
+  }
+  37.5% {
+    transform: translateX(3px);
+  }
+  62.5% {
+    transform: translateX(-3px);
+  }
+  87.5% {
+    transform: translateX(3px);
+  }
+}

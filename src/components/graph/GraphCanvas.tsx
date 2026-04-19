@@ -192,6 +192,12 @@ function GraphCanvasInner() {
         // node) never fire. Passing a noop `onNodeClick` flips the wrapper
         // back to pointer-events:all without enabling RF's own selection UI.
         onNodeClick={noopNodeClick}
+        // Step 2: inline edit UI lives inside proposed nodes. Belt-and-
+        // suspenders with `elementsSelectable={false}` — nothing is selectable
+        // so RF's delete path is already dead, but an explicit null guarantees
+        // Backspace/Delete inside an input never triggers a graph-level side
+        // effect no matter what future config changes we make.
+        deleteKeyCode={null}
         proOptions={{ hideAttribution: true }}
       />
     </div>
