@@ -477,6 +477,29 @@ async fn apply_step(
                 .await;
             MergeStepOutcome::Retry
         }
+        Err(WorktreeError::BaseBranchDirty { files }) => {
+            // User's base branch has tracked WIP; `git merge` would
+            // refuse to overwrite it. Symmetric with `MergeConflict`:
+            // leave worktrees + branches intact, stash the error on
+            // the run, emit a dedicated event the UI can turn into a
+            // clean "commit or stash" prompt, and retry after the
+            // next click.
+            let summary = dirty_base_summary(&files);
+            if let Err(e) = deps
+                .storage
+                .update_run_error(run_id, Some(&summary))
+                .await
+            {
+                eprintln!("[orchestrator] update_run_error(dirty_base) failed: {e}");
+            }
+            deps.event_sink
+                .emit(RunEvent::BaseBranchDirty {
+                    run_id: run_id.clone(),
+                    files,
+                })
+                .await;
+            MergeStepOutcome::Retry
+        }
         Err(e) => MergeStepOutcome::Failed(format!("merge_all: {e}")),
     }
 }
@@ -630,6 +653,18 @@ fn conflict_summary(files: &[PathBuf]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("merge conflict in {} file(s): {joined}", files.len())
+}
+
+fn dirty_base_summary(files: &[PathBuf]) -> String {
+    let joined = files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "base branch has {} uncommitted file(s): {joined}. Commit or stash, then retry.",
+        files.len()
+    )
 }
 
 /// Store a fresh apply-decision sender so the next `apply_run` /

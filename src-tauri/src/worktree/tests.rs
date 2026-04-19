@@ -293,6 +293,74 @@ async fn merge_all_cycle_rejected() {
 }
 
 #[tokio::test]
+async fn merge_all_refuses_when_base_branch_has_tracked_wip() {
+    // Step 6 lets workers spin up on a dirty repo — that's safe because
+    // they live in isolated worktrees. Merging back hits the base
+    // working tree, and `git merge` bails on dirty tracked files. The
+    // manager has to detect this *before* touching the merge so the
+    // user can cleanly commit/stash and retry without ending up in a
+    // half-merged state.
+    let (_td, repo) = init_repo().await;
+    let mgr = WorktreeManager::new(repo.clone()).await.unwrap();
+
+    // A normal worker worktree with a completed commit.
+    let wt = mgr.create("r", "s1").await.unwrap();
+    commit_in(&wt, &[("feature.txt", "hello\n")], "s1 work").await;
+
+    // Dirty the base working tree on a tracked file. Untracked files
+    // alone don't trigger the pre-flight (they don't block merges in
+    // the common case), so we modify README.md which init_repo
+    // committed above.
+    write(&repo.join("README.md"), "# test repo\n\nWIP\n").await;
+
+    let err = mgr
+        .merge_all(&vec!["s1".into()], &DependencyGraph::default())
+        .await
+        .unwrap_err();
+
+    match err {
+        WorktreeError::BaseBranchDirty { files } => {
+            assert!(
+                files.iter().any(|p| p == &PathBuf::from("README.md")),
+                "expected README.md in dirty list, got {files:?}",
+            );
+        }
+        other => panic!("expected BaseBranchDirty, got {other:?}"),
+    }
+
+    // Worktrees and the worker branch must still be intact so a retry
+    // (after the user stashes/commits) picks up where we left off.
+    let worktrees = mgr.list().await.unwrap();
+    assert!(
+        worktrees.iter().any(|w| w.subtask_id == "s1"),
+        "worker worktree was cleaned up prematurely: {worktrees:?}",
+    );
+    // README still has the user's WIP — we refused before overwriting.
+    let readme = tokio::fs::read_to_string(repo.join("README.md")).await.unwrap();
+    assert!(readme.contains("WIP"), "user WIP was clobbered: {readme:?}");
+}
+
+#[tokio::test]
+async fn merge_all_allows_base_branch_with_only_untracked_files() {
+    // Untracked files don't block `git merge` in the usual case (they
+    // only collide when the incoming merge creates a file with the
+    // same name, which is rare). Don't false-positive on benign WIP
+    // like editor backup files or newly scaffolded scripts.
+    let (_td, repo) = init_repo().await;
+    let mgr = WorktreeManager::new(repo.clone()).await.unwrap();
+    let wt = mgr.create("r", "s1").await.unwrap();
+    commit_in(&wt, &[("feature.txt", "hello\n")], "s1 work").await;
+
+    // Untracked file on base; should NOT trigger the pre-flight.
+    write(&repo.join("scratch.txt"), "untracked\n").await;
+
+    let res = mgr
+        .merge_all(&vec!["s1".into()], &DependencyGraph::default())
+        .await;
+    assert!(res.is_ok(), "untracked-only base tripped pre-flight: {res:?}");
+}
+
+#[tokio::test]
 async fn merge_all_conflict_returns_files_and_aborts_merge() {
     let (_td, repo) = init_repo().await;
     let mgr = WorktreeManager::new(repo.clone()).await.unwrap();

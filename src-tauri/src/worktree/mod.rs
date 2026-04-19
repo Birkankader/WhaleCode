@@ -51,8 +51,8 @@ use tokio::sync::mpsc;
 pub mod git;
 
 use git::{
-    branch_exists, current_branch, detect_git_version, is_dirty, parse_conflicted_files, run_git,
-    try_run_git, MIN_GIT_VERSION,
+    branch_exists, current_branch, detect_git_version, is_dirty, parse_conflicted_files,
+    parse_dirty_files, run_git, try_run_git, MIN_GIT_VERSION,
 };
 
 #[cfg(test)]
@@ -165,6 +165,17 @@ pub enum WorktreeError {
 
     #[error("merge conflict in {} files", files.len())]
     MergeConflict { files: Vec<PathBuf> },
+
+    /// Base branch working tree has uncommitted changes at merge time.
+    ///
+    /// Step 6 deliberately allows a dirty repo at worker-creation time:
+    /// workers live in isolated worktrees and don't touch the user's WIP
+    /// there. Merging back, however, targets the base branch's working
+    /// tree — `git merge` hard-refuses to overwrite dirty files, so we
+    /// have to surface this before we even attempt the merge and let
+    /// the user commit / stash before retrying.
+    #[error("base branch has uncommitted changes in {} files", files.len())]
+    BaseBranchDirty { files: Vec<PathBuf> },
 
     #[error("dependency graph contains a cycle")]
     DependencyCycle,
@@ -460,6 +471,21 @@ impl WorktreeManager {
         // run this brings us back; the checkout can't conflict with
         // our worktrees because their branches have distinct names.
         run_git(&self.repo_root, &["checkout", &self.base_branch]).await?;
+
+        // Pre-flight: refuse to merge into a dirty working tree. Step 6
+        // allowed a dirty repo at worker-creation time because workers
+        // don't conflict with WIP at that point — they produce commits
+        // in isolated worktrees. Merging back touches the base working
+        // tree directly, which is hostile to WIP: `git merge` bails with
+        // "would be overwritten by merge" and leaves the user in a
+        // half-checked-out state. Detect this up front, emit a clear
+        // error with the dirty file list, and let the user commit /
+        // stash their WIP before retrying Apply.
+        let dirty_status = run_git(&self.repo_root, &["status", "--porcelain"]).await?;
+        let dirty_files = parse_dirty_files(&dirty_status);
+        if !dirty_files.is_empty() {
+            return Err(WorktreeError::BaseBranchDirty { files: dirty_files });
+        }
 
         let head_before = head_sha(&self.repo_root).await?;
         let mut merged_branches = Vec::with_capacity(order.len());

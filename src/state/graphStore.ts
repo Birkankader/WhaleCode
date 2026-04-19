@@ -39,6 +39,7 @@ import {
   rejectRun as rejectRunIpc,
   submitTask as submitTaskIpc,
   type AgentKind as BackendAgentKind,
+  type BaseBranchDirty,
   type Completed,
   type DiffReady,
   type Failed,
@@ -423,6 +424,23 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleBaseBranchDirty(e: BaseBranchDirty) {
+    if (e.runId !== get().runId) return;
+    // Distinct from MergeConflict: the user's base-branch WIP blocked
+    // the merge before it started. Worker branches are clean, so we
+    // don't want to paint the FinalNode as conflicting — it's still a
+    // clean apply once the user tidies their own tree. Surface the
+    // failure through `currentError` (ErrorBanner picks it up) with a
+    // clear instruction and the offending file list so they know
+    // exactly what to commit or stash.
+    const list = e.files.join(', ');
+    const msg =
+      e.files.length === 1
+        ? `You have uncommitted changes in ${list}. Commit or stash it, then click Apply again.`
+        : `You have uncommitted changes in ${e.files.length} files (${list}). Commit or stash them, then click Apply again.`;
+    set({ currentError: msg });
+  }
+
   function handleCompleted(e: Completed) {
     if (e.runId !== get().runId) return;
     // `Completed` fires after a successful apply. Clear any stale conflict
@@ -457,6 +475,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskLog: handleSubtaskLog,
       onDiffReady: handleDiffReady,
       onMergeConflict: handleMergeConflict,
+      onBaseBranchDirty: handleBaseBranchDirty,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onParseError: defaultOnParseError,
@@ -568,6 +587,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
     async applyRun() {
       const runId = get().runId;
       if (!runId) return;
+      // Clear any stale "base branch dirty" / "apply failed" error from a
+      // prior attempt. If the new attempt fails the same way, the
+      // event handler will repopulate with the fresh file list.
+      set({ currentError: null });
       try {
         await applyRunIpc(runId);
       } catch (err) {

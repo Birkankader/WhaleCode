@@ -141,6 +141,37 @@ pub async fn is_dirty(repo_root: &Path) -> Result<bool, WorktreeError> {
     Ok(!out.trim().is_empty())
 }
 
+/// Parse tracked-change entries from `git status --porcelain`. These
+/// are the paths that would cause `git merge` to refuse with "would be
+/// overwritten by merge". Untracked (`??`) entries are skipped because
+/// they rarely block a merge in practice and we don't want the pre-
+/// flight error to include WIP the user doesn't care about.
+pub fn parse_dirty_files(porcelain: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for line in porcelain.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let (status, rest) = line.split_at(2);
+        // Skip untracked (`??`) and ignored (`!!`). Everything else
+        // indicates a staged/unstaged modification, addition, deletion,
+        // rename, copy, or unmerged state — all of which either do
+        // block merge or should make the user pause.
+        if status == "??" || status == "!!" {
+            continue;
+        }
+        let path = rest.trim();
+        if path.is_empty() {
+            continue;
+        }
+        // Rename entries look like `R  old -> new`; keep only the
+        // destination so the error list makes sense to the user.
+        let path = path.rsplit(" -> ").next().unwrap_or(path);
+        out.push(std::path::PathBuf::from(path));
+    }
+    out
+}
+
 /// Parse the `UU`, `AA`, `DD` entries from `git status --porcelain`
 /// inside a merge-conflict state. These are the paths the user has to
 /// resolve. Non-conflict entries are ignored.
@@ -200,5 +231,45 @@ mod tests {
     fn conflicted_files_ignores_non_conflict() {
         let porcelain = " M clean.rs\n?? untracked.txt\n";
         assert!(parse_conflicted_files(porcelain).is_empty());
+    }
+
+    #[test]
+    fn dirty_files_reports_tracked_changes() {
+        let porcelain = " M src/lib.rs\nM  staged.rs\nMM both.rs\nA  new.rs\n D deleted.rs\n";
+        let files = parse_dirty_files(porcelain);
+        assert_eq!(
+            files,
+            vec![
+                std::path::PathBuf::from("src/lib.rs"),
+                std::path::PathBuf::from("staged.rs"),
+                std::path::PathBuf::from("both.rs"),
+                std::path::PathBuf::from("new.rs"),
+                std::path::PathBuf::from("deleted.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn dirty_files_skips_untracked_and_ignored() {
+        let porcelain = " M tracked.rs\n?? untracked.txt\n!! ignored.log\n";
+        assert_eq!(
+            parse_dirty_files(porcelain),
+            vec![std::path::PathBuf::from("tracked.rs")]
+        );
+    }
+
+    #[test]
+    fn dirty_files_keeps_rename_destination() {
+        let porcelain = "R  old/path.rs -> new/path.rs\n";
+        assert_eq!(
+            parse_dirty_files(porcelain),
+            vec![std::path::PathBuf::from("new/path.rs")]
+        );
+    }
+
+    #[test]
+    fn dirty_files_empty_on_clean_repo() {
+        assert!(parse_dirty_files("").is_empty());
+        assert!(parse_dirty_files("?? only-untracked\n").is_empty());
     }
 }

@@ -42,6 +42,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 import {
+  EVENT_BASE_BRANCH_DIRTY,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -399,6 +400,51 @@ describe('graphStore — apply / conflict / completed', () => {
     });
     expect(snap(FINAL_ID)?.value).toBe('done');
     expect(state().status).toBe('applied');
+  });
+
+  it('BaseBranchDirty surfaces via currentError without touching finalNode', async () => {
+    // Regression for the step-11 failure mode: pre-flight refuses the
+    // merge because the user's base branch has tracked WIP. Unlike a
+    // three-way MergeConflict, no worker branch is actually in
+    // conflict — the FinalNode should stay clean-apply-able and the
+    // error should prompt the user to commit/stash, not re-render as
+    // "conflict".
+    await state().submitTask('x');
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [{ path: 'src/foo.ts', additions: 3, deletions: 0 }],
+    });
+    emit(EVENT_BASE_BRANCH_DIRTY, {
+      runId: BACKEND_RUN_ID,
+      files: ['mobile/services/api.ts', 'README.md'],
+    });
+    const s = state();
+    expect(s.currentError).not.toBeNull();
+    expect(s.currentError).toContain('mobile/services/api.ts');
+    expect(s.currentError).toContain('README.md');
+    // FinalNode stays in its happy-path shape: files populated, no
+    // conflict metadata — so Apply stays clickable for the retry.
+    expect(s.finalNode?.files).toEqual(['src/foo.ts']);
+    expect(s.finalNode?.conflictFiles).toBeNull();
+    expect(snap(FINAL_ID)?.value).toBe('running');
+  });
+
+  it('applyRun clears a stale BaseBranchDirty currentError on retry', async () => {
+    await state().submitTask('x');
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+    });
+    emit(EVENT_BASE_BRANCH_DIRTY, {
+      runId: BACKEND_RUN_ID,
+      files: ['README.md'],
+    });
+    expect(state().currentError).toContain('README.md');
+
+    // Stub apply_run invoke so applyRun resolves.
+    invokeHandlers.set('apply_run', async () => undefined);
+    await state().applyRun();
+    expect(state().currentError).toBeNull();
   });
 });
 

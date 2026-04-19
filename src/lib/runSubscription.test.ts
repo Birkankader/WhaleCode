@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import {
+  EVENT_BASE_BRANCH_DIRTY,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -46,6 +47,7 @@ const ALL_EVENTS = [
   EVENT_COMPLETED,
   EVENT_FAILED,
   EVENT_MERGE_CONFLICT,
+  EVENT_BASE_BRANCH_DIRTY,
 ];
 
 function emit(event: string, payload: unknown) {
@@ -168,6 +170,7 @@ describe('RunSubscription payload routing', () => {
       onCompleted: vi.fn(),
       onFailed: vi.fn(),
       onMergeConflict: vi.fn(),
+      onBaseBranchDirty: vi.fn(),
     };
     const sub = new RunSubscription('r1', handlers);
     await sub.attach();
@@ -193,6 +196,7 @@ describe('RunSubscription payload routing', () => {
     });
     emit(EVENT_FAILED, { runId: 'r1', error: 'boom' });
     emit(EVENT_MERGE_CONFLICT, { runId: 'r1', files: ['a.ts'] });
+    emit(EVENT_BASE_BRANCH_DIRTY, { runId: 'r1', files: ['b.ts'] });
 
     expect(handlers.onMasterLog).toHaveBeenCalledTimes(1);
     expect(handlers.onSubtasksProposed).toHaveBeenCalledTimes(1);
@@ -202,6 +206,10 @@ describe('RunSubscription payload routing', () => {
     expect(handlers.onCompleted).toHaveBeenCalledTimes(1);
     expect(handlers.onFailed).toHaveBeenCalledTimes(1);
     expect(handlers.onMergeConflict).toHaveBeenCalledTimes(1);
+    expect(handlers.onBaseBranchDirty).toHaveBeenCalledWith({
+      runId: 'r1',
+      files: ['b.ts'],
+    });
     // Omitted: status_changed handler was wired but not emitted here.
     expect(handlers.onStatusChanged).not.toHaveBeenCalled();
   });

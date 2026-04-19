@@ -26,6 +26,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { z } from 'zod';
 
 import {
+  EVENT_BASE_BRANCH_DIRTY,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -35,6 +36,7 @@ import {
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
   EVENT_SUBTASKS_PROPOSED,
+  baseBranchDirtySchema,
   completedSchema,
   diffReadySchema,
   failedSchema,
@@ -44,6 +46,7 @@ import {
   subtaskLogSchema,
   subtaskStateChangedSchema,
   subtasksProposedSchema,
+  type BaseBranchDirty,
   type Completed,
   type DiffReady,
   type Failed,
@@ -66,6 +69,7 @@ export type RunEventHandlers = {
   onCompleted?: (event: Completed) => void;
   onFailed?: (event: Failed) => void;
   onMergeConflict?: (event: MergeConflict) => void;
+  onBaseBranchDirty?: (event: BaseBranchDirty) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -184,6 +188,11 @@ export class RunSubscription {
         event: EVENT_MERGE_CONFLICT,
         schema: mergeConflictSchema,
         handler: this.handlers.onMergeConflict as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_BASE_BRANCH_DIRTY,
+        schema: baseBranchDirtySchema,
+        handler: this.handlers.onBaseBranchDirty as ((e: unknown) => void) | undefined,
       },
     ];
   }

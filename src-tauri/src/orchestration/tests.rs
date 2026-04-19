@@ -1080,6 +1080,90 @@ async fn apply_conflict_keeps_run_in_merging_and_emits_merge_conflict() {
 }
 
 #[tokio::test]
+async fn apply_with_dirty_base_branch_keeps_run_in_merging_and_emits_event() {
+    // Regression for the step-11 failure: a single subtask writes a
+    // legitimate commit, but the *user's* base-branch working tree has
+    // uncommitted changes on a tracked file. `git merge` would refuse
+    // with "would be overwritten". The run must stay in Merging, emit
+    // `BaseBranchDirty`, preserve worktrees, and be ready to retry.
+    let agent = agent_writing(&[("t0", vec![("feature.txt", "new content\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    // Dirty a tracked file on the base branch BEFORE apply. The
+    // harness seeds `seed.txt` at init (see Harness::new above); we
+    // write over it so `git status --porcelain` reports ` M seed.txt`.
+    tokio::fs::write(h.repo_path.join("seed.txt"), "dirty wip\n")
+        .await
+        .unwrap();
+
+    let run_id = h
+        .orch
+        .submit_task("dirty base".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+
+    // BaseBranchDirty fires with the expected file.
+    let files = expect_event(&h, &run_id, |e| match e {
+        RunEvent::BaseBranchDirty { files, .. } => Some(files.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        files.iter().any(|p| p.to_string_lossy() == "seed.txt"),
+        "expected seed.txt in dirty list, got {files:?}",
+    );
+
+    // Run stays Merging; worktrees intact so retry can succeed.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(h.orch.get_run(&run_id).await.is_some(), "run should still be active");
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Merging);
+    assert!(
+        stored
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("seed.txt"),
+        "error column should carry dirty-base summary, got {:?}",
+        stored.error,
+    );
+    let wt_dir = h.repo_path.join(".whalecode-worktrees");
+    assert!(wt_dir.exists(), "worktrees should stay when base is dirty");
+
+    // User "stashes" by committing their WIP, then retries. Apply
+    // should now succeed and land the worker branch on base.
+    TokioCommand::new("git")
+        .args(["add", "seed.txt"])
+        .current_dir(&h.repo_path)
+        .output()
+        .await
+        .unwrap();
+    TokioCommand::new("git")
+        .args(["commit", "-q", "-m", "user wip"])
+        .current_dir(&h.repo_path)
+        .output()
+        .await
+        .unwrap();
+    h.orch.apply_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // The worker's file landed on main.
+    assert_eq!(
+        tokio::fs::read_to_string(h.repo_path.join("feature.txt"))
+            .await
+            .unwrap(),
+        "new content\n",
+    );
+}
+
+#[tokio::test]
 async fn discard_after_conflict_reaches_rejected_and_cleans_up() {
     let agent = agent_writing(&[
         ("t0", vec![("shared.txt", "a\n")]),

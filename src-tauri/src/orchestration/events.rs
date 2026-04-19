@@ -69,6 +69,16 @@ pub enum RunEvent {
         run_id: RunId,
         files: Vec<PathBuf>,
     },
+    /// Base-branch working tree has tracked modifications at Apply
+    /// time. Distinct from `MergeConflict` (which is a three-way-merge
+    /// failure from worker branches colliding with each other): this
+    /// fires *before* any merge is attempted, because `git merge`
+    /// would refuse to overwrite user WIP. The run stays in
+    /// `Merging`; the user commits or stashes and retries Apply.
+    BaseBranchDirty {
+        run_id: RunId,
+        files: Vec<PathBuf>,
+    },
 }
 
 impl RunEvent {
@@ -85,7 +95,8 @@ impl RunEvent {
             | RunEvent::DiffReady { run_id, .. }
             | RunEvent::Completed { run_id, .. }
             | RunEvent::Failed { run_id, .. }
-            | RunEvent::MergeConflict { run_id, .. } => run_id,
+            | RunEvent::MergeConflict { run_id, .. }
+            | RunEvent::BaseBranchDirty { run_id, .. } => run_id,
         }
     }
 }
@@ -164,6 +175,9 @@ impl EventSink for TauriEventSink {
             }
             RunEvent::MergeConflict { run_id, files } => {
                 wire::emit_merge_conflict(&self.app, &wire::MergeConflict { run_id, files })
+            }
+            RunEvent::BaseBranchDirty { run_id, files } => {
+                wire::emit_base_branch_dirty(&self.app, &wire::BaseBranchDirty { run_id, files })
             }
         };
         if let Err(e) = result {

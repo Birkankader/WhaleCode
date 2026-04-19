@@ -106,6 +106,7 @@ export const EVENT_DIFF_READY = 'run:diff_ready' as const;
 export const EVENT_COMPLETED = 'run:completed' as const;
 export const EVENT_FAILED = 'run:failed' as const;
 export const EVENT_MERGE_CONFLICT = 'run:merge_conflict' as const;
+export const EVENT_BASE_BRANCH_DIRTY = 'run:base_branch_dirty' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -169,6 +170,18 @@ export const mergeConflictSchema = z.object({
   files: z.array(z.string()),
 });
 export type MergeConflict = z.infer<typeof mergeConflictSchema>;
+
+/**
+ * Emitted when `apply_run` bailed before merging because the user's
+ * base-branch working tree has tracked uncommitted changes — `git
+ * merge` would refuse to overwrite them. Run stays in `Merging`, the
+ * user commits or stashes, then clicks Apply again.
+ */
+export const baseBranchDirtySchema = z.object({
+  runId: runIdSchema,
+  files: z.array(z.string()),
+});
+export type BaseBranchDirty = z.infer<typeof baseBranchDirtySchema>;
 
 // ---------- Settings ----------
 

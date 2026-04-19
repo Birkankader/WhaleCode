@@ -27,6 +27,7 @@ pub const EVENT_DIFF_READY: &str = "run:diff_ready";
 pub const EVENT_COMPLETED: &str = "run:completed";
 pub const EVENT_FAILED: &str = "run:failed";
 pub const EVENT_MERGE_CONFLICT: &str = "run:merge_conflict";
+pub const EVENT_BASE_BRANCH_DIRTY: &str = "run:base_branch_dirty";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +97,17 @@ pub struct MergeConflict {
     pub files: Vec<PathBuf>,
 }
 
+/// Apply attempted but the user's base-branch working tree has tracked
+/// uncommitted changes — `git merge` would refuse to overwrite them, so
+/// we bail *before* the merge. The run stays in `Merging`, worktrees
+/// and branches are intact, and the user can commit / stash then retry.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaseBranchDirty {
+    pub run_id: RunId,
+    pub files: Vec<PathBuf>,
+}
+
 pub fn emit_status_changed(app: &AppHandle, payload: &StatusChanged) -> tauri::Result<()> {
     app.emit(EVENT_STATUS_CHANGED, payload)
 }
@@ -133,6 +145,13 @@ pub fn emit_failed(app: &AppHandle, payload: &Failed) -> tauri::Result<()> {
 
 pub fn emit_merge_conflict(app: &AppHandle, payload: &MergeConflict) -> tauri::Result<()> {
     app.emit(EVENT_MERGE_CONFLICT, payload)
+}
+
+pub fn emit_base_branch_dirty(
+    app: &AppHandle,
+    payload: &BaseBranchDirty,
+) -> tauri::Result<()> {
+    app.emit(EVENT_BASE_BRANCH_DIRTY, payload)
 }
 
 #[cfg(test)]
