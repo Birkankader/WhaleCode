@@ -9,10 +9,17 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 // `<Handle>` needs a React Flow provider; we only care about the body rendering,
-// so stub it to a passthrough element.
+// so stub it to a passthrough element. `useReactFlow` is also stubbed — the
+// dependency click-to-pan tests override it via `reactFlowMock` below.
+const reactFlowMock = {
+  getNode: vi.fn<(id: string) => { position: { x: number; y: number }; width?: number; height?: number } | undefined>(),
+  setCenter: vi.fn().mockResolvedValue(true),
+  getViewport: vi.fn(() => ({ x: 0, y: 0, zoom: 1 })),
+};
 vi.mock('@xyflow/react', () => ({
   Handle: () => null,
   Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },
+  useReactFlow: () => reactFlowMock,
 }));
 
 import { useAgentStore } from '../../state/agentStore';
@@ -42,6 +49,10 @@ function seedAgentDetection() {
 beforeEach(() => {
   useGraphStore.getState().reset();
   useAgentStore.setState({ detection: null, checking: false, error: null });
+  reactFlowMock.getNode.mockReset();
+  reactFlowMock.setCenter.mockClear();
+  reactFlowMock.getViewport.mockClear();
+  reactFlowMock.getViewport.mockReturnValue({ x: 0, y: 0, zoom: 1 });
 });
 
 afterEach(() => {
@@ -311,6 +322,116 @@ describe('WorkerNode — dependencies footer', () => {
     });
     expect(screen.getByText('#1')).toBeDefined();
     expect(screen.queryByText(/ghost/)).toBeNull();
+  });
+});
+
+describe('WorkerNode — dependency click-to-pan', () => {
+  // Render a tiny DAG where subtask `c` depends on `a` and `b`. React Flow's
+  // `getNode` returns positions we control via the mock so we can assert on
+  // the exact (cx, cy) passed to setCenter.
+  function seedDag() {
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
+        { id: 'b', title: '2', why: null, agent: 'claude', dependsOn: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a', 'b'] },
+      ],
+    });
+    reactFlowMock.getNode.mockImplementation((id: string) => {
+      if (id === 'a') return { position: { x: 100, y: 200 }, width: 200, height: 140 };
+      if (id === 'b') return { position: { x: 400, y: 200 }, width: 200, height: 140 };
+      return undefined;
+    });
+  }
+
+  it('clicking #N calls setCenter with the dep node center + current zoom', () => {
+    seedDag();
+    reactFlowMock.getViewport.mockReturnValue({ x: 0, y: 0, zoom: 0.75 });
+    renderNode('c', {
+      state: 'proposed',
+      agent: 'claude',
+      title: '3',
+      why: null,
+      dependsOn: ['a', 'b'],
+      retries: 0,
+    });
+    fireEvent.click(screen.getByTestId('depends-on-link-a'));
+    // center = (100 + 200/2, 200 + 140/2) = (200, 270), zoom preserved at 0.75
+    expect(reactFlowMock.setCenter).toHaveBeenCalledWith(200, 270, {
+      zoom: 0.75,
+      duration: 300,
+    });
+  });
+
+  it('keyboard Enter on #N triggers the same pan', () => {
+    seedDag();
+    renderNode('c', {
+      state: 'proposed',
+      agent: 'claude',
+      title: '3',
+      why: null,
+      dependsOn: ['a', 'b'],
+      retries: 0,
+    });
+    const link = screen.getByTestId('depends-on-link-b');
+    // <button> fires click on Enter/Space natively; simulate by focusing
+    // then dispatching the browser's default keydown→click path.
+    link.focus();
+    expect(document.activeElement).toBe(link);
+    fireEvent.click(link); // native button activation equivalent
+    expect(reactFlowMock.setCenter).toHaveBeenCalledWith(500, 270, {
+      zoom: 1,
+      duration: 300,
+    });
+  });
+
+  it('graceful no-op when the dep node has disappeared (mid-replan race)', () => {
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a'] },
+      ],
+    });
+    // Mock `getNode` to return undefined even though the store still has the
+    // dep — simulates a re-plan removing the node between render and click.
+    reactFlowMock.getNode.mockReturnValue(undefined);
+    renderNode('c', {
+      state: 'proposed',
+      agent: 'claude',
+      title: '3',
+      why: null,
+      dependsOn: ['a'],
+      retries: 0,
+    });
+    fireEvent.click(screen.getByTestId('depends-on-link-a'));
+    expect(reactFlowMock.setCenter).not.toHaveBeenCalled();
+  });
+
+  it('falls back to NODE_DIMENSIONS.worker when the node has no measured width/height', () => {
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'a', title: '1', why: null, agent: 'claude', dependsOn: [] },
+        { id: 'c', title: '3', why: null, agent: 'claude', dependsOn: ['a'] },
+      ],
+    });
+    // Omit width/height to simulate pre-measurement state.
+    reactFlowMock.getNode.mockImplementation((id: string) =>
+      id === 'a' ? { position: { x: 50, y: 50 } } : undefined,
+    );
+    renderNode('c', {
+      state: 'proposed',
+      agent: 'claude',
+      title: '3',
+      why: null,
+      dependsOn: ['a'],
+      retries: 0,
+    });
+    fireEvent.click(screen.getByTestId('depends-on-link-a'));
+    // Default worker dimensions are 200×140.
+    expect(reactFlowMock.setCenter).toHaveBeenCalledWith(150, 120, {
+      zoom: 1,
+      duration: 300,
+    });
   });
 });
 

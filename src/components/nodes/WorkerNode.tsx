@@ -1,4 +1,4 @@
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { NODE_DIMENSIONS } from '../../lib/layout';
@@ -250,6 +250,11 @@ function DependsOn({ ids }: { ids: readonly string[] }) {
   // ulids. Unknown ids (possible during a re-plan while the store is
   // briefly out of sync) are silently dropped — this is display-only.
   const subtasks = useGraphStore((s) => s.subtasks);
+  // useReactFlow lives behind ReactFlowProvider, which GraphCanvas already
+  // wraps every rendered WorkerNode with. Pulling the helpers here keeps
+  // the pan logic colocated with the render site.
+  const { getNode, setCenter, getViewport } = useReactFlow();
+
   const labels = useMemo(() => {
     const out: { id: string; label: string }[] = [];
     for (const dep of ids) {
@@ -258,6 +263,26 @@ function DependsOn({ ids }: { ids: readonly string[] }) {
     }
     return out;
   }, [ids, subtasks]);
+
+  const panToSubtask = (depId: string) => {
+    const node = getNode(depId);
+    // Node may be absent if a re-plan ran between render and click. Graceful
+    // no-op — no crash, no toast; the footer will re-render without the
+    // stale row on the next frame once the store settles.
+    if (!node) return;
+    // Match React Flow's own autoPanOnNodeFocus pattern (see `@xyflow/react`
+    // internals): center = node origin + half-dimensions, preserve current
+    // zoom explicitly. Fall back to the layout dimensions we use at render
+    // time so the calculation is correct even before measured dimensions
+    // land on the node.
+    const w = node.width ?? NODE_DIMENSIONS.worker.width;
+    const h = node.height ?? NODE_DIMENSIONS.worker.height;
+    const cx = node.position.x + w / 2;
+    const cy = node.position.y + h / 2;
+    const { zoom } = getViewport();
+    void setCenter(cx, cy, { zoom, duration: 300 });
+  };
+
   if (labels.length === 0) return null;
   return (
     <div className="text-hint text-fg-tertiary">
@@ -265,7 +290,21 @@ function DependsOn({ ids }: { ids: readonly string[] }) {
       {labels.map((l, i) => (
         <span key={l.id}>
           {i > 0 ? ', ' : null}
-          <span>{l.label}</span>
+          <button
+            type="button"
+            // nodrag/nopan defeat React Flow's pan-on-drag inside the node;
+            // stopPropagation prevents the card-click-to-select affordance
+            // from firing when the user actually meant to pan.
+            className="nodrag nopan font-mono text-fg-tertiary hover:underline focus-visible:underline focus-visible:outline-none"
+            onClick={(e) => {
+              e.stopPropagation();
+              panToSubtask(l.id);
+            }}
+            aria-label={`Pan to subtask ${l.label}`}
+            data-testid={`depends-on-link-${l.id}`}
+          >
+            {l.label}
+          </button>
         </span>
       ))}
     </div>
