@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use detection::Detector;
 use ipc::commands;
+use orchestration::{DefaultAgentRegistry, Orchestrator, TauriEventSink};
 use settings::SettingsStore;
 use storage::{migrations, Storage};
 use tauri::Manager;
@@ -38,24 +39,38 @@ pub fn run() {
             let settings = Arc::new(SettingsStore::load_at(settings_path));
             app.manage(settings.clone());
 
-            // Detector: stateless apart from its settings handle. Cheap to
-            // clone; we keep a single managed copy.
-            app.manage(Detector::new(settings.clone()));
+            // Detector: stateless apart from its settings handle. Arc so the
+            // registry and `detect_agents` command share the same probe.
+            let detector = Arc::new(Detector::new(settings.clone()));
+            app.manage(detector.clone());
 
             // Storage: Rust-side pool against the same DB file plugin-sql uses.
             let db_path = app
                 .path()
                 .app_config_dir()
                 .map(|d| d.join(DB_FILENAME))?;
-            let storage = tauri::async_runtime::block_on(Storage::open(&db_path))?;
-            app.manage(storage);
-            // TODO (Phase 2 — Step 10/11): once the Orchestrator is
-            // managed here, call `orch.recover_active_runs().await`
-            // exactly once, after construction, before the frontend
-            // can submit. This sweeps stale `Running`/`Merging`
-            // SQLite rows + orphan worktrees left by a previous
-            // crash. The method exists and is tested; the wire-up
-            // just needs the managed Orchestrator to exist.
+            let storage = Arc::new(tauri::async_runtime::block_on(Storage::open(&db_path))?);
+            app.manage(storage.clone());
+
+            // Orchestrator: single owner of every in-flight run. Constructed
+            // once here and shared to commands via `State<Arc<Orchestrator>>`.
+            let event_sink = Arc::new(TauriEventSink::new(app.handle().clone()));
+            let registry = Arc::new(DefaultAgentRegistry::new(detector));
+            let orchestrator =
+                Arc::new(Orchestrator::new(settings, storage, event_sink, registry));
+
+            // Sweep stale `Running`/`Merging` rows and orphan worktrees left
+            // by a previous crash. Must run before the frontend attaches a
+            // RunSubscription — frontend window isn't shown until setup
+            // returns, so block_on is the simplest way to honour that
+            // contract. Recovery is bounded (O(active runs) DB + fs ops);
+            // typically zero work.
+            let recovered = tauri::async_runtime::block_on(orchestrator.recover_active_runs());
+            if recovered > 0 {
+                eprintln!("[orchestrator] recovered {recovered} active run(s) from prior session");
+            }
+
+            app.manage(orchestrator);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
