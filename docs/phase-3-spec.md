@@ -278,10 +278,12 @@ The UI does NOT mutate the store optimistically. It awaits the IPC promise, and 
 - Confirmation: "Remove this subtask? This action can be undone before approval." (modal is overkill; use inline confirm inside the node)
 - Removed subtask disappears from the graph
 
-**Dependencies (advanced, optional for Phase 3):**
-- If user-added or user-edited, user may want to specify dependencies
-- Minimum viable UI: a dropdown under the subtask showing other subtask titles with checkboxes
-- If this is too much scope for Phase 3, ship without it and note in roadmap that Phase 4's mono-repo work will include dependency editing
+**Dependencies (read-only display in Phase 3):**
+- Dependency *editing* is deferred to Phase 4. Mono-repo awareness makes cross-package dependency editing a natural companion — cycle detection, transitive visualisation, and drag-to-connect are their own coherent design that shouldn't dilute the inline-edit surface landing here.
+- In Phase 3, each proposed subtask shows a small `Depends on: #2, #4` line under the "why" text. `#N` is the 1-indexed position in the proposed list (stable within a plan, re-numbered on re-plan).
+- Each `#N` is a link. Clicking scrolls the React Flow canvas so the referenced subtask is centred. No hover preview, no drag-to-connect.
+- User-added subtasks default to `dependencies: []`. Master's dependency graph stays untouched by user additions — correct, because the user is expressing "this is extra work that stands alone."
+- Scope note: this uses the existing `SubtaskData.dependencies` field on the wire; no new IPC, no new store shape. Only `WorkerNode` renders the line and handles the click-to-scroll.
 
 **Primitives to add or extend:**
 - `InlineTextEdit.tsx` — text input that inherits parent styling, handles save/cancel
@@ -552,16 +554,22 @@ Master may legitimately conclude "this subtask can't be automated, skip it" and 
 - Loop limit hit (2 re-plans already tried)
 - Master's replan returns empty + user rejects the skip
 
+**Not resumable across restarts.** A run sitting in Layer 3 waiting on a user decision is treated as "active" by the Phase 2 crash-recovery path. If the app is killed or OS-restarted while the user is deliberating, boot-time recovery marks the run `Failed` and sweeps its worktrees — same behaviour as any other active-at-crash run. Fully resumable Layer 3 is v2.5 territory (see `docs/KNOWN_ISSUES.md` "Partial run recovery is cleanup-only, not resume").
+
 **UI:**
 The failed subtask node enters `human_escalation` state:
 - Red border (`status-failed`)
 - Auto-expanded node body showing:
   - Short error summary (see display mapping below)
   - Expandable "Show full error" section with raw logs
-- Three inline buttons inside the node body:
-  - **Manual fix** — opens an external editor at the most-recently-edited file in the worktree (best-effort; may need tauri-plugin-shell)
+  - Worktree path rendered as selectable text (read-only row) — useful even when an editor is detected, for users who want to drop into their own tool
+- Inline buttons inside the node body (layout depends on editor detection — see Manual fix flow below):
+  - **Manual fix** — opens an external editor at the worktree path (only when an editor is detected)
+  - **Copy path** — puts the worktree path on the clipboard + toast
   - **Skip subtask** — marks as `skipped`, run continues without it
   - **Abort run** — kills the whole run, cleanup everything
+  - **I fixed it, continue** — always present, unconditional. Marks the subtask `done` based on user assertion
+  - **Try replan again** — conditionally present (see Step 6); only when the chain's re-plan cap is not exhausted
 
 **AgentError display mapping:**
 
@@ -577,22 +585,40 @@ The uniform Layer 1 retry (Step 3) keeps the taxonomy intact for exactly this su
 
 `Cancelled` never reaches Layer 3 — cancellation bypasses the escalation ladder entirely.
 
-For `SpawnFailed` specifically, the "Manual fix" button is less useful (the binary isn't there to fix) — prefer showing a direct call-to-action: "Check agent install → Settings → Agents". Implementation note: this is copy in the Layer-3 panel, not a separate code path. Same three buttons, just contextual sub-text.
+The `SpawnFailed` case has its own button layout (see Manual fix flow below); it's a copy-and-routing change, not a new code path.
 
 **Manual fix flow:**
-- User clicks "Manual fix"
-- Worker's worktree path is opened in their configured editor (detected from `$EDITOR` env var or settings)
-- User edits files, saves
-- Returns to WhaleCode, clicks "I fixed it, continue" (new button that appears after Manual fix was clicked)
-- Orchestrator marks the subtask as `done`, proceeds
-- Diff from the user's manual edits is captured automatically
+
+Editor detection follows the fallback chain (authoritative, matches the Common-pitfalls note below):
+
+1. `settings.editor` — user-configured binary path or command (e.g. `"code"`, `"/usr/local/bin/zed"`)
+2. `$EDITOR` env var — from the spawn environment
+3. Platform default — `open -a` on macOS, `xdg-open` on Linux, `Start-Process` on Windows
+4. No editor detected — fall through to clipboard-only path
+
+**With an editor detected** (steps 1–3 resolve to something):
+
+- Primary button: **Manual fix** — spawns the editor with the worktree path as the argument (opens the folder, not a specific file — the user knows what to change).
+- Secondary button: **Copy path** — useful for users who prefer a different tool than the detected default.
+- Worktree path displayed as selectable text below the buttons (read-only, monospaced, ~1-line truncation with hover-to-reveal-full).
+- Always-visible: **I fixed it, continue** — clicking marks the subtask `done` and the dispatcher resumes. The diff from the user's manual edits is captured automatically (existing post-subtask diff capture path).
+
+**Without an editor detected** (chain falls through):
+
+- Primary button: **Copy worktree path** — on click, clipboard is populated + toast: *"Path copied. Open in your editor, make changes, then click 'I fixed it'."*
+- Always-visible: **I fixed it, continue** — same behaviour as above.
+- Worktree path displayed as selectable text below the buttons.
+
+Trusting the user is cleaner than state-machining the editor lifecycle. The "I fixed it, continue" button is unconditional precisely because there is no reliable cross-platform signal for "editor has closed" — and even if there were, a user could save-and-switch-tasks without closing. The dispatcher's diff capture after the user clicks is the source of truth for what changed.
+
+**For `SpawnFailed` specifically,** the Manual-fix button is less useful (the binary isn't there to fix in the worktree). The primary button becomes **Check agent install → Settings → Agents** (a button that opens the settings panel's Agents section with the failing agent highlighted). The other buttons stay the same. This is copy + one routing call — not a separate code path in the dispatcher.
 
 **Abort flow:**
 - Confirmation required: "Abort the whole run? All work will be discarded."
 - If confirmed: cancel all running workers, cleanup worktrees, clear notes, transition to `Idle`
 
 **Events:**
-- `run:human_escalation { run_id, subtask_id, error, options: ["manual_fix", "skip", "abort"] }`
+- `run:human_escalation { run_id, subtask_id, error, options }` where `options` is a subset of `["manual_fix", "skip", "abort", "try_replan_again"]`. `try_replan_again` is included only when `COUNT(*) FROM subtask_replans` walked to the chain root is less than the cap (2) — see Step 4c and Step 6. `manual_fix` is included unconditionally; on `SpawnFailed` the frontend renders the "Check agent install" variant of the button but the wire option stays the same.
 
 **Tests:**
 - Fake adapter: master fails to produce replan → UI shows human_escalation
@@ -606,8 +632,20 @@ Master itself can fail: API error, malformed output, timeout.
 **Critical rule:** Master does NOT self-retry. If master fails during planning or re-planning, go directly to human escalation. A failing planner cannot plan around its own failure.
 
 **UI:**
-- If master fails during initial planning: show error banner above the graph, no subtasks created, user can retry submission or abort
-- If master fails during re-planning: the specific failed subtask stays in `failed` state, user gets the same Layer 3 options (manual fix / skip / abort), plus "try replan again" as a fourth option (one more attempt allowed)
+- If master fails during initial planning: show error banner above the graph, no subtasks created, user can retry submission or abort.
+- If master fails during re-planning: the specific failed subtask stays in `failed` state and escalates to Layer 3. The user sees the usual manual / skip / abort options, plus — **only when the chain's re-plan cap is not yet exhausted** — a fourth option, "try replan again."
+
+**"Try replan again" mechanics:**
+
+"Try replan again" is not a special retry. It consumes a normal re-plan slot:
+
+1. Visible only when `COUNT(*) FROM subtask_replans` walked back to the chain root is less than the cap (2). Once the cap is hit, the button disappears; the user falls back to manual / skip / abort.
+2. Clicking it runs the Step-4b orchestrator flow a second time from the top: `Running → Planning → master.replan() → ...`.
+3. A `subtask_replans` row is inserted regardless of whether this attempt succeeds or fails. Master-side failure does not get a free slot — if the planner is flaky, the cap naturally gates the loop.
+4. If the attempt succeeds: replacement subtasks appear via `run:subtasks_proposed`, the approval flow resumes as normal (Step 4).
+5. If the attempt fails: the subtask re-enters Layer 3. "Try replan again" is then either disabled (if the cap is now hit) or still available (if one slot remains).
+
+No "one extra attempt" semantics. The cap is the cap. This keeps loop protection (Step 4c) authoritative — there is no way to exceed `2 re-plans per chain root` from any code path.
 
 **Tests:**
 - Master timeout on planning: error surfaces, no partial state
@@ -645,6 +683,65 @@ pub fn is_action_safe(action: &AgentAction) -> bool {
 - Auto-approve on, master fails: still shows error (bypass doesn't silence failures)
 - Auto-approve on, re-plan fails twice: still escalates to Layer 3
 
+#### 7b. Auto-approve subtask ceiling
+
+Auto-approve removes every manual gate, which means a pathological task (master splits, re-plans, splits again) could execute dozens of subtasks without a human checkpoint. A cost ceiling is the right answer long-term (Phase 6 wires tokens), but Phase 3 cannot ship auto-approve without *some* upper bound.
+
+**Decision:** subtask-count ceiling, enforced only when auto-approve is on.
+
+**Settings:**
+
+```
+settings.maxSubtasksPerAutoApprovedRun: number   // default 20, minimum 1
+```
+
+Persisted via the existing settings JSON file (`app_config_dir/settings.json`). Surfaced in the settings panel next to the auto-approve toggle.
+
+**Orchestrator counter:**
+
+- Maintained per run. Resets to 0 on run start, never on re-plan.
+- Increments on *every* `subtasks.id` inserted within the run, regardless of final state: the initial plan, user additions via `add_subtask`, Layer 2 replacement subtasks, and replacements-of-replacements all count.
+- Skipped subtasks count. They consumed planning capacity even if they didn't execute. User removals via `remove_subtask` do *not* decrement — the counter measures "how many subtasks has this run asked us to consider", not "how many are currently live."
+- Derived on demand as `SELECT COUNT(*) FROM subtasks WHERE run_id = ?`; the orchestrator holds a cached copy and re-reads on transition boundaries.
+
+**Enforcement points:**
+
+Only checked at approval-bypass moments, never mid-worker. Workers already in flight are not interrupted by the ceiling.
+
+1. **Initial approval** — if `COUNT(subtasks) > ceiling` (edge case: user added subtasks manually before hitting approve), the auto-approve bypass is suspended and the approval bar returns with the ceiling-reached message. Extremely unlikely at this point since users rarely add 20+ subtasks before approving.
+2. **Re-plan approval** — at the end of Step-4b, just before re-emitting `run:subtasks_proposed`: if appending the proposed replacements would push the running total past the ceiling, the orchestrator lets the re-plan proceed to `AwaitingApproval` but emits `run:auto_approve_suspended` and does NOT auto-approve. The approval bar appears with the special copy; the user decides.
+
+**Event:**
+
+```
+run:auto_approve_suspended { runId, reason: "subtask_limit", limit, current }
+```
+
+`limit` and `current` let the UI render "You've reached 22/20 — approve manually or edit the plan."
+
+**What the user sees:**
+
+- Approval bar copy becomes: *"Auto-approve paused — subtask limit reached (22/20). Review and approve manually, or adjust the limit in Settings."*
+- A link in the bar: "Open settings" → deep-links to the auto-approve section.
+- Approving manually re-enables auto-approve for the *rest* of the run (subsequent re-plans under the ceiling still bypass). This is deliberate: the user has given an informed go-ahead.
+
+**Why subtask count, not wall clock or cost:**
+
+- Deterministic and user-predictable ("this task should be 5–10 subtasks, 20 is a safe margin").
+- Cost ceilings belong in Phase 6 where tokens are tracked; a wall-clock proxy would be a worse version of the same idea.
+- One counter, one check per re-plan transition — implementation cost is a day at most.
+
+**Consent-dialog copy (Step 7):**
+
+Include a line in the first-activation consent dialog: *"Auto-approve will execute up to {limit} subtasks without asking. You can change this in Settings."* `{limit}` reads from the same settings field, so updating the setting updates the consent copy without a code change.
+
+**Tests:**
+
+- Auto-approve on, initial plan has 25 subtasks (ceiling 20): approval bar surfaces with ceiling message, no dispatch fires.
+- Auto-approve on, initial plan 8 subtasks, master re-plans twice producing 15 more: second re-plan triggers the ceiling (total 23 > 20), user sees suspension message.
+- Auto-approve on, user remove-subtasks 5 subtasks: counter is unchanged (still 8 for the initial plan). Confirms removal doesn't decrement.
+- Skipped subtasks count: auto-approve on, plan of 15 subtasks, 6 get skipped; re-plan adds 4; total is 19 — under ceiling, auto-approve still bypasses.
+
 ### Step 8: Store integration for Layer 1-3
 
 Update the Zustand store to handle the new state transitions. **Most of Layer 1–2 rides the existing event vocabulary** — Phase 3 adds only one new event.
@@ -654,8 +751,9 @@ Update the Zustand store to handle the new state transitions. **Most of Layer 1�
 - `run:subtasks_proposed` — carries Layer 2's replacement subtasks (optionally with `replaces?: SubtaskId[]` for the "replaces #3" badge).
 - `run:subtask_state_changed` — carries `Retrying`, mapped through `eventsForSubtaskState` to `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` (Step 3a).
 
-**One new event:**
+**Two new events:**
 - `run:human_escalation { run_id, subtask_id, error, options }` — transitions the node's machine to `human_escalation` (Step 5). This is the only Layer-3 event.
+- `run:auto_approve_suspended { run_id, reason, limit, current }` — emitted when the auto-approve ceiling (Step 7b) suspends bypass. Store flips a `autoApproveSuspended: { reason, limit, current } | null` flag that the approval bar reads; cleared on manual approval or run end.
 
 **Store additions:**
 - `subtaskRetryCounts: Map<string, number>` — incremented in `handleSubtaskStateChanged` when state is `Retrying`.
@@ -695,6 +793,7 @@ Phase 3 ships when:
 12. Master failure during re-planning: Layer 3 offered with retry option
 13. Auto-approve mode: bypasses both initial and re-plan approvals
 14. Auto-approve mode: still honors human escalation (can't be fully automated)
+15. Auto-approve mode: subtask-count ceiling suspends bypass when exceeded, user sees `run:auto_approve_suspended` surfacing in the approval bar (Step 7b)
 
 ## What you'll create
 
@@ -711,7 +810,8 @@ src-tauri/src/
 │   └── migrations.rs (M002: edited_by_user, added_by_user, subtask_replans)
 ├── ipc/
 │   ├── commands.rs (update_subtask, add_subtask, remove_subtask; approve_subtasks unchanged)
-│   └── mod.rs (SubtaskPatch, SubtaskDraft, human_escalation event)
+│   └── mod.rs (SubtaskPatch, SubtaskDraft, human_escalation event, auto_approve_suspended event)
+├── settings.rs (adds maxSubtasksPerAutoApprovedRun field; see Step 7b)
 └── safety/mod.rs (stub for Phase 7)
 
 src/
@@ -730,7 +830,7 @@ src/
 │   └── useExternalEditor.ts (for manual fix)
 └── state/
     ├── nodeMachine.ts (retry refactor: remove MAX_RETRIES/canRetry; add START_RETRY/RETRY_SUCCESS/RETRY_FAIL; add ESCALATE)
-    └── graphStore.ts (add/update/remove actions → IPC; subtaskRetryCounts; human_escalation handler)
+    └── graphStore.ts (add/update/remove actions → IPC; subtaskRetryCounts; human_escalation handler; autoApproveSuspended flag)
 ```
 
 Estimated LOC: ~1500 Rust, ~2000 TypeScript. Frontend-heavy because editing UX is the bulk.
