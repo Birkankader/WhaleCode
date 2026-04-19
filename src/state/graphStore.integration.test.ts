@@ -422,6 +422,10 @@ describe('graphStore — apply / conflict / completed', () => {
     expect(s.currentError).not.toBeNull();
     expect(s.currentError).toContain('mobile/services/api.ts');
     expect(s.currentError).toContain('README.md');
+    // Absolute repo path is included so two identically-named sibling
+    // repos can be told apart from the banner alone — see commit notes
+    // for the path-mismatch debugging session that motivated this.
+    expect(s.currentError).toContain(REPO_PATH);
     // FinalNode stays in its happy-path shape: files populated, no
     // conflict metadata — so Apply stays clickable for the retry.
     expect(s.finalNode?.files).toEqual(['src/foo.ts']);

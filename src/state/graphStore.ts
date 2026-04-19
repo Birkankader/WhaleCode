@@ -433,11 +433,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
     // failure through `currentError` (ErrorBanner picks it up) with a
     // clear instruction and the offending file list so they know
     // exactly what to commit or stash.
+    //
+    // Prefix the absolute repo path so two same-named repos in
+    // different parent dirs (e.g. `~/Projects/foo` vs
+    // `~/Projects/archive/foo`) don't trick the user into cleaning
+    // the wrong one. Cheap to include; saves a real debugging hour.
+    const repoPath = useRepoStore.getState().currentRepo?.path;
+    const where = repoPath ? ` in ${repoPath}` : '';
     const list = e.files.join(', ');
     const msg =
       e.files.length === 1
-        ? `You have uncommitted changes in ${list}. Commit or stash it, then click Apply again.`
-        : `You have uncommitted changes in ${e.files.length} files (${list}). Commit or stash them, then click Apply again.`;
+        ? `You have uncommitted changes${where}: ${list}. Commit or stash it, then click Apply again.`
+        : `You have uncommitted changes${where} in ${e.files.length} files (${list}). Commit or stash them, then click Apply again.`;
     set({ currentError: msg });
   }
 
