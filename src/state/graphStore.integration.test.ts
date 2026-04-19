@@ -363,7 +363,11 @@ describe('graphStore — apply / conflict / completed', () => {
     expect(s.activeSubscription).toBeNull();
   });
 
-  it('DiffReady populates finalNode.files and spawns the node if absent', async () => {
+  it('DiffReady populates finalNode.files, spawns the node, and activates its actor', async () => {
+    // Regression: before the activation fix, the final actor sat at
+    // `idle` forever, which FinalNode rendered as a disabled Apply
+    // button. DiffReady must drive the actor to `running` so the
+    // merge UI is actually clickable.
     await state().submitTask('x');
     emit(EVENT_DIFF_READY, {
       runId: BACKEND_RUN_ID,
@@ -373,7 +377,28 @@ describe('graphStore — apply / conflict / completed', () => {
       ],
     });
     expect(state().finalNode?.files).toEqual(['src/foo.ts', 'src/bar.ts']);
-    expect(snap(FINAL_ID)?.value).toBe('idle');
+    expect(snap(FINAL_ID)?.value).toBe('running');
+  });
+
+  it('Completed after a clean apply lands the final actor in done', async () => {
+    await state().submitTask('x');
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+    });
+    expect(snap(FINAL_ID)?.value).toBe('running');
+    emit(EVENT_COMPLETED, {
+      runId: BACKEND_RUN_ID,
+      summary: {
+        runId: BACKEND_RUN_ID,
+        subtaskCount: 1,
+        filesChanged: 1,
+        durationSecs: 2,
+        commitsCreated: 1,
+      },
+    });
+    expect(snap(FINAL_ID)?.value).toBe('done');
+    expect(state().status).toBe('applied');
   });
 });
 

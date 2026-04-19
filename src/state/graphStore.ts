@@ -395,6 +395,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
         },
       };
     });
+    // Drive the final node's XState actor into `running` so FinalNode
+    // renders its Apply button as enabled. Without this the actor sits
+    // at `idle` forever and the merge UI looks clickable but is inert.
+    // The machine no-ops unknown transitions from a later state, so
+    // re-sending the full chain is safe on repeat DiffReady events
+    // (e.g. master re-plan between approval and merge).
+    const finalSnap = get().nodeSnapshots.get(FINAL_ID)?.value;
+    if (finalSnap === 'idle') {
+      sendTo(FINAL_ID, { type: 'PROPOSE' });
+      sendTo(FINAL_ID, { type: 'APPROVE' });
+      sendTo(FINAL_ID, { type: 'START' });
+    }
   }
 
   function handleMergeConflict(e: MergeConflict) {
@@ -422,6 +434,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
         ? { ...state.finalNode, conflictFiles: null }
         : state.finalNode,
     }));
+    // Land the final actor in its terminal `done` state. No-op if Apply
+    // was never clicked (actor still at idle/proposed/approved), which
+    // matches reality — Completed only reaches the frontend after a
+    // successful merge, by which point the actor is already in running.
+    sendTo(FINAL_ID, { type: 'COMPLETE' });
     detachActiveSubscription();
   }
 
