@@ -304,6 +304,12 @@ function dataFor(
     state,
     agent: st?.agent ?? 'claude',
     title: st?.title ?? id,
+    // `why` and `dependsOn` are Phase 3 Step 2 additions — they're only
+    // surfaced while the subtask is in the `proposed` state (inline edit
+    // UI + dependency footer). Carrying them always keeps the data shape
+    // static so WorkerNode doesn't need conditional typing.
+    why: st?.why ?? null,
+    dependsOn: st?.dependsOn ?? [],
     retries: retryCounts.get(id) ?? 0,
   };
 }

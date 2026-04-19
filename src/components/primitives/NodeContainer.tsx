@@ -17,6 +17,12 @@ type Props = {
    * checkbox; this is a mouse affordance only.
    */
   onClick?: MouseEventHandler<HTMLDivElement>;
+  /**
+   * Extra Tailwind classes merged onto the container. Used by WorkerNode
+   * to opt into Tailwind's `group` pattern for hover-reveal affordances
+   * (the remove button fades in via `group-hover:opacity-100`).
+   */
+  className?: string;
 };
 
 /**
@@ -31,12 +37,14 @@ export function NodeContainer({
   width,
   height,
   onClick,
+  className,
   children,
 }: PropsWithChildren<Props>) {
   const style = styleForState(variant, state, agentColor);
+  const base = 'flex h-full w-full flex-col gap-1 rounded-md bg-bg-elevated px-3 py-2';
   return (
     <div
-      className="flex h-full w-full flex-col gap-1 rounded-md bg-bg-elevated px-3 py-2"
+      className={className ? `${base} ${className}` : base}
       style={{ width, height, cursor: onClick ? 'pointer' : undefined, ...style }}
       onClick={onClick}
     >
