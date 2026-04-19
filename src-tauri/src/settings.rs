@@ -17,6 +17,7 @@
 //!     the worktree manager.
 //!   - `master_agent`: read by the orchestrator (step 8) to pick the master.
 //!   - `*_binary_path`: detected-agent overrides (step 4).
+//!
 //! The `dead_code` allow-list on the struct covers readers that land in
 //! later steps.
 

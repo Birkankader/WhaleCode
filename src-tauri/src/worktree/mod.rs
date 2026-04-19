@@ -785,7 +785,7 @@ fn parse_worktree_list(porcelain: &str, worktrees_dir: &Path) -> Vec<WorktreeInf
 
     let flush = |path: &mut Option<PathBuf>, branch: &mut Option<String>, out: &mut Vec<WorktreeInfo>| {
         if let (Some(p), Some(b)) = (path.take(), branch.take()) {
-            if let Some(rel) = p.strip_prefix(worktrees_dir).ok() {
+            if let Ok(rel) = p.strip_prefix(worktrees_dir) {
                 // Expected layout: {worktrees_dir}/{run_id}/{subtask_id}
                 let mut comps = rel.components();
                 let run_id = comps.next().map(|c| c.as_os_str().to_string_lossy().into_owned());

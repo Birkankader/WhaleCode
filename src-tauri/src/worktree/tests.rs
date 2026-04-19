@@ -189,7 +189,7 @@ async fn diff_after_commit_reports_statuses_and_counts() {
     let diffs = mgr.diff("s").await.unwrap();
     let readme = diffs
         .iter()
-        .find(|d| d.path == PathBuf::from("README.md"))
+        .find(|d| d.path == Path::new("README.md"))
         .expect("README diff present");
     assert!(matches!(readme.status, DiffStatus::Modified));
     assert!(readme.additions >= 2);
@@ -197,7 +197,7 @@ async fn diff_after_commit_reports_statuses_and_counts() {
 
     let newfile = diffs
         .iter()
-        .find(|d| d.path == PathBuf::from("new.rs"))
+        .find(|d| d.path == Path::new("new.rs"))
         .expect("new.rs diff present");
     assert!(matches!(newfile.status, DiffStatus::Added));
     assert_eq!(newfile.additions, 1);
@@ -221,7 +221,7 @@ async fn diff_flags_binary_file() {
     let diffs = mgr.diff("s").await.unwrap();
     let bin = diffs
         .iter()
-        .find(|d| d.path == PathBuf::from("blob.bin"))
+        .find(|d| d.path == Path::new("blob.bin"))
         .expect("blob.bin in diff");
     assert!(matches!(bin.status, DiffStatus::Binary));
     assert!(bin.patch.is_empty());
@@ -241,7 +241,7 @@ async fn merge_all_independent_subtasks_merges_both() {
 
     let res = mgr
         .merge_all(
-            &vec!["a".into(), "b".into()],
+            &["a".into(), "b".into()],
             &DependencyGraph::default(),
         )
         .await
@@ -267,7 +267,7 @@ async fn merge_all_respects_dependency_order() {
     let mut deps = DependencyGraph::default();
     deps.insert("b", vec!["a".into()]);
 
-    mgr.merge_all(&vec!["a".into(), "b".into()], &deps)
+    mgr.merge_all(&["a".into(), "b".into()], &deps)
         .await
         .unwrap();
 
@@ -286,7 +286,7 @@ async fn merge_all_cycle_rejected() {
     let mut deps = DependencyGraph::default();
     deps.insert("a", vec!["b".into()]);
     deps.insert("b", vec!["a".into()]);
-    match mgr.merge_all(&vec!["a".into(), "b".into()], &deps).await {
+    match mgr.merge_all(&["a".into(), "b".into()], &deps).await {
         Err(WorktreeError::DependencyCycle) => {}
         other => panic!("expected DependencyCycle, got {other:?}"),
     }
@@ -314,7 +314,7 @@ async fn merge_all_refuses_when_base_branch_has_tracked_wip() {
     write(&repo.join("README.md"), "# test repo\n\nWIP\n").await;
 
     let err = mgr
-        .merge_all(&vec!["s1".into()], &DependencyGraph::default())
+        .merge_all(&["s1".into()], &DependencyGraph::default())
         .await
         .unwrap_err();
 
@@ -355,7 +355,7 @@ async fn merge_all_allows_base_branch_with_only_untracked_files() {
     write(&repo.join("scratch.txt"), "untracked\n").await;
 
     let res = mgr
-        .merge_all(&vec!["s1".into()], &DependencyGraph::default())
+        .merge_all(&["s1".into()], &DependencyGraph::default())
         .await;
     assert!(res.is_ok(), "untracked-only base tripped pre-flight: {res:?}");
 }
@@ -373,7 +373,7 @@ async fn merge_all_conflict_returns_files_and_aborts_merge() {
 
     let err = mgr
         .merge_all(
-            &vec!["a".into(), "b".into()],
+            &["a".into(), "b".into()],
             &DependencyGraph::default(),
         )
         .await
@@ -502,7 +502,7 @@ async fn merge_then_cleanup_all_leaves_repo_in_clean_state() {
     commit_in(&wt, &[("feature.rs", "// done\n")], "feat").await;
 
     mgr.merge_all(
-        &vec!["s".into()],
+        &["s".into()],
         &DependencyGraph::default(),
     )
     .await

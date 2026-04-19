@@ -213,7 +213,7 @@ pub fn get_augmented_path() -> String {
     {
         let home = std::env::var("HOME").map(PathBuf::from).ok();
         let extras = augmented_path_extras(home.as_deref());
-        return join_paths(&extras, &base);
+        join_paths(&extras, &base)
     }
 
     #[cfg(not(target_os = "macos"))]
