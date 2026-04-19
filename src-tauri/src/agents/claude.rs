@@ -27,8 +27,8 @@ use super::process::{
     classify_nonzero, git_changed_files, render_template, run_streaming, ChildOutput, RunSpec,
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
-use super::prompts::MASTER_CLAUDE;
-use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext};
+use super::prompts::{MASTER_CLAUDE, REPLAN_CLAUDE};
+use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext, ReplanContext};
 
 pub struct ClaudeAdapter {
     binary: PathBuf,
@@ -55,6 +55,34 @@ impl ClaudeAdapter {
                 ("agents_md", ctx.agents_md.as_deref().unwrap_or("")),
                 ("gemini_md", ctx.gemini_md.as_deref().unwrap_or("")),
                 ("recent_commits", &commits),
+                ("available_workers", &workers),
+            ],
+        )
+    }
+
+    /// Render the master re-planning prompt. Same pattern as
+    /// [`Self::build_plan_prompt`] — extracted so tests can verify the
+    /// rendered text without spawning `claude`.
+    pub fn build_replan_prompt(ctx: &ReplanContext) -> String {
+        let attempt_errors = format_attempt_errors(&ctx.attempt_errors);
+        let completed = format_completed_summaries(&ctx.completed_subtask_summaries);
+        let workers = format_workers(&ctx.available_workers);
+        let log_tail = if ctx.worker_log_tail.is_empty() {
+            "(no log lines captured)".to_string()
+        } else {
+            ctx.worker_log_tail.clone()
+        };
+        let counter = ctx.attempt_counter.to_string();
+        render_template(
+            REPLAN_CLAUDE,
+            &[
+                ("original_task", ctx.original_task.as_str()),
+                ("failed_title", ctx.failed_subtask_title.as_str()),
+                ("failed_why", ctx.failed_subtask_why.as_str()),
+                ("attempt_errors", &attempt_errors),
+                ("worker_log_tail", &log_tail),
+                ("completed_summaries", &completed),
+                ("attempt_counter", &counter),
                 ("available_workers", &workers),
             ],
         )
@@ -198,6 +226,35 @@ impl AgentImpl for ClaudeAdapter {
         let out = run_streaming(spec).await?;
         handle_summarize_output(out)
     }
+
+    async fn replan(
+        &self,
+        context: ReplanContext,
+        cancel: CancellationToken,
+    ) -> Result<Plan, AgentError> {
+        // Same subprocess envelope as `plan` — Claude's planning mode
+        // is read-only, which is exactly what a replan needs. The only
+        // thing that differs is the prompt.
+        let prompt = Self::build_replan_prompt(&context);
+        let args = vec![
+            "--print".into(),
+            "--output-format".into(),
+            "json".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+        ];
+        let spec = RunSpec {
+            binary: &self.binary,
+            args,
+            cwd: Some(&context.repo_root),
+            stdin: Some(prompt),
+            timeout: DEFAULT_PLAN_TIMEOUT,
+            log_tx: None,
+            cancel,
+        };
+        let out = run_streaming(spec).await?;
+        handle_plan_output(out, &context.available_workers)
+    }
 }
 
 // -- Envelope parsing -----------------------------------------------
@@ -296,6 +353,29 @@ fn format_workers(workers: &[AgentKind]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn format_attempt_errors(errors: &[String]) -> String {
+    if errors.is_empty() {
+        return "(no error messages captured)".to_string();
+    }
+    errors
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("- attempt {}: {e}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_completed_summaries(summaries: &[String]) -> String {
+    if summaries.is_empty() {
+        return "(none yet — this is the first subtask to finish)".to_string();
+    }
+    summaries
+        .iter()
+        .map(|s| format!("- {s}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn summarize_last_lines(stdout: &str, n: usize) -> String {
@@ -461,5 +541,62 @@ mod tests {
     fn summarize_last_lines_picks_trailing_non_empty() {
         let s = "line one\n\nline two\nline three\n\n";
         assert_eq!(summarize_last_lines(s, 2), "line two line three");
+    }
+
+    fn replan_ctx() -> ReplanContext {
+        ReplanContext {
+            original_task: "Add dark mode toggle".to_string(),
+            repo_root: PathBuf::from("/tmp/repo"),
+            failed_subtask_title: "Write ThemeProvider".to_string(),
+            failed_subtask_why: "react context needed".to_string(),
+            attempt_errors: vec![
+                "Timeout after 600s".to_string(),
+                "Timeout after 600s".to_string(),
+            ],
+            worker_log_tail: "last log line\nanother line".to_string(),
+            completed_subtask_summaries: vec!["Added tailwind tokens".to_string()],
+            attempt_counter: 1,
+            available_workers: vec![AgentKind::Claude, AgentKind::Codex],
+        }
+    }
+
+    #[test]
+    fn build_replan_prompt_substitutes_all_fields() {
+        let prompt = ClaudeAdapter::build_replan_prompt(&replan_ctx());
+        // Every `{{var}}` resolves — no leaks.
+        assert!(!prompt.contains("{{"));
+        // Original task + failed subtask copy-through.
+        assert!(prompt.contains("Add dark mode toggle"));
+        assert!(prompt.contains("Write ThemeProvider"));
+        assert!(prompt.contains("react context needed"));
+        // Both attempt errors rendered as bullet lines.
+        assert!(prompt.contains("attempt 1: Timeout after 600s"));
+        assert!(prompt.contains("attempt 2: Timeout after 600s"));
+        // Worker log tail inlined verbatim.
+        assert!(prompt.contains("last log line"));
+        // Completed summaries bulleted.
+        assert!(prompt.contains("- Added tailwind tokens"));
+        // Attempt counter surfaced for the model's calibration.
+        assert!(prompt.contains("attempt 1 of 2"));
+        // Workers allow-list rendered.
+        assert!(prompt.contains("claude, codex"));
+    }
+
+    #[test]
+    fn build_replan_prompt_handles_empty_completed_and_empty_log() {
+        let mut ctx = replan_ctx();
+        ctx.completed_subtask_summaries = vec![];
+        ctx.worker_log_tail = String::new();
+        let prompt = ClaudeAdapter::build_replan_prompt(&ctx);
+        assert!(prompt.contains("(none yet"));
+        assert!(prompt.contains("(no log lines captured)"));
+    }
+
+    #[test]
+    fn format_attempt_errors_empty_falls_back() {
+        assert_eq!(
+            format_attempt_errors(&[]),
+            "(no error messages captured)"
+        );
     }
 }

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::agents::{
-    AgentError, AgentImpl, ExecutionResult, Plan, PlannedSubtask, PlanningContext,
+    AgentError, AgentImpl, ExecutionResult, Plan, PlannedSubtask, PlanningContext, ReplanContext,
 };
 use crate::ipc::{AgentKind, RunStatus, SubtaskDraft, SubtaskPatch, SubtaskState};
 use crate::orchestration::events::{EventSink, RecordingEventSink, RunEvent};
@@ -122,6 +122,33 @@ struct ScriptedAgent {
     /// the previous error. `None` entries are also recorded so tests
     /// can assert "first attempt was contextless, second had context".
     extra_context_log: Arc<Mutex<Vec<Option<String>>>>,
+    /// Phase-3 Step 4 replan fixture: queue of scripted outcomes
+    /// consumed one-per-`replan` call. `with_replan` pushes onto the
+    /// back, `replan()` pops from the front. Panics when empty so a
+    /// test that doesn't expect a replan call surfaces the regression
+    /// loudly rather than silently passing.
+    replan_queue: Arc<Mutex<Vec<ReplanScript>>>,
+    /// Every `ReplanContext` passed to `replan()`, in call order. Tests
+    /// assert on this to verify the orchestrator composed the right
+    /// failure-forensics bundle (attempt errors, log tail, completed
+    /// summaries, attempt counter).
+    replan_calls_log: Arc<Mutex<Vec<ReplanContext>>>,
+}
+
+/// How a scripted `replan()` call should behave. Pushed onto
+/// `ScriptedAgent::replan_queue` by `with_replan` and popped front-first.
+/// Not `Clone` — `AgentError` isn't `Clone`, and `replan()` consumes the
+/// queue head rather than peeking, so we don't need it.
+enum ReplanScript {
+    /// Return this plan — models the "master produced replacement subtasks"
+    /// branch. The plan's subtasks get new ulids and lineage rows.
+    OkPlan(Plan),
+    /// Return an empty plan — models "master judged the goal infeasible";
+    /// orchestrator must escalate to Layer 3 (human).
+    Empty,
+    /// Fail with this error — models "master itself crashed / timed out
+    /// during replan"; orchestrator treats it like a Layer-3 escalation.
+    Fail(AgentError),
 }
 
 impl ScriptedAgent {
@@ -136,6 +163,8 @@ impl ScriptedAgent {
             summarize_outcome: Arc::new(Mutex::new(None)),
             fail_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             extra_context_log: Arc::new(Mutex::new(Vec::new())),
+            replan_queue: Arc::new(Mutex::new(Vec::new())),
+            replan_calls_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -185,6 +214,21 @@ impl ScriptedAgent {
     /// wired through.
     async fn extra_context_calls(&self) -> Vec<Option<String>> {
         self.extra_context_log.lock().await.clone()
+    }
+
+    /// Queue one scripted outcome for the next `replan()` call. Multiple
+    /// calls push in order: `with_replan(OkPlan).with_replan(Empty)`
+    /// makes the first replan return a plan and the second return empty.
+    async fn with_replan(self, script: ReplanScript) -> Self {
+        self.replan_queue.lock().await.push(script);
+        self
+    }
+
+    /// Snapshot of every `ReplanContext` passed to `replan()`, in call
+    /// order. Tests assert on this to verify the orchestrator assembled
+    /// the right failure forensics.
+    async fn replan_calls(&self) -> Vec<ReplanContext> {
+        self.replan_calls_log.lock().await.clone()
     }
 }
 
@@ -315,6 +359,37 @@ impl AgentImpl for ScriptedAgent {
                 cancel.cancelled().await;
                 Err(AgentError::Cancelled)
             }
+        }
+    }
+
+    // Phase-3 Step 4 replan fixture. See `ReplanScript` + `with_replan`
+    // for how tests queue outcomes. Each `replan()` call pops one entry
+    // off the queue so tests can script "first replan OK, second empty"
+    // by pushing two scripts in order. Calling `replan` with an empty
+    // queue panics — tests that don't exercise Layer 2 should never
+    // reach this arm.
+    async fn replan(
+        &self,
+        context: ReplanContext,
+        _cancel: CancellationToken,
+    ) -> Result<Plan, AgentError> {
+        self.replan_calls_log.lock().await.push(context);
+        let script = {
+            let mut queue = self.replan_queue.lock().await;
+            if queue.is_empty() {
+                None
+            } else {
+                Some(queue.remove(0))
+            }
+        };
+        match script {
+            Some(ReplanScript::OkPlan(plan)) => Ok(plan),
+            Some(ReplanScript::Empty) => Ok(Plan {
+                reasoning: "scripted: infeasible".to_string(),
+                subtasks: vec![],
+            }),
+            Some(ReplanScript::Fail(err)) => Err(err),
+            None => panic!("ScriptedAgent::replan called without scripted outcome"),
         }
     }
 
@@ -471,7 +546,70 @@ fn plan_of(n: usize) -> Plan {
     }
 }
 
+/// Synthetic `ReplanContext` for fixture-level tests — real orchestrator
+/// tests (commit 2) compose one from actual run state. Fields are
+/// distinguishable so assertions on the captured context can fail loudly
+/// if the wiring cross-talks.
+fn replan_ctx_of(repo: &Path, attempt_counter: u32) -> ReplanContext {
+    ReplanContext {
+        original_task: "build login".into(),
+        repo_root: repo.to_path_buf(),
+        failed_subtask_title: "wire oauth".into(),
+        failed_subtask_why: "needed before session".into(),
+        attempt_errors: vec!["attempt 1: boom".into(), "attempt 2: boom".into()],
+        worker_log_tail: "... log tail ...".into(),
+        completed_subtask_summaries: vec!["landed schema".into()],
+        attempt_counter,
+        available_workers: vec![AgentKind::Claude],
+    }
+}
+
 // -- Tests -----------------------------------------------------------
+
+/// Fixture smoke test: verify the `ReplanScript` queue pops FIFO and the
+/// captured `ReplanContext` log reflects each call. The full lifecycle
+/// tests for master replan live in commit 2 once `Orchestrator::replan_subtask`
+/// lands; this one just guards the test harness itself.
+#[tokio::test]
+async fn scripted_agent_replan_queue_pops_in_order() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_replan(ReplanScript::OkPlan(plan_of(1)))
+        .await
+        .with_replan(ReplanScript::Empty)
+        .await
+        .with_replan(ReplanScript::Fail(AgentError::TaskFailed {
+            reason: "master refused".into(),
+        }))
+        .await;
+    let repo = tempfile::tempdir().unwrap();
+    let cancel = CancellationToken::new();
+
+    let first = agent
+        .replan(replan_ctx_of(repo.path(), 1), cancel.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.subtasks.len(), 1, "first call returns OkPlan");
+
+    let second = agent
+        .replan(replan_ctx_of(repo.path(), 2), cancel.clone())
+        .await
+        .unwrap();
+    assert!(second.subtasks.is_empty(), "second call returns empty plan");
+
+    let third = agent
+        .replan(replan_ctx_of(repo.path(), 2), cancel.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(third, AgentError::TaskFailed { .. }));
+
+    // All three ReplanContexts captured in order, distinguishable by
+    // `attempt_counter`.
+    let calls = agent.replan_calls().await;
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].attempt_counter, 1);
+    assert_eq!(calls[1].attempt_counter, 2);
+    assert_eq!(calls[2].attempt_counter, 2);
+}
 
 #[tokio::test]
 async fn submit_then_reject_walks_through_rejected() {

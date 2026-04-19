@@ -31,8 +31,8 @@ use super::process::{
     classify_nonzero, git_changed_files, render_template, run_streaming, ChildOutput, RunSpec,
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
-use super::prompts::MASTER_GEMINI;
-use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext};
+use super::prompts::{MASTER_GEMINI, REPLAN_GEMINI};
+use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext, ReplanContext};
 
 /// If the prompt grows past this, Gemini's API tends to slow down or
 /// reject with 413. We shrink the directory tree first (cheapest
@@ -94,6 +94,35 @@ impl GeminiAdapter {
             prompt.push('\n');
         }
         prompt
+    }
+
+    /// Render the master re-planning prompt. Trims the worker log tail
+    /// against `PROMPT_CHAR_BUDGET` using the same strategy as
+    /// [`Self::build_plan_prompt`] — Gemini is prone to 413s when the
+    /// request grows past ~60 KB.
+    pub fn build_replan_prompt(ctx: &ReplanContext) -> String {
+        let attempt_errors = format_attempt_errors(&ctx.attempt_errors);
+        let completed = format_completed_summaries(&ctx.completed_subtask_summaries);
+        let workers = format_workers(&ctx.available_workers);
+        let log_tail = if ctx.worker_log_tail.is_empty() {
+            "(no log lines captured)".to_string()
+        } else {
+            trim_tree_to_budget(&ctx.worker_log_tail, PROMPT_CHAR_BUDGET)
+        };
+        let counter = ctx.attempt_counter.to_string();
+        render_template(
+            REPLAN_GEMINI,
+            &[
+                ("original_task", ctx.original_task.as_str()),
+                ("failed_title", ctx.failed_subtask_title.as_str()),
+                ("failed_why", ctx.failed_subtask_why.as_str()),
+                ("attempt_errors", &attempt_errors),
+                ("worker_log_tail", &log_tail),
+                ("completed_summaries", &completed),
+                ("attempt_counter", &counter),
+                ("available_workers", &workers),
+            ],
+        )
     }
 }
 
@@ -205,6 +234,33 @@ impl AgentImpl for GeminiAdapter {
         }
         Ok(envelope.response.unwrap_or_default())
     }
+
+    async fn replan(
+        &self,
+        context: ReplanContext,
+        cancel: CancellationToken,
+    ) -> Result<Plan, AgentError> {
+        // Same envelope as `plan`: read-only approval mode, JSON
+        // output. Only the prompt changes.
+        let prompt = Self::build_replan_prompt(&context);
+        let args = vec![
+            "--output-format".into(),
+            "json".into(),
+            "--approval-mode".into(),
+            "plan".into(),
+        ];
+        let spec = RunSpec {
+            binary: &self.binary,
+            args,
+            cwd: Some(&context.repo_root),
+            stdin: Some(prompt),
+            timeout: DEFAULT_PLAN_TIMEOUT,
+            log_tx: None,
+            cancel,
+        };
+        let out = run_streaming(spec).await?;
+        handle_plan_output(out, &context.available_workers)
+    }
 }
 
 // -- Envelope parsing -----------------------------------------------
@@ -266,6 +322,29 @@ fn format_workers(workers: &[AgentKind]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn format_attempt_errors(errors: &[String]) -> String {
+    if errors.is_empty() {
+        return "(no error messages captured)".to_string();
+    }
+    errors
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("- attempt {}: {e}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_completed_summaries(summaries: &[String]) -> String {
+    if summaries.is_empty() {
+        return "(none yet — this is the first subtask to finish)".to_string();
+    }
+    summaries
+        .iter()
+        .map(|s| format!("- {s}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn summarize_last_lines(stdout: &str, n: usize) -> String {
@@ -418,5 +497,47 @@ mod tests {
         );
         assert!(p.contains("# Retry context"));
         assert!(p.contains("RESOURCE_EXHAUSTED"));
+    }
+
+    fn replan_ctx() -> ReplanContext {
+        ReplanContext {
+            original_task: "Update README".to_string(),
+            repo_root: PathBuf::from("/tmp/repo"),
+            failed_subtask_title: "Write intro".to_string(),
+            failed_subtask_why: "explain the product".to_string(),
+            attempt_errors: vec![
+                "RESOURCE_EXHAUSTED".to_string(),
+                "RESOURCE_EXHAUSTED".to_string(),
+            ],
+            worker_log_tail: "unable to reach model".to_string(),
+            completed_subtask_summaries: vec![
+                "Added tokens to tailwind config".to_string(),
+            ],
+            attempt_counter: 1,
+            available_workers: vec![AgentKind::Gemini, AgentKind::Claude],
+        }
+    }
+
+    #[test]
+    fn build_replan_prompt_substitutes_fields_and_trims_log() {
+        let p = GeminiAdapter::build_replan_prompt(&replan_ctx());
+        assert!(!p.contains("{{"));
+        assert!(p.contains("Update README"));
+        assert!(p.contains("Write intro"));
+        assert!(p.contains("attempt 1: RESOURCE_EXHAUSTED"));
+        assert!(p.contains("unable to reach model"));
+        assert!(p.contains("- Added tokens to tailwind config"));
+        assert!(p.contains("attempt 1 of 2"));
+        assert!(p.contains("gemini, claude"));
+    }
+
+    #[test]
+    fn build_replan_prompt_trims_long_log_tail() {
+        let mut ctx = replan_ctx();
+        // Blow past PROMPT_CHAR_BUDGET to force trim.
+        ctx.worker_log_tail = "L\n".repeat(PROMPT_CHAR_BUDGET);
+        let p = GeminiAdapter::build_replan_prompt(&ctx);
+        // Rendered prompt must be bounded; truncation marker present.
+        assert!(p.contains("truncated"));
     }
 }

@@ -58,6 +58,51 @@ pub struct PlanningContext {
     pub available_workers: Vec<AgentKind>,
 }
 
+/// Context the master sees when producing a *replacement* plan after a
+/// subtask has burned through Layer 1's retry budget. Distinct from
+/// [`PlanningContext`] because the inputs are different — the master
+/// has already seen the repo; what it needs now is failure forensics
+/// and a running picture of what the rest of the plan accomplished.
+///
+/// The orchestrator constructs this at Step 4 time (dispatcher escalated
+/// with `Exhausted` or `Deterministic`) and hands it to the master's
+/// [`AgentImpl::replan`] method. All string fields are pre-rendered for
+/// the prompt — the adapter substitutes them in verbatim, no further
+/// shaping.
+#[derive(Debug, Clone)]
+pub struct ReplanContext {
+    /// The user's original task prompt (verbatim from the run row).
+    pub original_task: String,
+    /// Repo root, same as [`PlanningContext::repo_root`]. Used as the
+    /// child's cwd so the adapter sees the target repo.
+    pub repo_root: PathBuf,
+    /// Title of the failed subtask.
+    pub failed_subtask_title: String,
+    /// The "why" the master gave when proposing the failed subtask.
+    pub failed_subtask_why: String,
+    /// Error messages from every attempt on the failed subtask, in
+    /// chronological order. For `Exhausted` there are two entries (the
+    /// first-attempt error and the retry's error); for `Deterministic`
+    /// (e.g. `SpawnFailed`) there's one.
+    pub attempt_errors: Vec<String>,
+    /// Tail of the failed subtask's worker log, ~50 lines, already
+    /// bounded + newline-joined. Empty string when no logs were emitted.
+    pub worker_log_tail: String,
+    /// One-line summaries of subtasks that have already completed in
+    /// this run. Gives the master a running picture of what landed so
+    /// the replacement can build on it.
+    pub completed_subtask_summaries: Vec<String>,
+    /// How many replans have already fired in the failed subtask's
+    /// lineage (including the one about to happen). `1` on the first
+    /// replan, `2` on the second. The prompt surfaces this so the
+    /// master can lean toward smaller / alternative decompositions
+    /// when the budget is almost spent.
+    pub attempt_counter: u32,
+    /// Same allow-list as [`PlanningContext::available_workers`]. The
+    /// master may only assign the replacement plan to one of these.
+    pub available_workers: Vec<AgentKind>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommitInfo {
     pub sha: String,
@@ -184,4 +229,33 @@ pub trait AgentImpl: Send + Sync {
         prompt: &str,
         cancel: CancellationToken,
     ) -> Result<String, AgentError>;
+
+    /// Master role — Layer 2. Produce a replacement plan when a
+    /// previously-approved subtask failed Layer 1. Inputs differ from
+    /// [`plan`] enough to warrant a separate method: the master has
+    /// already seen the repo and now needs failure forensics + a
+    /// running picture of what already landed.
+    ///
+    /// The returned [`Plan`]'s `subtasks` replace the failed subtask —
+    /// an empty vec is a legitimate outcome meaning "this is infeasible,
+    /// surface it to the human" (the orchestrator converts an empty
+    /// replan into a Layer-3 escalation). Each returned
+    /// [`PlannedSubtask`] is otherwise indistinguishable from one
+    /// produced by [`plan`]; the orchestrator assigns fresh ulids and
+    /// records `subtask_replans` lineage rows, so adapters need not
+    /// stamp anything special.
+    ///
+    /// Default impl errors with `TaskFailed` so an adapter that hasn't
+    /// implemented replan yet surfaces loudly rather than silently
+    /// hanging the Layer-2 path. Every real adapter overrides this.
+    async fn replan(
+        &self,
+        context: ReplanContext,
+        cancel: CancellationToken,
+    ) -> Result<Plan, AgentError> {
+        let _ = (context, cancel);
+        Err(AgentError::TaskFailed {
+            reason: "replan not implemented for this adapter".to_string(),
+        })
+    }
 }

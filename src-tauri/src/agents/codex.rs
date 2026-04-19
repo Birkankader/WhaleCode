@@ -26,8 +26,8 @@ use super::process::{
     classify_nonzero, git_changed_files, render_template, run_streaming, ChildOutput, RunSpec,
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
-use super::prompts::MASTER_CODEX;
-use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext};
+use super::prompts::{MASTER_CODEX, REPLAN_CODEX};
+use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext, ReplanContext};
 
 pub struct CodexAdapter {
     binary: PathBuf,
@@ -80,6 +80,34 @@ impl CodexAdapter {
             prompt.push('\n');
         }
         prompt
+    }
+
+    /// Render the master re-planning prompt. Same pattern as
+    /// [`Self::build_plan_prompt`] — extracted so tests can verify the
+    /// rendered text without spawning `codex`.
+    pub fn build_replan_prompt(ctx: &ReplanContext) -> String {
+        let attempt_errors = format_attempt_errors(&ctx.attempt_errors);
+        let completed = format_completed_summaries(&ctx.completed_subtask_summaries);
+        let workers = format_workers(&ctx.available_workers);
+        let log_tail = if ctx.worker_log_tail.is_empty() {
+            "(no log lines captured)".to_string()
+        } else {
+            ctx.worker_log_tail.clone()
+        };
+        let counter = ctx.attempt_counter.to_string();
+        render_template(
+            REPLAN_CODEX,
+            &[
+                ("original_task", ctx.original_task.as_str()),
+                ("failed_title", ctx.failed_subtask_title.as_str()),
+                ("failed_why", ctx.failed_subtask_why.as_str()),
+                ("attempt_errors", &attempt_errors),
+                ("worker_log_tail", &log_tail),
+                ("completed_summaries", &completed),
+                ("attempt_counter", &counter),
+                ("available_workers", &workers),
+            ],
+        )
     }
 }
 
@@ -198,6 +226,33 @@ impl AgentImpl for CodexAdapter {
             raw_output: out.stdout.clone(),
         })
     }
+
+    async fn replan(
+        &self,
+        context: ReplanContext,
+        cancel: CancellationToken,
+    ) -> Result<Plan, AgentError> {
+        // Reuses the `plan` envelope — read-only sandbox, JSONL events.
+        let prompt = Self::build_replan_prompt(&context);
+        let args = vec![
+            "exec".into(),
+            "--json".into(),
+            "--skip-git-repo-check".into(),
+            "--sandbox".into(),
+            "read-only".into(),
+        ];
+        let spec = RunSpec {
+            binary: &self.binary,
+            args,
+            cwd: Some(&context.repo_root),
+            stdin: Some(prompt),
+            timeout: DEFAULT_PLAN_TIMEOUT,
+            log_tx: None,
+            cancel,
+        };
+        let out = run_streaming(spec).await?;
+        handle_plan_output(out, &context.available_workers)
+    }
 }
 
 // -- JSONL envelope parsing ------------------------------------------
@@ -287,6 +342,29 @@ fn format_workers(workers: &[AgentKind]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn format_attempt_errors(errors: &[String]) -> String {
+    if errors.is_empty() {
+        return "(no error messages captured)".to_string();
+    }
+    errors
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("- attempt {}: {e}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_completed_summaries(summaries: &[String]) -> String {
+    if summaries.is_empty() {
+        return "(none yet — this is the first subtask to finish)".to_string();
+    }
+    summaries
+        .iter()
+        .map(|s| format!("- {s}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -423,5 +501,36 @@ mod tests {
         );
         assert!(p.contains("# Retry context"));
         assert!(p.contains("parse error"));
+    }
+
+    fn replan_ctx() -> ReplanContext {
+        ReplanContext {
+            original_task: "Ship feature X".to_string(),
+            repo_root: PathBuf::from("/tmp/repo"),
+            failed_subtask_title: "Add handler".to_string(),
+            failed_subtask_why: "new route".to_string(),
+            attempt_errors: vec![
+                "SpawnFailed: codex binary missing".to_string(),
+            ],
+            worker_log_tail: String::new(),
+            completed_subtask_summaries: vec![],
+            attempt_counter: 2,
+            available_workers: vec![AgentKind::Codex],
+        }
+    }
+
+    #[test]
+    fn build_replan_prompt_carries_failure_and_counter() {
+        let p = CodexAdapter::build_replan_prompt(&replan_ctx());
+        assert!(!p.contains("{{"));
+        assert!(p.contains("Ship feature X"));
+        assert!(p.contains("Add handler"));
+        assert!(p.contains("attempt 1: SpawnFailed"));
+        // Empty log -> fallback copy.
+        assert!(p.contains("(no log lines captured)"));
+        // Empty completed -> fallback copy.
+        assert!(p.contains("(none yet"));
+        // Counter renders as plain number in the "attempt N of 2" phrase.
+        assert!(p.contains("attempt 2 of 2"));
     }
 }

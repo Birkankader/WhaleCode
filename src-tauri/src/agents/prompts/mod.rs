@@ -6,9 +6,16 @@
 //! it tells editors to syntax-highlight the examples inside.
 //!
 //! Templates use the `{{var}}` substitution syntax defined in
-//! `super::process::render_template`. The variable set is the same
-//! across all three: `task`, `directory_tree`, `claude_md`,
+//! `super::process::render_template`. The variable set for the
+//! initial-plan templates is: `task`, `directory_tree`, `claude_md`,
 //! `agents_md`, `gemini_md`, `recent_commits`, `available_workers`.
+//!
+//! The Phase-3 replan templates use a different variable set keyed to
+//! failure forensics: `original_task`, `failed_title`, `failed_why`,
+//! `attempt_errors`, `worker_log_tail`, `completed_summaries`,
+//! `attempt_counter`, `available_workers`. The JSON output shape is
+//! identical to the initial-plan shape so `plan_parser::parse_and_validate`
+//! can validate either.
 //!
 //! Separate files per adapter because each CLI has its own
 //! personality — Claude follows instructions tersely, Codex benefits
@@ -19,3 +26,7 @@
 pub const MASTER_CLAUDE: &str = include_str!("master_claude.md");
 pub const MASTER_CODEX: &str = include_str!("master_codex.md");
 pub const MASTER_GEMINI: &str = include_str!("master_gemini.md");
+
+pub const REPLAN_CLAUDE: &str = include_str!("replan_claude.md");
+pub const REPLAN_CODEX: &str = include_str!("replan_codex.md");
+pub const REPLAN_GEMINI: &str = include_str!("replan_gemini.md");
