@@ -603,6 +603,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
         set({ currentError: `Reject failed: ${String(err)}` });
         throw err;
       }
+      // Mirror `discardRun`: the user said no, the backend has the
+      // rejection, we drop the graph immediately and land back in
+      // EmptyState. Without this the run stays on screen in its
+      // "awaiting approval" layout — ApprovalBar is gone (status has
+      // flipped to `rejected`) but the Master + proposed subtask
+      // cards stay, with no UI affordance to move on. The eventual
+      // `StatusChanged(rejected)` event from the backend lands on a
+      // detached subscription and is safely ignored.
+      get().reset();
     },
 
     async applyRun() {

@@ -512,6 +512,39 @@ describe('graphStore — discard / cancel / reset', () => {
     expect(s.activeSubscription).toBeNull();
   });
 
+  it('rejectAll invokes backend and resets store', async () => {
+    // Regression: without the reset the graph stayed on screen in its
+    // "awaiting approval" layout — ApprovalBar hidden (status flipped
+    // to `rejected`) but the Master + proposed subtask cards stuck
+    // around with no affordance to move on. Mirror discardRun: user
+    // said no → drop the graph → back to EmptyState.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'one',
+          title: 'Add naber.txt greeting',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    expect(state().subtasks).toHaveLength(1);
+    expect(state().status).toBe('awaiting_approval');
+
+    await state().rejectAll();
+
+    const s = state();
+    expect(s.runId).toBeNull();
+    expect(s.status).toBe('idle');
+    expect(s.subtasks).toHaveLength(0);
+    expect(s.activeSubscription).toBeNull();
+    expect(s.nodeActors.size).toBe(0);
+  });
+
   it('cancelRun invokes backend but leaves store mounted awaiting terminal event', async () => {
     await state().submitTask('x');
     await state().cancelRun();
