@@ -11,6 +11,8 @@ import {
   settingsSchema,
   statusChangedSchema,
   subtaskDataSchema,
+  subtaskDraftSchema,
+  subtaskPatchSchema,
   subtaskStateChangedSchema,
   subtaskStateSchema,
   subtasksProposedSchema,
@@ -126,6 +128,73 @@ describe('subtaskDataSchema', () => {
     });
     expect(parsed.assignedWorker).toBe('codex');
     expect(parsed.why).toBeNull();
+  });
+});
+
+describe('subtaskPatchSchema', () => {
+  it('accepts an empty patch (all fields optional, means "leave alone")', () => {
+    expect(subtaskPatchSchema.parse({})).toEqual({});
+  });
+
+  it('accepts a title-only patch', () => {
+    expect(subtaskPatchSchema.parse({ title: 'new' })).toEqual({ title: 'new' });
+  });
+
+  it('accepts why as string, null, or absent', () => {
+    expect(subtaskPatchSchema.parse({ why: 'because' }).why).toBe('because');
+    expect(subtaskPatchSchema.parse({ why: null }).why).toBeNull();
+    expect(subtaskPatchSchema.parse({}).why).toBeUndefined();
+  });
+
+  it('accepts assignedWorker', () => {
+    const parsed = subtaskPatchSchema.parse({ assignedWorker: 'gemini' });
+    expect(parsed.assignedWorker).toBe('gemini');
+  });
+
+  it('rejects an unknown assignedWorker', () => {
+    expect(
+      subtaskPatchSchema.safeParse({ assignedWorker: 'gpt4' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a non-string title', () => {
+    expect(subtaskPatchSchema.safeParse({ title: 123 }).success).toBe(false);
+  });
+});
+
+describe('subtaskDraftSchema', () => {
+  it('parses a minimal draft (title + worker)', () => {
+    const parsed = subtaskDraftSchema.parse({
+      title: 'do X',
+      assignedWorker: 'claude',
+    });
+    expect(parsed.title).toBe('do X');
+    expect(parsed.assignedWorker).toBe('claude');
+    expect(parsed.why).toBeUndefined();
+  });
+
+  it('accepts why as string or null', () => {
+    expect(
+      subtaskDraftSchema.parse({
+        title: 't',
+        why: 'rationale',
+        assignedWorker: 'codex',
+      }).why,
+    ).toBe('rationale');
+    expect(
+      subtaskDraftSchema.parse({
+        title: 't',
+        why: null,
+        assignedWorker: 'codex',
+      }).why,
+    ).toBeNull();
+  });
+
+  it('requires title and assignedWorker', () => {
+    expect(subtaskDraftSchema.safeParse({ title: 't' }).success).toBe(false);
+    expect(
+      subtaskDraftSchema.safeParse({ assignedWorker: 'claude' }).success,
+    ).toBe(false);
   });
 });
 

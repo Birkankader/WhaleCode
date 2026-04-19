@@ -257,30 +257,52 @@ describe('graphStore — happy path (realistic backend sequence)', () => {
     expect(snap('a')?.retries).toBe(0);
   });
 
-  it('re-plan appends new subtasks and resets selection to the new wave', async () => {
+  it('re-plan replaces subtasks by id: removed subtasks drop, new ones append, retained ones stay', async () => {
+    // Backend always emits the *full* current plan on re-emit (Phase 3
+    // edit commands and master re-plan both work this way). The store
+    // must diff-by-id: retain surviving rows, stop actors of dropped
+    // rows, spawn actors for new rows.
     await state().submitTask('x');
     emit(EVENT_SUBTASKS_PROPOSED, {
       runId: BACKEND_RUN_ID,
       subtasks: [
         { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
-      ],
-    });
-    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
-    await state().approveSubtasks(['a']);
-    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'running' });
-
-    // Backend re-plans: emits a second subtasks_proposed + awaiting-approval.
-    emit(EVENT_SUBTASKS_PROPOSED, {
-      runId: BACKEND_RUN_ID,
-      subtasks: [
         { id: 'b', title: 'B', why: null, assignedWorker: 'gemini', dependencies: [] },
       ],
     });
     emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    const actorA = state().nodeActors.get('a');
+    expect(actorA).toBeDefined();
+    expect(state().selectedSubtaskIds).toEqual(new Set(['a', 'b']));
+
+    // User de-selects `b` before the re-plan to test selection
+    // preservation across diffs.
+    state().toggleSubtaskSelection('b');
+    expect(state().selectedSubtaskIds).toEqual(new Set(['a']));
+
+    // Re-plan: b removed, c added, a retained (same title).
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+        { id: 'c', title: 'C', why: null, assignedWorker: 'codex', dependencies: [] },
+      ],
+    });
 
     const s = state();
-    expect(s.subtasks.map((x) => x.id)).toEqual(['a', 'b']);
-    expect(s.selectedSubtaskIds).toEqual(new Set(['b']));
+    expect(s.subtasks.map((x) => x.id)).toEqual(['a', 'c']);
+    // Actor identity for `a` is preserved across the re-emit so any
+    // intermediate state (logs, Step 3a retry counters) survives.
+    expect(s.nodeActors.get('a')).toBe(actorA);
+    // `b` was dropped — actor is gone and its derived state (snapshot,
+    // logs) cleaned up so a later backend stray event can't revive it.
+    expect(s.nodeActors.has('b')).toBe(false);
+    expect(s.nodeSnapshots.has('b')).toBe(false);
+    expect(s.nodeLogs.has('b')).toBe(false);
+    expect(actorA?.getSnapshot().status).toBe('active');
+    // Selection: `a` (deliberately kept) + `c` (newcomer auto-select).
+    expect(s.selectedSubtaskIds).toEqual(new Set(['a', 'c']));
+    expect(snap('c')?.value).toBe('proposed');
     expect(snap(MASTER_ID)?.value).toBe('proposed');
   });
 });
@@ -499,6 +521,399 @@ describe('graphStore — apply / conflict / completed', () => {
     invokeHandlers.set('apply_run', async () => undefined);
     await state().applyRun();
     expect(state().currentError).toBeNull();
+  });
+});
+
+// Local wire-shape helpers so mock invoke handlers can capture args
+// without falling back to `any`. Match the shape built by the
+// wrappers in `src/lib/ipc.ts`; the string unions stay loose on
+// purpose — these types are only used to read test assertions.
+type UpdateArgs = {
+  runId: string;
+  subtaskId: string;
+  patch: { title?: string; why?: string; assignedWorker?: string };
+};
+type AddArgs = {
+  runId: string;
+  draft: { title: string; why?: string; assignedWorker: string };
+};
+type RemoveArgs = { runId: string; subtaskId: string };
+
+describe('graphStore — Phase 3 edit actions', () => {
+  // All three actions share the same contract: guard on activeRunId,
+  // delegate to IPC, NEVER mutate store state directly — the backend
+  // re-emits `run:subtasks_proposed` on success and the diff-by-id
+  // handler reconciles. These tests fire the re-emit manually after
+  // the IPC mock resolves to exercise the full round-trip.
+
+  async function seedAwaitingApproval() {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+        {
+          id: 'b',
+          title: 'B',
+          why: null,
+          assignedWorker: 'gemini',
+          dependencies: ['a'],
+        },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+  }
+
+  describe('updateSubtask', () => {
+    it('happy path: invokes IPC with translated patch, re-emit updates data in place', async () => {
+      await seedAwaitingApproval();
+      const actorA = state().nodeActors.get('a');
+      expect(actorA).toBeDefined();
+
+      let invokedArgs: UpdateArgs | undefined;
+      invokeHandlers.set('update_subtask', async (args) => {
+        invokedArgs = args as UpdateArgs;
+        return undefined;
+      });
+
+      await state().updateSubtask('a', {
+        title: 'A renamed',
+        why: 'new rationale',
+        assignedWorker: 'codex',
+      });
+
+      expect(invokedArgs).toEqual({
+        runId: BACKEND_RUN_ID,
+        subtaskId: 'a',
+        patch: {
+          title: 'A renamed',
+          why: 'new rationale',
+          assignedWorker: 'codex',
+        },
+      });
+
+      // Backend re-emits the full plan with the new fields.
+      emit(EVENT_SUBTASKS_PROPOSED, {
+        runId: BACKEND_RUN_ID,
+        subtasks: [
+          {
+            id: 'a',
+            title: 'A renamed',
+            why: 'new rationale',
+            assignedWorker: 'codex',
+            dependencies: [],
+          },
+          {
+            id: 'b',
+            title: 'B',
+            why: null,
+            assignedWorker: 'gemini',
+            dependencies: ['a'],
+          },
+        ],
+      });
+
+      const s = state();
+      const aRow = s.subtasks.find((t) => t.id === 'a')!;
+      expect(aRow.title).toBe('A renamed');
+      expect(aRow.why).toBe('new rationale');
+      expect(aRow.agent).toBe('codex');
+      // Actor identity preserved across the edit — critical for
+      // Step 3a retry-state survival.
+      expect(s.nodeActors.get('a')).toBe(actorA);
+      expect(actorA?.getSnapshot().status).toBe('active');
+    });
+
+    it('translates null `why` to empty string on the wire (clear semantics)', async () => {
+      await seedAwaitingApproval();
+      let invokedArgs: UpdateArgs | undefined;
+      invokeHandlers.set('update_subtask', async (args) => {
+        invokedArgs = args as UpdateArgs;
+        return undefined;
+      });
+      await state().updateSubtask('a', { why: null });
+      expect(invokedArgs?.patch.why).toBe('');
+    });
+
+    it('omits undefined fields from the wire payload (leave-alone semantics)', async () => {
+      await seedAwaitingApproval();
+      let invokedArgs: UpdateArgs | undefined;
+      invokeHandlers.set('update_subtask', async (args) => {
+        invokedArgs = args as UpdateArgs;
+        return undefined;
+      });
+      await state().updateSubtask('a', { title: 'only-title' });
+      expect(invokedArgs?.patch).toEqual({ title: 'only-title' });
+      expect(invokedArgs && 'why' in invokedArgs.patch).toBe(false);
+      expect(invokedArgs && 'assignedWorker' in invokedArgs.patch).toBe(false);
+    });
+
+    it('maps backend errors to a user-facing currentError', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('update_subtask', async () => {
+        throw new Error('invalid edit: title must not be empty');
+      });
+      await expect(
+        state().updateSubtask('a', { title: '   ' }),
+      ).rejects.toThrow();
+      expect(state().currentError).toBe('Title is required.');
+    });
+
+    it('maps SubtaskNotFound to "no longer exists"', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('update_subtask', async () => {
+        throw new Error('subtask ghost not found');
+      });
+      await expect(
+        state().updateSubtask('ghost', { title: 't' }),
+      ).rejects.toThrow();
+      expect(state().currentError).toBe('Subtask no longer exists.');
+    });
+
+    it('maps WrongSubtaskState to "no longer editable"', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('update_subtask', async () => {
+        throw new Error('subtask a is in state Running, expected proposed');
+      });
+      await expect(state().updateSubtask('a', { title: 't' })).rejects.toThrow();
+      expect(state().currentError).toBe('Subtask is no longer editable.');
+    });
+
+    it('maps WrongState (run not awaiting-approval) to a clear message', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('update_subtask', async () => {
+        throw new Error('run x is in state Running, expected awaiting-approval');
+      });
+      await expect(state().updateSubtask('a', { title: 't' })).rejects.toThrow();
+      expect(state().currentError).toBe('Run is no longer awaiting approval.');
+    });
+
+    it('maps an unavailable worker to a helpful message', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('update_subtask', async () => {
+        throw new Error('invalid edit: assigned worker Gemini is not available');
+      });
+      await expect(
+        state().updateSubtask('a', { assignedWorker: 'gemini' }),
+      ).rejects.toThrow();
+      expect(state().currentError).toBe(
+        'Selected agent is not available on this system.',
+      );
+    });
+
+    it('falls through to raw error for unmapped shapes', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('update_subtask', async () => {
+        throw new Error('some brand-new failure');
+      });
+      await expect(state().updateSubtask('a', { title: 't' })).rejects.toThrow();
+      expect(state().currentError).toMatch(/Update failed:/);
+      expect(state().currentError).toMatch(/some brand-new failure/);
+    });
+
+    it('guards on no active run — skips IPC and resolves quietly', async () => {
+      useGraphStore.getState().reset();
+      const spy = vi.fn();
+      invokeHandlers.set('update_subtask', async (args) => {
+        spy(args);
+        return undefined;
+      });
+      await state().updateSubtask('a', { title: 't' });
+      expect(spy).not.toHaveBeenCalled();
+      expect(state().currentError).toBeNull();
+    });
+  });
+
+  describe('addSubtask', () => {
+    it('happy path: invokes IPC, returns server id, re-emit appends the row', async () => {
+      await seedAwaitingApproval();
+      const priorSelection = new Set(state().selectedSubtaskIds);
+
+      let invokedArgs: AddArgs | undefined;
+      invokeHandlers.set('add_subtask', async (args) => {
+        invokedArgs = args as AddArgs;
+        return 'new-id-42';
+      });
+
+      const returnedId = await state().addSubtask({
+        title: 'C',
+        why: 'because',
+        assignedWorker: 'codex',
+      });
+
+      expect(returnedId).toBe('new-id-42');
+      expect(invokedArgs).toEqual({
+        runId: BACKEND_RUN_ID,
+        draft: {
+          title: 'C',
+          why: 'because',
+          assignedWorker: 'codex',
+        },
+      });
+
+      emit(EVENT_SUBTASKS_PROPOSED, {
+        runId: BACKEND_RUN_ID,
+        subtasks: [
+          { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+          {
+            id: 'b',
+            title: 'B',
+            why: null,
+            assignedWorker: 'gemini',
+            dependencies: ['a'],
+          },
+          {
+            id: 'new-id-42',
+            title: 'C',
+            why: 'because',
+            assignedWorker: 'codex',
+            dependencies: [],
+          },
+        ],
+      });
+
+      const s = state();
+      expect(s.subtasks.map((t) => t.id)).toEqual(['a', 'b', 'new-id-42']);
+      // New row spawned a fresh actor.
+      expect(s.nodeActors.has('new-id-42')).toBe(true);
+      expect(snap('new-id-42')?.value).toBe('proposed');
+      // Newcomer auto-selected; prior selections preserved.
+      expect(s.selectedSubtaskIds.has('new-id-42')).toBe(true);
+      for (const id of priorSelection) {
+        expect(s.selectedSubtaskIds.has(id)).toBe(true);
+      }
+    });
+
+    it('omits why from wire when null or undefined', async () => {
+      await seedAwaitingApproval();
+      const captured: AddArgs[] = [];
+      invokeHandlers.set('add_subtask', async (args) => {
+        captured.push(args as AddArgs);
+        return 'id';
+      });
+      await state().addSubtask({ title: 'C', assignedWorker: 'codex' });
+      await state().addSubtask({ title: 'D', why: null, assignedWorker: 'codex' });
+      expect('why' in captured[0].draft).toBe(false);
+      expect('why' in captured[1].draft).toBe(false);
+    });
+
+    it('rejected IPC maps through mapEditError and sets currentError', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('add_subtask', async () => {
+        throw new Error('invalid edit: title must not be empty');
+      });
+      await expect(
+        state().addSubtask({ title: '', assignedWorker: 'claude' }),
+      ).rejects.toThrow();
+      expect(state().currentError).toBe('Title is required.');
+    });
+
+    it('guard failure throws and sets currentError (can\'t return a fake id)', async () => {
+      useGraphStore.getState().reset();
+      const spy = vi.fn();
+      invokeHandlers.set('add_subtask', async (args) => {
+        spy(args);
+        return 'id';
+      });
+      await expect(
+        state().addSubtask({ title: 'C', assignedWorker: 'codex' }),
+      ).rejects.toThrow(/No active run/);
+      expect(spy).not.toHaveBeenCalled();
+      expect(state().currentError).toMatch(/No active run/);
+    });
+  });
+
+  describe('removeSubtask', () => {
+    it('happy path: invokes IPC, re-emit drops the row and cleans up the actor', async () => {
+      await seedAwaitingApproval();
+      const actorB = state().nodeActors.get('b');
+      expect(actorB).toBeDefined();
+
+      let invokedArgs: RemoveArgs | undefined;
+      invokeHandlers.set('remove_subtask', async (args) => {
+        invokedArgs = args as RemoveArgs;
+        return undefined;
+      });
+
+      await state().removeSubtask('b');
+      expect(invokedArgs).toEqual({ runId: BACKEND_RUN_ID, subtaskId: 'b' });
+
+      emit(EVENT_SUBTASKS_PROPOSED, {
+        runId: BACKEND_RUN_ID,
+        subtasks: [
+          { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+        ],
+      });
+
+      const s = state();
+      expect(s.subtasks.map((t) => t.id)).toEqual(['a']);
+      expect(s.nodeActors.has('b')).toBe(false);
+      expect(s.nodeSnapshots.has('b')).toBe(false);
+      expect(s.nodeLogs.has('b')).toBe(false);
+      // Actor was stopped (not just dropped): verifies no leaked
+      // XState subscription after removal.
+      expect(actorB?.getSnapshot().status).toBe('stopped');
+      // Selection intersects with incoming — `b` dropped out.
+      expect(s.selectedSubtaskIds.has('b')).toBe(false);
+    });
+
+    it('maps HasDependents to the "remove dependents first" message', async () => {
+      await seedAwaitingApproval();
+      invokeHandlers.set('remove_subtask', async () => {
+        throw new Error(
+          'subtask a has dependents in the plan; remove them first',
+        );
+      });
+      await expect(state().removeSubtask('a')).rejects.toThrow();
+      expect(state().currentError).toMatch(/another subtask depends/);
+    });
+
+    it('guards on no active run — skips IPC and resolves quietly', async () => {
+      useGraphStore.getState().reset();
+      const spy = vi.fn();
+      invokeHandlers.set('remove_subtask', async (args) => {
+        spy(args);
+        return undefined;
+      });
+      await state().removeSubtask('a');
+      expect(spy).not.toHaveBeenCalled();
+      expect(state().currentError).toBeNull();
+    });
+  });
+
+  it('store reflects the `why` field carried by subtask data', async () => {
+    // Regression: before the SubtaskNodeData change, `why` was
+    // silently dropped on the way into the store, so the edit row in
+    // Step 2 would have rendered a stale/empty rationale after the
+    // re-emit.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'a',
+          title: 'A',
+          why: 'initial rationale',
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    expect(state().subtasks[0].why).toBe('initial rationale');
+
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'a',
+          title: 'A',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    expect(state().subtasks[0].why).toBeNull();
   });
 });
 

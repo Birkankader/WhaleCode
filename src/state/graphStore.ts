@@ -32,12 +32,15 @@ import { createActor, type ActorRefFrom } from 'xstate';
 import { create } from 'zustand';
 
 import {
+  addSubtask as addSubtaskIpc,
   applyRun as applyRunIpc,
   approveSubtasks as approveSubtasksIpc,
   cancelRun as cancelRunIpc,
   discardRun as discardRunIpc,
   rejectRun as rejectRunIpc,
+  removeSubtask as removeSubtaskIpc,
   submitTask as submitTaskIpc,
+  updateSubtask as updateSubtaskIpc,
   type AgentKind as BackendAgentKind,
   type BaseBranchDirty,
   type Completed,
@@ -47,7 +50,10 @@ import {
   type MergeConflict,
   type RunStatus,
   type StatusChanged,
+  type SubtaskDraft,
+  type SubtaskId,
   type SubtaskLog,
+  type SubtaskPatch,
   type SubtaskState,
   type SubtaskStateChanged,
   type SubtasksProposed,
@@ -71,6 +77,14 @@ export type MasterNodeData = {
 export type SubtaskNodeData = {
   id: string;
   title: string;
+  /**
+   * Master's rationale for the subtask. `null` means the backend
+   * didn't provide one (user-added subtasks with an empty draft,
+   * or master omitted it); the UI shows a muted "(no rationale)"
+   * placeholder rather than a blank field. Phase 3 adds inline
+   * editing that rewrites this via `updateSubtask`.
+   */
+  why: string | null;
   agent: BackendAgentKind;
   dependsOn: string[];
 };
@@ -134,6 +148,18 @@ export type GraphState = {
   applyRun: () => Promise<void>;
   discardRun: () => Promise<void>;
   cancelRun: () => Promise<void>;
+  /**
+   * Phase 3 plan-edit actions. Valid only while the run is in
+   * `awaiting_approval`. None of these mutate the store directly —
+   * on success the backend re-emits `run:subtasks_proposed` with the
+   * updated plan, and the store's diff-by-id handler reconciles.
+   * Failures map backend error strings to user-facing messages on
+   * `currentError` and rethrow so the caller can surface per-row
+   * feedback.
+   */
+  updateSubtask: (subtaskId: SubtaskId, patch: SubtaskPatch) => Promise<void>;
+  addSubtask: (draft: SubtaskDraft) => Promise<SubtaskId>;
+  removeSubtask: (subtaskId: SubtaskId) => Promise<void>;
   dismissError: () => void;
   reset: () => void;
 };
@@ -258,6 +284,53 @@ function newLocalRunId(): string {
   return `pending_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Map a backend edit-command error string into a user-facing message.
+ *
+ * Tauri's command layer stringifies `OrchestratorError` via
+ * `map_err(|e| e.to_string())` before it reaches the frontend, so the
+ * error we see here is the output of `thiserror`'s `Display` impl —
+ * see `src-tauri/src/orchestration/mod.rs` for the exact phrasings
+ * that back each match arm. We look for stable substrings rather than
+ * relying on exact equality so a small rewording on the Rust side
+ * doesn't silently fall through to the generic fallback.
+ *
+ * `action` is the verb the UI would have used ("Update", "Add",
+ * "Remove") so the fallback message reads naturally.
+ */
+function mapEditError(err: unknown, action: 'Update' | 'Add' | 'Remove'): string {
+  const raw = String(err);
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('title must not be empty')) {
+    return 'Title is required.';
+  }
+  if (lower.includes('assigned worker') && lower.includes('not available')) {
+    return 'Selected agent is not available on this system.';
+  }
+  if (lower.includes('has dependents')) {
+    return 'Cannot remove — another subtask depends on this one. Remove dependents first.';
+  }
+  if (lower.includes('subtask') && lower.includes('not found')) {
+    return 'Subtask no longer exists.';
+  }
+  if (lower.includes('subtask') && lower.includes('expected proposed')) {
+    return 'Subtask is no longer editable.';
+  }
+  if (
+    lower.includes('run') &&
+    lower.includes('expected awaiting-approval')
+  ) {
+    return 'Run is no longer awaiting approval.';
+  }
+  if (lower.includes('run') && lower.includes('not found')) {
+    return 'Run no longer exists.';
+  }
+  // Unknown shape — surface the raw message so at least we don't lie
+  // about the failure. The verb in front keeps it readable.
+  return `${action} failed: ${raw}`;
+}
+
 export const useGraphStore = create<GraphState>((set, get) => {
   function spawnActor(id: string): NodeActorRef {
     const actor = createActor(nodeMachine);
@@ -348,19 +421,73 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   function handleSubtasksProposed(e: SubtasksProposed) {
     if (e.runId !== get().runId) return;
-    const existing = new Set(get().subtasks.map((s) => s.id));
-    const appended: SubtaskNodeData[] = [];
+
+    // Diff the incoming plan against the current one by id.
+    //
+    //   retained → update data fields (title/why/worker/deps) in-place,
+    //              keep the actor reference so any per-node state
+    //              (node machine snapshot, logs, retry counters once
+    //              Step 3a lands) survives a master re-plan or a
+    //              user edit round-trip.
+    //   new      → spawn a fresh actor + PROPOSE.
+    //   removed  → stop the actor, drop it from the maps, drop logs.
+    //
+    // Phase 3 edit commands (`update/add/remove_subtask`) re-emit the
+    // *full* current plan, so append-only semantics would silently
+    // lose user-visible state on edits. The diff is also the right
+    // shape for Step 3's master re-plan path, where the backend may
+    // invalidate proposed subtasks while keeping the done/running
+    // ones untouched.
+    const incomingIds = new Set(e.subtasks.map((s) => s.id));
+    const currentSubtasks = get().subtasks;
+    const currentIds = new Set(currentSubtasks.map((s) => s.id));
+
+    const removedIds: string[] = [];
+    for (const s of currentSubtasks) {
+      if (!incomingIds.has(s.id)) removedIds.push(s.id);
+    }
+    if (removedIds.length > 0) {
+      for (const id of removedIds) {
+        const actor = get().nodeActors.get(id);
+        if (actor) actor.stop();
+      }
+      set((state) => {
+        const nextActors = new Map(state.nodeActors);
+        const nextSnaps = new Map(state.nodeSnapshots);
+        const nextLogs = new Map(state.nodeLogs);
+        for (const id of removedIds) {
+          nextActors.delete(id);
+          nextSnaps.delete(id);
+          nextLogs.delete(id);
+        }
+        return {
+          nodeActors: nextActors,
+          nodeSnapshots: nextSnaps,
+          nodeLogs: nextLogs,
+        };
+      });
+    }
+
+    // Build the next subtasks list in incoming order (DAG layout
+    // should follow the master's intent), spawning actors only for
+    // brand-new ids.
+    const nextSubtasks: SubtaskNodeData[] = [];
+    const newIds: string[] = [];
     for (const st of e.subtasks) {
-      if (existing.has(st.id)) continue;
-      appended.push({
+      nextSubtasks.push({
         id: st.id,
         title: st.title,
+        why: st.why,
         agent: st.assignedWorker,
         dependsOn: st.dependencies,
       });
-      const actor = registerActor(st.id);
-      actor.send({ type: 'PROPOSE' });
+      if (!currentIds.has(st.id)) {
+        newIds.push(st.id);
+        const actor = registerActor(st.id);
+        actor.send({ type: 'PROPOSE' });
+      }
     }
+
     // Master transitions to proposed. On re-plan (master was approved),
     // route through thinking → proposed; on first wave (master thinking),
     // just PROPOSE. Machine no-ops PROPOSE from proposed, so re-emit is safe.
@@ -370,10 +497,24 @@ export const useGraphStore = create<GraphState>((set, get) => {
     }
     sendTo(MASTER_ID, { type: 'PROPOSE' });
 
-    set((state) => ({
-      subtasks: [...state.subtasks, ...appended],
-      selectedSubtaskIds: new Set(appended.map((s) => s.id)),
-    }));
+    // Selection: keep the user's prior picks intact across edits
+    // (intersect with incoming), auto-select brand-new rows so
+    // master-added / user-added subtasks aren't silently excluded
+    // from the next Approve click. On the initial emit, priorSel is
+    // empty and newIds is every incoming id — which reduces to
+    // "select all", matching Phase 2 behaviour.
+    set((state) => {
+      const priorSel = state.selectedSubtaskIds;
+      const nextSelected = new Set<string>();
+      for (const id of priorSel) {
+        if (incomingIds.has(id)) nextSelected.add(id);
+      }
+      for (const id of newIds) nextSelected.add(id);
+      return {
+        subtasks: nextSubtasks,
+        selectedSubtaskIds: nextSelected,
+      };
+    });
   }
 
   function handleSubtaskStateChanged(e: SubtaskStateChanged) {
@@ -658,6 +799,50 @@ export const useGraphStore = create<GraphState>((set, get) => {
         await cancelRunIpc(runId);
       } catch (err) {
         set({ currentError: `Cancel failed: ${String(err)}` });
+        throw err;
+      }
+    },
+
+    async updateSubtask(subtaskId, patch) {
+      const runId = get().runId;
+      if (!runId) return;
+      try {
+        await updateSubtaskIpc(runId, subtaskId, patch);
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Update') });
+        throw err;
+      }
+      // Backend emits a fresh `run:subtasks_proposed` on success — the
+      // diff-by-id handler picks it up and updates the subtask in
+      // place. We don't touch store state here.
+    },
+
+    async addSubtask(draft) {
+      const runId = get().runId;
+      if (!runId) {
+        // Unlike update/remove, `addSubtask` has a return value — we
+        // can't silently resolve with a fake id. Treat no-run as a
+        // hard failure so the caller's edit row surfaces feedback.
+        const msg = 'No active run to add a subtask to.';
+        set({ currentError: msg });
+        throw new Error(msg);
+      }
+      try {
+        const id = await addSubtaskIpc(runId, draft);
+        return id;
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Add') });
+        throw err;
+      }
+    },
+
+    async removeSubtask(subtaskId) {
+      const runId = get().runId;
+      if (!runId) return;
+      try {
+        await removeSubtaskIpc(runId, subtaskId);
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Remove') });
         throw err;
       }
     },

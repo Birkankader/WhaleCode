@@ -61,9 +61,9 @@ describe('graphStore — selection actions', () => {
     // a full run lifecycle.
     useGraphStore.setState({
       subtasks: [
-        { id: 'a', title: 'A', agent: 'claude', dependsOn: [] },
-        { id: 'b', title: 'B', agent: 'gemini', dependsOn: [] },
-        { id: 'c', title: 'C', agent: 'codex', dependsOn: [] },
+        { id: 'a', title: 'A', why: null, agent: 'claude', dependsOn: [] },
+        { id: 'b', title: 'B', why: null, agent: 'gemini', dependsOn: [] },
+        { id: 'c', title: 'C', why: null, agent: 'codex', dependsOn: [] },
       ],
       selectedSubtaskIds: new Set(['a', 'b', 'c']),
     });

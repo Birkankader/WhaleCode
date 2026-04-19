@@ -83,6 +83,44 @@ export const subtaskDataSchema = z.object({
 });
 export type SubtaskData = z.infer<typeof subtaskDataSchema>;
 
+/**
+ * Partial update for a proposed subtask. Mirrors
+ * `ipc::SubtaskPatch` on the Rust side. Every field is independently
+ * optional:
+ *   - `undefined` / field absent → leave alone
+ *   - `title: string`            → set (backend rejects empty after trim)
+ *   - `why: null`                → clear (translated to `""` on the wire
+ *                                  because the Rust side treats
+ *                                  `Some("")` as "clear to None")
+ *   - `why: string`              → set (empty string also clears)
+ *   - `assignedWorker: AgentKind` → set (backend rejects if unavailable)
+ *
+ * Dependencies are not editable in Phase 3 (Q1 deferral).
+ */
+export const subtaskPatchSchema = z.object({
+  title: z.string().optional(),
+  why: z.string().nullable().optional(),
+  assignedWorker: agentKindSchema.optional(),
+});
+export type SubtaskPatch = z.infer<typeof subtaskPatchSchema>;
+
+/**
+ * Full definition for a user-added subtask. Mirrors
+ * `ipc::SubtaskDraft` on the Rust side. The backend coins the ulid,
+ * so the frontend does not send an id. `why` is optional:
+ * `undefined` / `null` omits the field (backend defaults to empty);
+ * a string (even empty) is passed through.
+ *
+ * User-added subtasks are always leaves — Phase 3 does not let the
+ * user express dependencies.
+ */
+export const subtaskDraftSchema = z.object({
+  title: z.string(),
+  why: z.string().nullable().optional(),
+  assignedWorker: agentKindSchema,
+});
+export type SubtaskDraft = z.infer<typeof subtaskDraftSchema>;
+
 export const fileDiffSchema = z.object({
   path: z.string(),
   additions: z.number().int().nonnegative(),
@@ -275,6 +313,65 @@ export async function discardRun(runId: RunId): Promise<void> {
 
 export async function cancelRun(runId: RunId): Promise<void> {
   await invoke('cancel_run', { runId });
+}
+
+// ---------- Phase 3 plan-edit commands ----------
+//
+// All three reject unless the run is `AwaitingApproval` and the target
+// subtask (if any) is `Proposed`. Success emits a fresh
+// `run:subtasks_proposed` event carrying the updated plan — the store
+// reacts to *that*, not to the command return. Do not mutate store
+// state optimistically here.
+
+/**
+ * Apply a partial update to a proposed subtask. The `why` field uses
+ * `null` as the caller-facing "clear" sentinel; we translate that to
+ * the empty-string sentinel the Rust orchestrator recognises (see
+ * `ipc::SubtaskPatch` docs). Absent fields are omitted from the wire
+ * payload so they land as `None` server-side — "leave alone".
+ */
+export async function updateSubtask(
+  runId: RunId,
+  subtaskId: SubtaskId,
+  patch: SubtaskPatch,
+): Promise<void> {
+  const wire: { title?: string; why?: string; assignedWorker?: AgentKind } = {};
+  if (patch.title !== undefined) wire.title = patch.title;
+  if (patch.why !== undefined) wire.why = patch.why === null ? '' : patch.why;
+  if (patch.assignedWorker !== undefined) wire.assignedWorker = patch.assignedWorker;
+  await invoke('update_subtask', { runId, subtaskId, patch: wire });
+}
+
+/**
+ * Append a user-drafted subtask. Returns the server-coined ulid so
+ * the UI can address the new row (e.g. to immediately open it for
+ * editing again). `why: null` and `why: undefined` are equivalent —
+ * both omit the field, which the backend defaults to empty.
+ */
+export async function addSubtask(
+  runId: RunId,
+  draft: SubtaskDraft,
+): Promise<SubtaskId> {
+  const wire: { title: string; why?: string; assignedWorker: AgentKind } = {
+    title: draft.title,
+    assignedWorker: draft.assignedWorker,
+  };
+  if (draft.why !== undefined && draft.why !== null) wire.why = draft.why;
+  const raw = await invoke<unknown>('add_subtask', { runId, draft: wire });
+  return subtaskIdSchema.parse(raw);
+}
+
+/**
+ * Remove a proposed subtask. Rejects with `HasDependents` if another
+ * proposed subtask still declares it as a dependency; the UI should
+ * surface the mapped message and ask the user to remove dependents
+ * first.
+ */
+export async function removeSubtask(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<void> {
+  await invoke('remove_subtask', { runId, subtaskId });
 }
 
 export async function detectAgents(): Promise<AgentDetectionResult> {
