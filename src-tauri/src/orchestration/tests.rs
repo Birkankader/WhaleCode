@@ -37,8 +37,12 @@ enum ExecuteScript {
     /// Succeed after `delay`, with this summary.
     Ok { summary: String, delay: Duration },
     /// Write `files` (path relative to worktree → content) into the
-    /// worktree, `git add` + `git commit`, then succeed. Lets merge-
-    /// phase tests exercise real git branches with real commits on them.
+    /// worktree and succeed, leaving the tree dirty. The dispatcher's
+    /// auto-commit step is what turns these writes into real commits
+    /// the merge phase can walk — this is deliberate: prod CLI agents
+    /// don't self-commit either, so the test scaffold must not cheat.
+    /// If the auto-commit logic regresses (0-files bug), the merge
+    /// tests in this file break instead of silently passing.
     OkWrite {
         summary: String,
         files: Vec<(PathBuf, String)>,
@@ -229,10 +233,11 @@ impl AgentImpl for ScriptedAgent {
                 })
             }
             ExecuteScript::OkWrite { summary, files } => {
-                // Write each file under the worktree and commit the
-                // result. `merge_all` needs a real branch with real
-                // commits to merge; without this the worktree branch
-                // stays at base and merge becomes a no-op.
+                // Write files but leave them uncommitted. The dispatcher's
+                // auto-commit is responsible for turning these writes into
+                // a real commit on the worktree branch. Matches prod
+                // behavior: real CLI agents typically don't commit their
+                // own work either.
                 for (rel, content) in &files {
                     let abs = _worktree_path.join(rel);
                     if let Some(parent) = abs.parent() {
@@ -248,22 +253,6 @@ impl AgentImpl for ScriptedAgent {
                         }
                     })?;
                 }
-                TokioCommand::new("git")
-                    .args(["add", "."])
-                    .current_dir(_worktree_path)
-                    .output()
-                    .await
-                    .map_err(|e| AgentError::TaskFailed {
-                        reason: format!("git add: {e}"),
-                    })?;
-                TokioCommand::new("git")
-                    .args(["commit", "-m", &format!("scripted: {}", subtask.title)])
-                    .current_dir(_worktree_path)
-                    .output()
-                    .await
-                    .map_err(|e| AgentError::TaskFailed {
-                        reason: format!("git commit: {e}"),
-                    })?;
                 Ok(ExecutionResult {
                     summary,
                     files_changed: files.iter().map(|(p, _)| p.clone()).collect(),
