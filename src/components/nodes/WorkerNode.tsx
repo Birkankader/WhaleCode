@@ -189,13 +189,7 @@ export function WorkerNode({ id, data }: NodeProps) {
       {isProposed ? (
         <ProposedBody id={id} data={d} autoEnter={autoEnter} />
       ) : (
-        <p
-          className="truncate text-body text-fg-primary"
-          style={strikeTitle ? { textDecoration: 'line-through' } : undefined}
-          title={d.title}
-        >
-          {d.title}
-        </p>
+        <NonProposedBody title={d.title} why={d.why} strikeTitle={strikeTitle} />
       )}
 
       {isEscalated ? (
@@ -276,6 +270,57 @@ function ProposedBody({
         emptyPlaceholder="Add context…"
       />
       {data.dependsOn.length > 0 ? <DependsOn ids={data.dependsOn} /> : null}
+    </div>
+  );
+}
+
+/**
+ * Read-only body for approved/running/done/escalating WorkerNodes.
+ *
+ * Two visibility guarantees the old `<p>{d.title}</p>` lacked:
+ * - **Empty-title fallback**: an italic "(Untitled subtask)" in tertiary
+ *   so a card whose upstream producer somehow emitted an empty title
+ *   (a user-added subtask the user approved without typing, a master
+ *   parser regression, etc.) never renders as an invisible card body.
+ *   The spec allows empty titles in proposed state; this keeps the
+ *   card legible after the approval boundary without relaxing the
+ *   approval invariant.
+ * - **Why line**: the master's rationale was previously only visible
+ *   while a subtask was in `proposed` state. For `approved`/`running`/
+ *   `done`/`failed` states we render it as a single truncated italic
+ *   line beneath the title — context for the user watching a worker
+ *   execute. Hidden when empty; hovering reveals the full text via
+ *   the native `title` attribute.
+ */
+function NonProposedBody({
+  title,
+  why,
+  strikeTitle,
+}: {
+  title: string;
+  why: string | null;
+  strikeTitle: boolean;
+}) {
+  const emptyTitle = title.trim().length === 0;
+  const visibleWhy = (why ?? '').trim();
+  return (
+    <div className="flex min-h-0 flex-col gap-0.5">
+      <p
+        className={`truncate text-body ${emptyTitle ? 'italic text-fg-tertiary' : 'text-fg-primary'}`}
+        style={strikeTitle ? { textDecoration: 'line-through' } : undefined}
+        title={title || 'Untitled subtask'}
+      >
+        {emptyTitle ? '(Untitled subtask)' : title}
+      </p>
+      {visibleWhy.length > 0 ? (
+        <p
+          className="truncate text-meta italic text-fg-tertiary"
+          title={visibleWhy}
+          data-testid="worker-why"
+        >
+          {visibleWhy}
+        </p>
+      ) : null}
     </div>
   );
 }

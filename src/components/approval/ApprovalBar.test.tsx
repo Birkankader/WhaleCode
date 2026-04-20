@@ -87,7 +87,7 @@ describe('ApprovalBar — "+ Add subtask" button', () => {
       fireEvent.click(screen.getByRole('button', { name: /\+ Add subtask/i }));
     });
     expect(addSubtask).toHaveBeenCalledWith({
-      title: '',
+      title: 'Untitled subtask',
       why: null,
       assignedWorker: 'claude',
     });
@@ -110,7 +110,7 @@ describe('ApprovalBar — "+ Add subtask" button', () => {
       fireEvent.click(screen.getByRole('button', { name: /\+ Add subtask/i }));
     });
     expect(addSubtask).toHaveBeenCalledWith({
-      title: '',
+      title: 'Untitled subtask',
       why: null,
       assignedWorker: 'codex',
     });
@@ -133,7 +133,7 @@ describe('ApprovalBar — "+ Add subtask" button', () => {
       fireEvent.click(screen.getByRole('button', { name: /\+ Add subtask/i }));
     });
     expect(addSubtask).toHaveBeenCalledWith({
-      title: '',
+      title: 'Untitled subtask',
       why: null,
       assignedWorker: 'codex',
     });
@@ -148,7 +148,7 @@ describe('ApprovalBar — "+ Add subtask" button', () => {
       fireEvent.click(screen.getByRole('button', { name: /\+ Add subtask/i }));
     });
     expect(addSubtask).toHaveBeenCalledWith({
-      title: '',
+      title: 'Untitled subtask',
       why: null,
       assignedWorker: 'claude',
     });

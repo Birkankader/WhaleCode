@@ -9,6 +9,19 @@ import { Button } from '../primitives/Button';
 const AGENT_ORDER: readonly AgentKind[] = ['claude', 'codex', 'gemini'];
 
 /**
+ * Placeholder title for a freshly user-added subtask. The backend rejects
+ * empty titles at `add_subtask`, so sending `''` never produces a new
+ * card — the IPC errors before `lastAddedSubtaskId` is set and the user
+ * sees only a confusing "Title is required" banner with nowhere to type.
+ * Sending a visible placeholder makes the backend accept, the
+ * `run:subtasks_proposed` event re-emits, the new WorkerNode mounts with
+ * `lastAddedSubtaskId` set, and its title InlineTextEdit auto-enters
+ * edit mode with the placeholder pre-selected — so the user's first
+ * keystroke replaces it.
+ */
+const DEFAULT_NEW_SUBTASK_TITLE = 'Untitled subtask';
+
+/**
  * Pick a sensible default worker for a newly-added subtask:
  * 1. the master's recommended master (they're often the strongest local CLI),
  *    if that agent is installed and available;
@@ -67,13 +80,15 @@ export function ApprovalBar() {
     const agent = defaultWorkerAgent(detection);
     try {
       await useGraphStore.getState().addSubtask({
-        title: '',
+        title: DEFAULT_NEW_SUBTASK_TITLE,
         why: null,
         assignedWorker: agent,
       });
       // On success the backend emits run:subtasks_proposed with the new row;
       // the store sets `lastAddedSubtaskId` which the freshly-mounted
-      // WorkerNode reads to auto-enter edit mode on its title.
+      // WorkerNode reads to auto-enter edit mode on its title. The title
+      // input pre-selects the placeholder (see InlineTextEdit focus effect)
+      // so typing immediately replaces it.
     } catch {
       // addSubtask already populated currentError — ErrorBanner surfaces it.
     }

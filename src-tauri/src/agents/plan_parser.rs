@@ -134,6 +134,13 @@ pub fn validate_plan(plan: &Plan, available_workers: &[AgentKind]) -> Result<(),
     let allowed: HashSet<AgentKind> = available_workers.iter().copied().collect();
 
     for (i, st) in plan.subtasks.iter().enumerate() {
+        // Titles drive the WorkerNode body: an empty one renders as an
+        // invisible card post-approval. Matches `validate_draft`'s
+        // non-empty invariant on the edit path — reject the master plan
+        // at ingestion so we don't ship invisible rows downstream.
+        if st.title.trim().is_empty() {
+            return Err(format!("subtask {i} has an empty title"));
+        }
         if !allowed.contains(&st.assigned_worker) {
             return Err(format!(
                 "subtask {i} assigned to unavailable worker {:?}",
@@ -312,6 +319,22 @@ mod tests {
         match err {
             AgentError::ParseFailed { reason, .. } => {
                 assert!(reason.contains("no subtasks"));
+            }
+            e => panic!("expected ParseFailed, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_title_rejected() {
+        // Master returning a blank title would render as an invisible
+        // WorkerNode after approval; catch it at plan ingestion.
+        let raw = r#"```json
+{"reasoning": "x", "subtasks": [{"title": "   ", "why": "b", "assigned_worker": "claude", "dependencies": []}]}
+```"#;
+        let err = parse_and_validate(raw, &[AgentKind::Claude]).unwrap_err();
+        match err {
+            AgentError::ParseFailed { reason, .. } => {
+                assert!(reason.contains("empty title"), "got {reason}");
             }
             e => panic!("expected ParseFailed, got {e:?}"),
         }

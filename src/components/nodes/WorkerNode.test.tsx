@@ -207,6 +207,105 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
   });
 });
 
+describe('WorkerNode — non-proposed body', () => {
+  // The read-only body covers every state after `proposed`: approved,
+  // running, done, failed, escalating, human_escalation, skipped, idle,
+  // thinking, waiting, retrying. It must render the title even when
+  // empty (fallback placeholder) and surface the master's rationale as
+  // single-line context.
+
+  it('renders a falling-back italic "(Untitled subtask)" when title is empty', () => {
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: '',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const fallback = screen.getByText('(Untitled subtask)');
+    expect(fallback).toBeDefined();
+    // Visual guard: italic + tertiary classes, no primary color.
+    expect(fallback.className).toMatch(/italic/);
+    expect(fallback.className).toMatch(/text-fg-tertiary/);
+    expect(fallback.className).not.toMatch(/text-fg-primary/);
+  });
+
+  it('uses primary color for a non-empty title', () => {
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Apply theme tokens',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const title = screen.getByText('Apply theme tokens');
+    expect(title.className).toMatch(/text-fg-primary/);
+    expect(title.className).not.toMatch(/italic/);
+  });
+
+  it('renders the why line beneath the title when present', () => {
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Apply theme tokens',
+      why: 'Needed before components can render in dark mode.',
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const why = screen.getByTestId('worker-why');
+    expect(why.textContent).toBe('Needed before components can render in dark mode.');
+    expect(why.className).toMatch(/italic/);
+    expect(why.className).toMatch(/text-fg-tertiary/);
+  });
+
+  it('omits the why line entirely when why is null or whitespace', () => {
+    const { rerender } = renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.queryByTestId('worker-why')).toBeNull();
+
+    const propsWhitespace = {
+      id: 'auth',
+      data: {
+        state: 'running',
+        agent: 'claude',
+        title: 't',
+        why: '   ',
+        dependsOn: [],
+        replaces: [],
+        retries: 0,
+      },
+    } as unknown as React.ComponentProps<typeof WorkerNode>;
+    rerender(<WorkerNode {...propsWhitespace} />);
+    expect(screen.queryByTestId('worker-why')).toBeNull();
+  });
+
+  it('applies strike-through style in escalating/skipped states', () => {
+    renderNode('auth', {
+      state: 'escalating',
+      agent: 'claude',
+      title: 'Failed subtask',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const title = screen.getByText('Failed subtask');
+    expect(title.getAttribute('style')).toMatch(/line-through/);
+  });
+});
+
 describe('WorkerNode — edited/added badges', () => {
   it('added badge shown when isSubtaskAdded is true', () => {
     useGraphStore.setState((state) => ({
