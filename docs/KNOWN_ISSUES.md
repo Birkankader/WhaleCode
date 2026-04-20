@@ -32,6 +32,7 @@ Each entry is one line of what, a link to where it was last discussed, a target 
 
 - **Fake agent fixture too generous.** `ScriptedAgent` commits its own edits in `execute`, which masked the "who commits?" gap that surfaced in Step 11. Context: `docs/retrospectives/phase-2.md` bug #1. **Target:** Phase 3 (before writing retry-ladder tests). **Severity:** functional (test-only, but actively misleading).
 - **No stress test for rapid submit-after-terminal.** Three bugs in Phase 2 were specific to "user acts before the event round-trip settles." No integration test covers the rapid Apply → new task → Enter path. Context: commits `28077ed`, `23e1f19`. **Target:** Phase 3 verification checklist. **Severity:** functional.
+- **Flaky test: `replan_happy_path_accepts_replacement_and_reaches_done`.** Phase 3 Step 4 integration test failed once then passed on re-run during Step 5 Commit 1 work; Commit 1 added only stub commands and an editor module, so the cause is pre-existing. Likely timing-sensitive around the replan lifecycle (event emission vs. assertion). If fail rate increases, investigate the race between `SubtaskStateChanged` dispatch and the waiter in the test. Context: commit `6bee77c` report. **Target:** Phase 3 verification (Step 9). **Severity:** functional (flaky tests mask real regressions).
 
 ## Resolved in Phase 2
 
