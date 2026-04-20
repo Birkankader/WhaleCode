@@ -47,6 +47,13 @@ const RUNNING_STATES: ReadonlySet<NodeState> = new Set(['running', 'retrying']);
 const COMPACT_BREAKPOINT = 1280;
 /** Pan headroom past the graph bounds so users can scroll into the margin. */
 const PAN_MARGIN = 200;
+/**
+ * Per-worker container height when a subtask is in `human_escalation` —
+ * tall enough for the error summary + two primary buttons + tertiary row
+ * without clipping. Same-row neighbours align to this via `layoutGraph`'s
+ * row-max logic.
+ */
+const ESCALATION_WORKER_HEIGHT = 280;
 
 /** See `onNodeClick` comment below — this noop unblocks pointer-events. */
 const noopNodeClick = () => undefined;
@@ -229,10 +236,29 @@ function buildGraph(
     if (finalNode) layoutEdges.push({ source: st.id, target: finalNode.id });
   }
 
-  const positioned = layoutGraph(layoutInputs, layoutEdges, { maxPerRow });
+  // Expand any subtask in `human_escalation` to the taller container
+  // height. `layoutGraph` applies row-max alignment, so row-mates
+  // match automatically and the final node Y math accounts for the
+  // larger row. Empty map = pre-refactor footprint.
+  const workerHeights = new Map<string, number>();
+  for (const st of subtasks) {
+    const snap = snapshots.get(st.id);
+    if (snap?.value === 'human_escalation') {
+      workerHeights.set(st.id, ESCALATION_WORKER_HEIGHT);
+    }
+  }
 
+  const positioned = layoutGraph(layoutInputs, layoutEdges, {
+    maxPerRow,
+    workerHeights: workerHeights.size > 0 ? workerHeights : undefined,
+  });
+
+  // Thread `p.height` into the WorkerNode data so the container sizes
+  // to the row-max (expanded for escalation rows). `computeBounds`
+  // reads the same value back off `node.data.height` to include the
+  // taller row when clamping the pan extent.
   const nodes: Node[] = positioned.map((p) => {
-    const data = dataFor(p.id, p.kind, structure, snapshots, retryCounts);
+    const data = dataFor(p.id, p.kind, structure, snapshots, retryCounts, p.height);
     return {
       id: p.id,
       type: p.kind,
@@ -265,10 +291,20 @@ function computeBounds(
   for (const n of nodes) {
     const dim = NODE_DIMENSIONS[n.type as keyof typeof NODE_DIMENSIONS];
     if (!dim) continue;
+    // Workers can be taller than `NODE_DIMENSIONS.worker.height` when
+    // in escalation; read the emitted height from node.data (the
+    // source of truth is `layoutGraph`'s per-row max, which WorkerNode
+    // already uses to size its container). Master / final are always
+    // the fixed dims.
+    const dataHeight =
+      n.type === 'worker'
+        ? (n.data as { height?: number } | undefined)?.height
+        : undefined;
+    const h = typeof dataHeight === 'number' ? dataHeight : dim.height;
     if (n.position.x < minX) minX = n.position.x;
     if (n.position.y < minY) minY = n.position.y;
     if (n.position.x + dim.width > maxX) maxX = n.position.x + dim.width;
-    if (n.position.y + dim.height > maxY) maxY = n.position.y + dim.height;
+    if (n.position.y + h > maxY) maxY = n.position.y + h;
   }
   if (!isFinite(minX)) return null;
   return { minX, minY, w: maxX - minX, h: maxY - minY };
@@ -280,6 +316,7 @@ function dataFor(
   structure: Structure,
   snapshots: Map<string, NodeSnapshot>,
   retryCounts: Map<string, number>,
+  positionedHeight: number,
 ): MasterNodeData | WorkerNodeData | FinalNodeData {
   const snap = snapshots.get(id);
   const state: NodeState = snap?.value ?? 'idle';
@@ -316,6 +353,11 @@ function dataFor(
     // subtask row has landed yet.
     replaces: st?.replaces ?? [],
     retries: retryCounts.get(id) ?? 0,
+    // Row-max height for the container. Defaults to the baseline worker
+    // height when the subtask row isn't in the store yet (rare — layout
+    // runs only after structure settles).
+    replanCount: st?.replanCount ?? 0,
+    height: positionedHeight,
   };
 }
 

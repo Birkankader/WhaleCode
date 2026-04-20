@@ -187,3 +187,79 @@ describe('layoutGraph — maxPerRow responsive stacking', () => {
     expect(Math.max(...ys) - Math.min(...ys)).toBeLessThanOrEqual(1);
   });
 });
+
+describe('layoutGraph — workerHeights (Phase 3 Step 5)', () => {
+  const workerD: LayoutNodeInput = { id: 'd', kind: 'worker' };
+  const ESCALATION_HEIGHT = 280;
+
+  it('overridden worker is emitted at the override height', () => {
+    const nodes = [MASTER, workerA, FINAL];
+    const edges = topologyEdges('master', ['a'], 'final');
+    const out = byId(
+      layoutGraph(nodes, edges, {
+        workerHeights: new Map([['a', ESCALATION_HEIGHT]]),
+      }),
+    );
+    expect(out.get('a')!.height).toBe(ESCALATION_HEIGHT);
+  });
+
+  it('same-row workers share the row-max height', () => {
+    const nodes = [MASTER, workerA, workerB, FINAL];
+    const edges = topologyEdges('master', ['a', 'b'], 'final');
+    const out = byId(
+      layoutGraph(nodes, edges, {
+        // Only a is escalated; b gets the default, but both emit the
+        // row-max so their containers visually align.
+        workerHeights: new Map([['a', ESCALATION_HEIGHT]]),
+      }),
+    );
+    expect(out.get('a')!.height).toBe(ESCALATION_HEIGHT);
+    expect(out.get('b')!.height).toBe(ESCALATION_HEIGHT);
+  });
+
+  it('final node sits below the escalated worker (no overlap)', () => {
+    const nodes = [MASTER, workerA, FINAL];
+    const edges = topologyEdges('master', ['a'], 'final');
+    const out = byId(
+      layoutGraph(nodes, edges, {
+        workerHeights: new Map([['a', ESCALATION_HEIGHT]]),
+      }),
+    );
+    const aBottom = out.get('a')!.y + out.get('a')!.height;
+    expect(out.get('final')!.y).toBeGreaterThan(aBottom);
+    // At least one ranksep of breathing room between the escalated
+    // worker's bottom edge and the final node's top edge.
+    expect(out.get('final')!.y - aBottom).toBeGreaterThanOrEqual(
+      LAYOUT_SPACING.ranksep - 1,
+    );
+  });
+
+  it('only the escalated row grows — other rows stay at default height', () => {
+    // Grid of 4 workers, 2 per row. Escalate `c` (row 1). Row 0 (a, b)
+    // should keep the default 140px; row 1 (c, d) should grow to 280.
+    const nodes = [MASTER, workerA, workerB, workerC, workerD, FINAL];
+    const edges = topologyEdges('master', ['a', 'b', 'c', 'd'], 'final');
+    const out = byId(
+      layoutGraph(nodes, edges, {
+        maxPerRow: 2,
+        workerHeights: new Map([['c', ESCALATION_HEIGHT]]),
+      }),
+    );
+    expect(out.get('a')!.height).toBe(NODE_DIMENSIONS.worker.height);
+    expect(out.get('b')!.height).toBe(NODE_DIMENSIONS.worker.height);
+    expect(out.get('c')!.height).toBe(ESCALATION_HEIGHT);
+    expect(out.get('d')!.height).toBe(ESCALATION_HEIGHT);
+  });
+
+  it('empty override map is equivalent to no override (back-compat)', () => {
+    const nodes = [MASTER, workerA, workerB, FINAL];
+    const edges = topologyEdges('master', ['a', 'b'], 'final');
+    const withEmpty = byId(
+      layoutGraph(nodes, edges, { workerHeights: new Map() }),
+    );
+    const without = byId(layoutGraph(nodes, edges));
+    for (const id of ['master', 'a', 'b', 'final']) {
+      expect(withEmpty.get(id)).toEqual(without.get(id));
+    }
+  });
+});

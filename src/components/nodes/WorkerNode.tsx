@@ -17,6 +17,7 @@ import { InlineTextEdit } from '../primitives/InlineTextEdit';
 import { NodeContainer } from '../primitives/NodeContainer';
 import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
+import { EscalationActions } from './EscalationActions';
 
 export type WorkerNodeData = {
   state: NodeState;
@@ -39,6 +40,22 @@ export type WorkerNodeData = {
    */
   replaces: string[];
   retries: number;
+  /**
+   * Layer-2 replans already consumed on this subtask's lineage. The
+   * EscalationActions surface hides "Try replan again" when `>= 2`;
+   * all other states ignore this field. Optional because only relevant
+   * in `human_escalation` state — older test fixtures that build
+   * WorkerNodeData literals by hand can omit it and fall through to 0.
+   */
+  replanCount?: number;
+  /**
+   * Per-node height emitted by `layoutGraph`. The container sizes to
+   * this value so escalated workers can host the EscalationActions
+   * surface (~280px) while the rest of the grid stays at the default
+   * 140px. Optional: defaults to `NODE_DIMENSIONS.worker.height` when
+   * unset.
+   */
+  height?: number;
 };
 
 const STATE_LABEL: Record<NodeState, string> = {
@@ -76,9 +93,17 @@ const AGENT_ORDER: readonly BackendAgentKind[] = ['claude', 'codex', 'gemini'];
 
 export function WorkerNode({ id, data }: NodeProps) {
   const d = data as unknown as WorkerNodeData;
-  const { width, height } = NODE_DIMENSIONS.worker;
+  const { width } = NODE_DIMENSIONS.worker;
+  // `data.height` is the per-row max emitted by `layoutGraph` — it
+  // expands to ~280px when this or another row-mate is in
+  // `human_escalation` (so the row aligns visually). Fall back to
+  // the default worker height for data shapes that haven't been
+  // through the new layout pipeline (e.g. unit tests that build
+  // nodes by hand).
+  const height = d.height ?? NODE_DIMENSIONS.worker.height;
   const color = AGENT_COLOR_VAR[d.agent];
   const isProposed = d.state === 'proposed';
+  const isEscalated = d.state === 'human_escalation';
   const strikeTitle = d.state === 'escalating' || d.state === 'skipped';
   const showLogs = LOG_VISIBLE_STATES.has(d.state);
 
@@ -172,6 +197,10 @@ export function WorkerNode({ id, data }: NodeProps) {
           {d.title}
         </p>
       )}
+
+      {isEscalated ? (
+        <EscalationActions subtaskId={id} replanCount={d.replanCount ?? 0} />
+      ) : null}
 
       {showLogs ? <LogBlock lines={logs ?? []} animateCursor={isStreaming(d.state)} /> : null}
 

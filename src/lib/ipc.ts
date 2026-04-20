@@ -480,6 +480,112 @@ export async function consumeRecoveryReport(): Promise<RecoveryEntry[]> {
   return z.array(recoveryEntrySchema).parse(raw);
 }
 
+// ---------- Phase 3 Step 5 Layer-3 escalation commands ----------
+
+/**
+ * Which tier of the editor-fallback chain won on the backend. The UI
+ * uses this to decide whether to also copy the worktree path to the
+ * system clipboard:
+ *
+ *   - `configured` / `environment` / `platform-default` — a spawner
+ *     returned `Ok`. The user should see their editor pop up; we stay
+ *     silent.
+ *   - `clipboard-only` — nothing launched. The backend doesn't touch
+ *     the OS clipboard itself (to avoid pulling in a Rust clipboard
+ *     crate), so the UI reads `result.path` and writes it via
+ *     `navigator.clipboard.writeText`, then surfaces a toast.
+ *
+ * Kebab-case on the wire (see `src-tauri/src/editor.rs` — `#[serde(rename_all = "kebab-case")]`).
+ */
+export const editorMethodSchema = z.enum([
+  'configured',
+  'environment',
+  'platform-default',
+  'clipboard-only',
+]);
+export type EditorMethod = z.infer<typeof editorMethodSchema>;
+
+export const editorResultSchema = z.object({
+  method: editorMethodSchema,
+  path: z.string(),
+});
+export type EditorResult = z.infer<typeof editorResultSchema>;
+
+/**
+ * Response from `skip_subtask`. `skippedCount` includes the escalated
+ * subtask itself; a leaf escalation with no dependents returns `1`.
+ * `skippedIds` is the full list in BFS traversal order — the UI reads
+ * the length for the confirmation toast and ignores the ids (the
+ * state-change events for each will land on the wire separately and
+ * drive the per-node actors).
+ */
+export const skipResultSchema = z.object({
+  skippedCount: z.number().int().nonnegative(),
+  skippedIds: z.array(subtaskIdSchema),
+});
+export type SkipResult = z.infer<typeof skipResultSchema>;
+
+/**
+ * Ask the backend to resolve the worktree path for the escalated
+ * subtask and open it in the user's editor. The response reports
+ * which tier of the fallback chain succeeded so the UI can surface
+ * "opened in <tier>" or "copied to clipboard" feedback — the
+ * command never throws on `clipboard-only`; that's a valid outcome.
+ *
+ * Rejects only on state-mismatch errors: run not parked in
+ * `AwaitingHumanFix`, unknown subtask id, subtask not the one
+ * currently escalated.
+ */
+export async function manualFixSubtask(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<EditorResult> {
+  const raw = await invoke<unknown>('manual_fix_subtask', { runId, subtaskId });
+  return editorResultSchema.parse(raw);
+}
+
+/**
+ * Tell the backend the user finished editing the escalated subtask's
+ * worktree. The orchestrator stages and commits any pending changes
+ * (a clean worktree is a legitimate no-op), flips the subtask to
+ * `Done`, re-enters the dispatcher, and any previously-`Waiting`
+ * dependents progress. Rejects on state-mismatch errors.
+ */
+export async function markSubtaskFixed(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<void> {
+  await invoke('mark_subtask_fixed', { runId, subtaskId });
+}
+
+/**
+ * Skip the escalated subtask. The backend does a BFS forward through
+ * the dependency graph and marks every transitive dependent
+ * `Skipped` too; the returned `SkipResult` carries the total count +
+ * ids for UI feedback. Rejects on state-mismatch errors.
+ */
+export async function skipSubtask(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<SkipResult> {
+  const raw = await invoke<unknown>('skip_subtask', { runId, subtaskId });
+  return skipResultSchema.parse(raw);
+}
+
+/**
+ * Ask the master for another replan attempt on the escalated
+ * subtask's lineage. Only valid when `replanCount < 2` (the lineage
+ * cap); the backend rejects with a "replan cap exhausted" error if
+ * the UI fails to gate on the count — defence in depth, the button
+ * is hidden past the cap but races are possible on rapid clicks.
+ */
+export async function tryReplanAgain(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<void> {
+  await invoke('try_replan_again', { runId, subtaskId });
+}
+
 // Event subscription lives in `runSubscription.ts` — this file exports
 // only the raw schemas + EVENT_* constants. The store consumes
 // RunSubscription, not a free `listen` helper.

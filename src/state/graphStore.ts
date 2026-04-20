@@ -37,20 +37,26 @@ import {
   approveSubtasks as approveSubtasksIpc,
   cancelRun as cancelRunIpc,
   discardRun as discardRunIpc,
+  manualFixSubtask as manualFixSubtaskIpc,
+  markSubtaskFixed as markSubtaskFixedIpc,
   rejectRun as rejectRunIpc,
   removeSubtask as removeSubtaskIpc,
+  skipSubtask as skipSubtaskIpc,
   submitTask as submitTaskIpc,
+  tryReplanAgain as tryReplanAgainIpc,
   updateSubtask as updateSubtaskIpc,
   type AgentKind as BackendAgentKind,
   type BaseBranchDirty,
   type Completed,
   type DiffReady,
+  type EditorResult,
   type Failed,
   type HumanEscalation,
   type MasterLog,
   type MergeConflict,
   type ReplanStarted,
   type RunStatus,
+  type SkipResult,
   type StatusChanged,
   type SubtaskDraft,
   type SubtaskId,
@@ -97,6 +103,16 @@ export type SubtaskNodeData = {
    * subtasks.
    */
   replaces: string[];
+  /**
+   * How many Layer-2 replans have already fired on this subtask's
+   * lineage. `0` = freshly planned; `>= 2` = replan cap exhausted,
+   * meaning the "Try replan again" action in the escalation UI is
+   * hidden. Mirrored verbatim from `SubtaskData.replanCount`. Optional
+   * on the frontend type so test fixtures that build subtask
+   * literals by hand can omit it — unset is treated as 0 at read
+   * sites.
+   */
+  replanCount?: number;
 };
 
 export type FinalNodeData = {
@@ -235,6 +251,25 @@ export type GraphState = {
   addSubtask: (draft: SubtaskDraft) => Promise<SubtaskId>;
   removeSubtask: (subtaskId: SubtaskId) => Promise<void>;
   /**
+   * Phase 3 Step 5 Layer-3 escalation actions. Valid only when the run
+   * status is `awaiting_human_fix` and `subtaskId` is the escalated
+   * subtask. All four wrap IPC, surface errors via `currentError`
+   * through `mapEditError(_, 'Action')`, and rethrow so the calling
+   * button can surface per-row feedback. On success the backend
+   * resumes the lifecycle and emits the matching state-change events
+   * — the store does not mutate optimistically.
+   *
+   * `manualFixSubtask` additionally writes the worktree path to the
+   * system clipboard when the backend reports `method === 'clipboard-only'`
+   * (no editor launched); the UI surfaces a short message via
+   * `currentError` so the user knows where to paste it. Calls that
+   * open the editor directly resolve silently.
+   */
+  manualFixSubtask: (subtaskId: SubtaskId) => Promise<EditorResult>;
+  markSubtaskFixed: (subtaskId: SubtaskId) => Promise<void>;
+  skipSubtask: (subtaskId: SubtaskId) => Promise<SkipResult>;
+  tryReplanAgain: (subtaskId: SubtaskId) => Promise<void>;
+  /**
    * One-shot consumer for `lastAddedSubtaskId`. The just-mounted
    * WorkerNode calls this in a layout effect after reading the flag so
    * re-renders of the same node don't re-enter edit mode.
@@ -271,6 +306,60 @@ export function isSubtaskEdited(state: GraphState, id: string): boolean {
 /** True if the subtask was added by the user via `addSubtask`. */
 export function isSubtaskAdded(state: GraphState, id: string): boolean {
   return state.userAddedSubtaskIds.has(id);
+}
+
+/**
+ * UX-preview BFS: how many *transitive* dependents the given subtask
+ * has in the store's current plan. The count excludes the origin
+ * itself, matching the copy the EscalationActions confirm uses
+ * ("Skip subtask? This will also skip N dependent subtasks.").
+ *
+ * The count is pre-trimmed to ids that are still on the DAG — done /
+ * skipped / failed subtasks don't produce meaningful cascade entries
+ * since the backend's `compute_skip_cascade` only flips Waiting /
+ * Proposed rows. We can't read XState snapshots from a pure helper,
+ * so we approximate by walking every subtask that depends on the
+ * origin; the backend's authoritative `SkipResult.skippedCount` is
+ * what ultimately renders in the post-skip toast.
+ *
+ * Algorithm matches `src-tauri/src/orchestration/mod.rs::compute_skip_cascade`:
+ *   - seed BFS queue with origin
+ *   - pop id; find every subtask whose `dependsOn` includes id
+ *   - push any not-yet-seen into queue + result
+ *   - return result.size - 1 (exclude origin)
+ */
+export function computeSkipCascadeCount(
+  subtasks: readonly SubtaskNodeData[],
+  originId: string,
+): number {
+  // Index dependents so the BFS is O(V + E) rather than O(V × E). Each
+  // entry: parent-id → the ids that list parent-id in their dependsOn.
+  const dependentsOf = new Map<string, string[]>();
+  for (const s of subtasks) {
+    for (const dep of s.dependsOn) {
+      const arr = dependentsOf.get(dep);
+      if (arr) arr.push(s.id);
+      else dependentsOf.set(dep, [s.id]);
+    }
+  }
+
+  const visited = new Set<string>([originId]);
+  const queue: string[] = [originId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    const kids = dependentsOf.get(cur);
+    if (!kids) continue;
+    for (const k of kids) {
+      if (visited.has(k)) continue;
+      visited.add(k);
+      queue.push(k);
+    }
+  }
+
+  // Exclude the origin itself from the count — the copy reads
+  // "… will also skip {N} dependent subtasks", singular/plural based
+  // on the caller.
+  return visited.size - 1;
 }
 
 const initial: Pick<
@@ -435,7 +524,10 @@ function newLocalRunId(): string {
  * `action` is the verb the UI would have used ("Update", "Add",
  * "Remove") so the fallback message reads naturally.
  */
-function mapEditError(err: unknown, action: 'Update' | 'Add' | 'Remove'): string {
+function mapEditError(
+  err: unknown,
+  action: 'Update' | 'Add' | 'Remove' | 'Action',
+): string {
   const raw = String(err);
   const lower = raw.toLowerCase();
 
@@ -462,6 +554,18 @@ function mapEditError(err: unknown, action: 'Update' | 'Add' | 'Remove'): string
   }
   if (lower.includes('run') && lower.includes('not found')) {
     return 'Run no longer exists.';
+  }
+  // Phase 3 Step 5 Layer-3 variants. The orchestrator's error shapes are
+  // defined in `src-tauri/src/orchestration/mod.rs::OrchestratorError`;
+  // we match on the stable human phrasing the Display impl emits.
+  if (lower.includes('replan') && lower.includes('cap exhausted')) {
+    return 'Cannot replan: maximum attempts reached.';
+  }
+  if (lower.includes('expected awaiting-human-fix')) {
+    return 'This action is no longer available — the escalation was already resolved.';
+  }
+  if (lower.includes('not the escalated subtask')) {
+    return 'This action is no longer available — a different subtask is escalated.';
   }
   // Unknown shape — surface the raw message so at least we don't lie
   // about the failure. The verb in front keeps it readable.
@@ -648,6 +752,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         agent: st.assignedWorker,
         dependsOn: st.dependencies,
         replaces: st.replaces,
+        replanCount: st.replanCount,
       });
       if (!currentIds.has(st.id)) {
         newIds.push(st.id);
@@ -1113,6 +1218,93 @@ export const useGraphStore = create<GraphState>((set, get) => {
       // Backend's follow-up run:subtasks_proposed will drop the id from
       // the subtasks list via the diff-by-id handler, which also scrubs
       // originalSubtasks / userAddedSubtaskIds. No store mutation here.
+    },
+
+    async manualFixSubtask(subtaskId) {
+      const runId = get().runId;
+      if (!runId) {
+        const msg = 'No active run.';
+        set({ currentError: msg });
+        throw new Error(msg);
+      }
+      let result: EditorResult;
+      try {
+        result = await manualFixSubtaskIpc(runId, subtaskId);
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Action') });
+        throw err;
+      }
+      // clipboard-only is the bottom tier of the backend's editor
+      // fallback chain — nothing launched. The frontend owns the
+      // clipboard write (so the Rust side stays free of a clipboard
+      // crate) and we surface a short info line via `currentError`
+      // so the user sees where to paste. The other tiers resolve
+      // silently — the user's editor is already popping up.
+      if (result.method === 'clipboard-only') {
+        try {
+          await navigator.clipboard.writeText(result.path);
+          set({
+            currentError: `Path copied to clipboard: ${result.path}\nOpen the worktree in your editor, make changes, then click "I fixed it".`,
+          });
+        } catch {
+          // Clipboard write can be denied (non-focused iframe, old
+          // browser permissions). Degrade to "here's the path" — the
+          // user can still copy it manually from the banner.
+          set({
+            currentError: `Open this worktree in your editor, then click "I fixed it": ${result.path}`,
+          });
+        }
+      }
+      return result;
+    },
+
+    async markSubtaskFixed(subtaskId) {
+      const runId = get().runId;
+      if (!runId) return;
+      try {
+        await markSubtaskFixedIpc(runId, subtaskId);
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Action') });
+        throw err;
+      }
+      // Backend re-enters dispatcher and emits state changes
+      // (subtask → Done, run → Running, any Waiting dependents
+      // unblock). Store mutations land through the event path.
+    },
+
+    async skipSubtask(subtaskId) {
+      const runId = get().runId;
+      if (!runId) {
+        const msg = 'No active run.';
+        set({ currentError: msg });
+        throw new Error(msg);
+      }
+      let result: SkipResult;
+      try {
+        result = await skipSubtaskIpc(runId, subtaskId);
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Action') });
+        throw err;
+      }
+      // The backend emits SubtaskStateChanged(Skipped) for every
+      // cascaded id, which drives the per-node actors. The count
+      // is returned so the caller can surface a confirmation toast
+      // — we don't mutate store state here.
+      return result;
+    },
+
+    async tryReplanAgain(subtaskId) {
+      const runId = get().runId;
+      if (!runId) return;
+      try {
+        await tryReplanAgainIpc(runId, subtaskId);
+      } catch (err) {
+        set({ currentError: mapEditError(err, 'Action') });
+        throw err;
+      }
+      // Backend emits ReplanStarted and flips the run back to
+      // `planning` — the ReplanStarted handler drives the master
+      // chip back to thinking.
     },
 
     clearLastAddedSubtaskId() {

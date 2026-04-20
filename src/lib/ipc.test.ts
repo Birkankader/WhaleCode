@@ -5,10 +5,13 @@ import {
   agentKindSchema,
   agentStatusSchema,
   diffReadySchema,
+  editorMethodSchema,
+  editorResultSchema,
   repoInfoSchema,
   repoValidationSchema,
   runStatusSchema,
   settingsSchema,
+  skipResultSchema,
   statusChangedSchema,
   subtaskDataSchema,
   subtaskDraftSchema,
@@ -370,6 +373,69 @@ describe('repoValidationSchema', () => {
   it('rejects unknown reason codes', () => {
     expect(
       repoValidationSchema.safeParse({ valid: false, reason: 'wat' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('editorMethodSchema', () => {
+  it('accepts the four kebab-case tiers emitted by the backend', () => {
+    for (const m of ['configured', 'environment', 'platform-default', 'clipboard-only']) {
+      expect(editorMethodSchema.parse(m)).toBe(m);
+    }
+  });
+
+  it('rejects snake_case (guard against serde regression)', () => {
+    expect(editorMethodSchema.safeParse('clipboard_only').success).toBe(false);
+  });
+});
+
+describe('editorResultSchema', () => {
+  it('parses the happy-path payload', () => {
+    const parsed = editorResultSchema.parse({
+      method: 'configured',
+      path: '/tmp/subtask-r1-s1',
+    });
+    expect(parsed.method).toBe('configured');
+    expect(parsed.path).toBe('/tmp/subtask-r1-s1');
+  });
+
+  it('parses the clipboard-only tier (path still populated)', () => {
+    const parsed = editorResultSchema.parse({
+      method: 'clipboard-only',
+      path: '/tmp/subtask-r1-s1',
+    });
+    expect(parsed.method).toBe('clipboard-only');
+  });
+
+  it('requires both method and path', () => {
+    expect(
+      editorResultSchema.safeParse({ method: 'configured' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('skipResultSchema', () => {
+  it('parses a leaf-only skip (count=1, ids=[sid])', () => {
+    const parsed = skipResultSchema.parse({
+      skippedCount: 1,
+      skippedIds: ['s1'],
+    });
+    expect(parsed.skippedCount).toBe(1);
+    expect(parsed.skippedIds).toEqual(['s1']);
+  });
+
+  it('parses a cascade skip', () => {
+    const parsed = skipResultSchema.parse({
+      skippedCount: 3,
+      skippedIds: ['s1', 's2', 's3'],
+    });
+    expect(parsed.skippedCount).toBe(3);
+    expect(parsed.skippedIds).toHaveLength(3);
+  });
+
+  it('rejects a negative count', () => {
+    expect(
+      skipResultSchema.safeParse({ skippedCount: -1, skippedIds: [] }).success,
     ).toBe(false);
   });
 });
