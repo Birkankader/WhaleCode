@@ -45,6 +45,9 @@ function resetStores() {
     settings: {
       lastRepo: null,
       masterAgent: 'claude',
+      autoApprove: false,
+      maxSubtasksPerAutoApprovedRun: 20,
+      autoApproveConsentGiven: false,
     },
     currentRepo: null,
     pickerError: null,
@@ -117,6 +120,9 @@ describe('TopBar master dropdown', () => {
     vi.mocked(setMasterAgent).mockResolvedValueOnce({
       lastRepo: null,
       masterAgent: 'codex',
+      autoApprove: false,
+      maxSubtasksPerAutoApprovedRun: 20,
+      autoApproveConsentGiven: false,
     });
 
     render(<TopBar />);
@@ -124,5 +130,49 @@ describe('TopBar master dropdown', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /codex cli/i }));
 
     expect(setMasterAgent).toHaveBeenCalledWith('codex');
+  });
+});
+
+describe('TopBar auto-approve badge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStores();
+  });
+
+  it('hides the Auto badge when auto-approve is off', () => {
+    seedAvailable();
+    render(<TopBar />);
+    expect(screen.queryByTestId('auto-approve-badge')).toBeNull();
+  });
+
+  it('shows the Auto badge when autoApprove is true', () => {
+    seedAvailable();
+    useRepoStore.setState({
+      settings: {
+        lastRepo: null,
+        masterAgent: 'claude',
+        autoApprove: true,
+        maxSubtasksPerAutoApprovedRun: 20,
+        autoApproveConsentGiven: true,
+      },
+    });
+    render(<TopBar />);
+    expect(screen.getByTestId('auto-approve-badge')).toBeInTheDocument();
+    expect(screen.getByLabelText(/auto-approve enabled/i)).toBeInTheDocument();
+  });
+});
+
+describe('TopBar settings gear', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStores();
+  });
+
+  it('opens the settings dialog on gear click', () => {
+    seedAvailable();
+    render(<TopBar />);
+    const gear = screen.getByRole('button', { name: /settings/i });
+    fireEvent.click(gear);
+    expect(screen.getByRole('dialog', { name: /settings/i })).toBeInTheDocument();
   });
 });

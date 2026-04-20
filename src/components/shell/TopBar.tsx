@@ -10,6 +10,7 @@
  * Escape closes the menu.
  */
 
+import { Settings as SettingsIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 import { type AgentKind, type AgentStatus } from '../../lib/ipc';
@@ -17,6 +18,7 @@ import { useAgentStore } from '../../state/agentStore';
 import { useGraphStore } from '../../state/graphStore';
 import { useRepoStore } from '../../state/repoStore';
 import { AGENT_FULL_LABEL } from '../primitives/agentColor';
+import { SettingsPanel } from './SettingsPanel';
 
 const APP_NAME = 'WhaleCode';
 const NO_REPO_LABEL = 'No repo loaded';
@@ -30,12 +32,14 @@ export function TopBar() {
 
   const currentRepo = useRepoStore((s) => s.currentRepo);
   const pickInteractively = useRepoStore((s) => s.pickInteractively);
+  const autoApprove = useRepoStore((s) => s.settings?.autoApprove ?? false);
 
   const detection = useAgentStore((s) => s.detection);
   const checking = useAgentStore((s) => s.checking);
   const selectMaster = useAgentStore((s) => s.selectMaster);
 
   const [open, setOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -89,38 +93,74 @@ export function TopBar() {
         </button>
       </div>
 
-      <div className="relative flex items-center gap-2" ref={menuRef}>
-        <span className="text-hint text-fg-tertiary">Master:</span>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="rounded-sm border border-border-default bg-bg-elevated px-2 py-0.5 text-hint text-fg-primary transition-colors hover:bg-bg-subtle focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-agent-master)] disabled:cursor-not-allowed disabled:text-fg-tertiary"
-          disabled={noAgentsAvailable}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={`Master agent: ${chipLabel}`}
-        >
-          {chipLabel}
-          {checking && detection === null && <span className="ml-1 text-fg-tertiary">…</span>}
-        </button>
-
-        {open && (
-          <div
-            role="menu"
-            aria-label="Select master agent"
-            className="absolute right-0 top-full z-10 mt-1 min-w-[180px] rounded-md border border-border-default bg-bg-elevated p-1 shadow-lg"
+      <div className="flex items-center gap-2">
+        <div className="relative flex items-center gap-2" ref={menuRef}>
+          <span className="text-hint text-fg-tertiary">Master:</span>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-sm border border-border-default bg-bg-elevated px-2 py-0.5 text-hint text-fg-primary transition-colors hover:bg-bg-subtle focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-agent-master)] disabled:cursor-not-allowed disabled:text-fg-tertiary"
+            disabled={noAgentsAvailable}
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label={`Master agent: ${chipLabel}`}
           >
-            {DROPDOWN_ORDER.map((kind) => (
-              <DropdownItem
-                key={kind}
-                kind={kind}
-                status={detection?.[kind]}
-                isSelected={kind === masterAgent}
-                onSelect={handleSelect}
+            {chipLabel}
+            {checking && detection === null && <span className="ml-1 text-fg-tertiary">…</span>}
+          </button>
+
+          {autoApprove ? (
+            <span
+              data-testid="auto-approve-badge"
+              className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-hint"
+              style={{
+                color: 'var(--color-agent-master)',
+                background: 'rgba(251, 191, 36, 0.1)',
+              }}
+              title="Auto-approve is on. Plans skip the approval bar."
+              aria-label="Auto-approve enabled"
+            >
+              <span
+                className="block size-1.5 rounded-full"
+                style={{ background: 'var(--color-agent-master)' }}
+                aria-hidden
               />
-            ))}
-          </div>
-        )}
+              Auto
+            </span>
+          ) : null}
+
+          {open && (
+            <div
+              role="menu"
+              aria-label="Select master agent"
+              className="absolute right-0 top-full z-10 mt-1 min-w-[180px] rounded-md border border-border-default bg-bg-elevated p-1 shadow-lg"
+            >
+              {DROPDOWN_ORDER.map((kind) => (
+                <DropdownItem
+                  key={kind}
+                  kind={kind}
+                  status={detection?.[kind]}
+                  isSelected={kind === masterAgent}
+                  onSelect={handleSelect}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((v) => !v)}
+            aria-label="Settings"
+            aria-haspopup="dialog"
+            aria-expanded={settingsOpen}
+            className="inline-flex size-7 items-center justify-center rounded-sm text-fg-tertiary transition-colors hover:bg-bg-subtle hover:text-fg-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-agent-master)]"
+          >
+            <SettingsIcon size={14} />
+          </button>
+          {settingsOpen ? <SettingsPanel onClose={() => setSettingsOpen(false)} /> : null}
+        </div>
       </div>
     </header>
   );

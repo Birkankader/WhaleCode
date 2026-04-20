@@ -26,6 +26,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { z } from 'zod';
 
 import {
+  EVENT_AUTO_APPROVE_SUSPENDED,
+  EVENT_AUTO_APPROVED,
   EVENT_BASE_BRANCH_DIRTY,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
@@ -38,6 +40,8 @@ import {
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
   EVENT_SUBTASKS_PROPOSED,
+  autoApproveSuspendedSchema,
+  autoApprovedSchema,
   baseBranchDirtySchema,
   completedSchema,
   diffReadySchema,
@@ -50,6 +54,8 @@ import {
   subtaskLogSchema,
   subtaskStateChangedSchema,
   subtasksProposedSchema,
+  type AutoApproveSuspended,
+  type AutoApproved,
   type BaseBranchDirty,
   type Completed,
   type DiffReady,
@@ -78,6 +84,8 @@ export type RunEventHandlers = {
   onBaseBranchDirty?: (event: BaseBranchDirty) => void;
   onReplanStarted?: (event: ReplanStarted) => void;
   onHumanEscalation?: (event: HumanEscalation) => void;
+  onAutoApproved?: (event: AutoApproved) => void;
+  onAutoApproveSuspended?: (event: AutoApproveSuspended) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -211,6 +219,16 @@ export class RunSubscription {
         event: EVENT_HUMAN_ESCALATION,
         schema: humanEscalationSchema,
         handler: this.handlers.onHumanEscalation as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_AUTO_APPROVED,
+        schema: autoApprovedSchema,
+        handler: this.handlers.onAutoApproved as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_AUTO_APPROVE_SUSPENDED,
+        schema: autoApproveSuspendedSchema,
+        handler: this.handlers.onAutoApproveSuspended as ((e: unknown) => void) | undefined,
       },
     ];
   }

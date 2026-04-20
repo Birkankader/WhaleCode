@@ -82,6 +82,9 @@ describe('useAgentStore.selectMaster', () => {
     const merged = {
       lastRepo: '/x',
       masterAgent: 'gemini' as const,
+      autoApprove: false,
+      maxSubtasksPerAutoApprovedRun: 20,
+      autoApproveConsentGiven: false,
     };
     vi.mocked(setMasterAgent).mockResolvedValueOnce(merged);
 

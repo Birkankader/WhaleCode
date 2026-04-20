@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { ApprovalBar } from './components/approval/ApprovalBar';
 import { GraphCanvas } from './components/graph/GraphCanvas';
 import { AgentSetupState } from './components/setup/AgentSetupState';
+import { AutoApproveSuspendedBanner } from './components/shell/AutoApproveSuspendedBanner';
 import { EmptyState } from './components/shell/EmptyState';
 import { ErrorBanner } from './components/shell/ErrorBanner';
 import { Footer } from './components/shell/Footer';
@@ -81,6 +82,7 @@ export default function App() {
         <TopBar />
         <main className="relative flex flex-1 flex-col overflow-hidden">
           <ErrorBanner />
+          <AutoApproveSuspendedBanner />
           <div className="relative flex-1 overflow-hidden">{body}</div>
           <ApprovalBar />
         </main>

@@ -24,6 +24,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import {
+  EVENT_AUTO_APPROVE_SUSPENDED,
+  EVENT_AUTO_APPROVED,
   EVENT_BASE_BRANCH_DIRTY,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
@@ -52,6 +54,8 @@ const ALL_EVENTS = [
   EVENT_BASE_BRANCH_DIRTY,
   EVENT_REPLAN_STARTED,
   EVENT_HUMAN_ESCALATION,
+  EVENT_AUTO_APPROVED,
+  EVENT_AUTO_APPROVE_SUSPENDED,
 ];
 
 function emit(event: string, payload: unknown) {

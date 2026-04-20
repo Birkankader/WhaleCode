@@ -46,6 +46,8 @@ import {
   tryReplanAgain as tryReplanAgainIpc,
   updateSubtask as updateSubtaskIpc,
   type AgentKind as BackendAgentKind,
+  type AutoApproveSuspended,
+  type AutoApproved,
   type BaseBranchDirty,
   type Completed,
   type DiffReady,
@@ -227,6 +229,23 @@ export type GraphState = {
   activeSubscription: RunSubscription | null;
   /** Last surfaced error (IPC failure or backend `Failed` event). */
   currentError: string | null;
+  /**
+   * Phase 3 Step 7: set when the backend emits `run:auto_approved` for
+   * the active run; the UI surfaces a transient "plan auto-approved"
+   * chip on the graph canvas. Tracks the most recent pass's subtask
+   * ids so the chip count matches what was dispatched. Cleared on
+   * `reset` or when a new `submitTask` begins.
+   */
+  autoApproved: { subtaskIds: string[]; at: number } | null;
+  /**
+   * Phase 3 Step 7: set when the backend emits
+   * `run:auto_approve_suspended` — the run hit its ceiling and fell
+   * back to manual approval. `reason` is the machine key
+   * (`"subtask_limit"` today) used to pick user-facing copy; the UI
+   * renders a dismissable banner that stays until the run ends.
+   * Latched — backend only emits once per run.
+   */
+  autoApproveSuspended: { reason: string } | null;
 
   setMasterAgent: (agent: BackendAgentKind) => void;
   submitTask: (input: string, masterAgent?: BackendAgentKind) => Promise<void>;
@@ -276,6 +295,12 @@ export type GraphState = {
    */
   clearLastAddedSubtaskId: () => void;
   dismissError: () => void;
+  /**
+   * Dismiss the "auto-approve suspended" banner for the current run.
+   * UI-only — the backend latch stays in place, so further passes in
+   * the run stay manual regardless of dismissal.
+   */
+  dismissAutoApproveSuspended: () => void;
   reset: () => void;
 };
 
@@ -383,6 +408,8 @@ const initial: Pick<
   | 'humanEscalation'
   | 'activeSubscription'
   | 'currentError'
+  | 'autoApproved'
+  | 'autoApproveSuspended'
 > = {
   runId: null,
   taskInput: '',
@@ -403,6 +430,8 @@ const initial: Pick<
   humanEscalation: null,
   activeSubscription: null,
   currentError: null,
+  autoApproved: null,
+  autoApproveSuspended: null,
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -976,6 +1005,23 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleAutoApproved(e: AutoApproved) {
+    if (e.runId !== get().runId) return;
+    // Surface the bypass in UI state. The approval bar never enters
+    // `awaiting_approval`-visible mode for this pass because the
+    // backend moves straight to `running`; this payload lets the
+    // canvas display a "plan auto-approved (N subtasks)" chip.
+    set({ autoApproved: { subtaskIds: e.subtaskIds, at: Date.now() } });
+  }
+
+  function handleAutoApproveSuspended(e: AutoApproveSuspended) {
+    if (e.runId !== get().runId) return;
+    // The backend's latch guarantees exactly one emit per run, so we
+    // don't need to dedupe here. The banner copy is derived from
+    // `reason` at render time.
+    set({ autoApproveSuspended: { reason: e.reason } });
+  }
+
   function buildHandlers() {
     return {
       onStatusChanged: handleStatusChanged,
@@ -990,6 +1036,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
       onHumanEscalation: handleHumanEscalation,
+      onAutoApproved: handleAutoApproved,
+      onAutoApproveSuspended: handleAutoApproveSuspended,
       onParseError: defaultOnParseError,
     };
   }
@@ -1316,6 +1364,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     dismissError() {
       set({ currentError: null });
+    },
+
+    dismissAutoApproveSuspended() {
+      set({ autoApproveSuspended: null });
     },
 
     reset() {

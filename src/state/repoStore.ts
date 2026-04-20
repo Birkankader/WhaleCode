@@ -39,6 +39,26 @@ export type RepoState = {
   pickInteractively: () => Promise<void>;
   clearCurrentRepo: () => Promise<void>;
   setMasterAgent: (agent: AgentKind) => Promise<void>;
+  /**
+   * Phase 3 Step 7: persist auto-approve settings. Accepts a partial
+   * patch — any combination of toggle / ceiling / editor / consent
+   * flag. The backend persists + re-emits the merged settings; we
+   * mirror the result locally so UI reads stay in sync.
+   */
+  updateSettings: (
+    patch: Partial<{
+      autoApprove: boolean;
+      maxSubtasksPerAutoApprovedRun: number;
+      autoApproveConsentGiven: boolean;
+      /**
+       * `null` explicitly clears the editor preference (backend falls
+       * back to $EDITOR / platform default); `undefined` / omission
+       * leaves the stored value untouched. Mirrors the wire contract
+       * in `SettingsPatch`.
+       */
+      editor: string | null;
+    }>,
+  ) => Promise<void>;
 };
 
 export const useRepoStore = create<RepoState>((set, get) => ({
@@ -132,5 +152,10 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     // real orchestrator reads settings directly from Rust.
     const { settings } = get();
     if (settings) settings.masterAgent = agent;
+  },
+
+  async updateSettings(patch) {
+    const merged = await setSettingsIpc(patch);
+    set({ settings: merged });
   },
 }));

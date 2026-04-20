@@ -177,6 +177,13 @@ export const EVENT_MERGE_CONFLICT = 'run:merge_conflict' as const;
 export const EVENT_BASE_BRANCH_DIRTY = 'run:base_branch_dirty' as const;
 export const EVENT_REPLAN_STARTED = 'run:replan_started' as const;
 export const EVENT_HUMAN_ESCALATION = 'run:human_escalation' as const;
+// Phase 3 Step 7: auto-approve lifecycle events. `AutoApproved` fires
+// when the lifecycle synthesised an approval for a plan pass instead of
+// waiting on the sheet; `AutoApproveSuspended` fires exactly once per
+// run when the ceiling is hit and the run falls back to manual
+// approval for the remainder of its lifetime.
+export const EVENT_AUTO_APPROVED = 'run:auto_approved' as const;
+export const EVENT_AUTO_APPROVE_SUSPENDED = 'run:auto_approve_suspended' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -283,6 +290,37 @@ export const humanEscalationSchema = z.object({
 });
 export type HumanEscalation = z.infer<typeof humanEscalationSchema>;
 
+/**
+ * Emitted once per plan pass (initial or replan) when the auto-approve
+ * bypass synthesised an Approve for the current plan. `subtaskIds` is
+ * the set actually dispatched — mirrors the ApprovalDecision::Approve
+ * wire shape. The graph store flips the approval bar off for the pass
+ * and surfaces a transient "auto-approved" affordance.
+ */
+export const autoApprovedSchema = z.object({
+  runId: runIdSchema,
+  subtaskIds: z.array(subtaskIdSchema),
+});
+export type AutoApproved = z.infer<typeof autoApprovedSchema>;
+
+/**
+ * Emitted exactly once per run when approving the current plan pass
+ * would push the run past `maxSubtasksPerAutoApprovedRun`. The backend
+ * latches the suspension flag on the run so subsequent passes stay
+ * manual even if the user toggles auto-approve back on mid-run. The UI
+ * surfaces a banner explaining the fallback and what to do next.
+ *
+ * `reason` is a machine-readable key — today only `"subtask_limit"` is
+ * emitted, but future safety-gate integrations (Phase 7) will add more.
+ * The UI translates known keys into human copy; unknown keys fall
+ * through to the raw string.
+ */
+export const autoApproveSuspendedSchema = z.object({
+  runId: runIdSchema,
+  reason: z.string(),
+});
+export type AutoApproveSuspended = z.infer<typeof autoApproveSuspendedSchema>;
+
 // ---------- Recovery ----------
 
 /**
@@ -305,6 +343,33 @@ export const settingsSchema = z.object({
   claudeBinaryPath: z.string().optional(),
   codexBinaryPath: z.string().optional(),
   geminiBinaryPath: z.string().optional(),
+  /**
+   * Preferred editor command (e.g. `"code"`, `"nvim"`). Passed to the
+   * backend's Layer-3 editor fallback chain. Optional; omission and
+   * explicit `null` both mean "no preference, use $EDITOR or platform
+   * default".
+   */
+  editor: z.string().optional(),
+  /**
+   * Phase 3 Step 7: when `true`, plan approvals (initial + replans)
+   * synthesise an approve-all decision instead of showing the approval
+   * sheet. Defaults to `false`. Missing in legacy settings payloads →
+   * default.
+   */
+  autoApprove: z.boolean().default(false),
+  /**
+   * Hard ceiling on how many subtasks a single auto-approved run may
+   * dispatch across all plan passes. The backend suspends auto-approve
+   * for the run when an approval would cross this line. Positive
+   * integer; 20 is the default.
+   */
+  maxSubtasksPerAutoApprovedRun: z.number().int().positive().default(20),
+  /**
+   * `true` after the user has acknowledged the auto-approve consent
+   * modal at least once. The modal shows on first activation; flipping
+   * auto-approve back off does not clear this flag.
+   */
+  autoApproveConsentGiven: z.boolean().default(false),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -318,6 +383,10 @@ export type SettingsPatch = Partial<{
   claudeBinaryPath: string | null;
   codexBinaryPath: string | null;
   geminiBinaryPath: string | null;
+  editor: string | null;
+  autoApprove: boolean;
+  maxSubtasksPerAutoApprovedRun: number;
+  autoApproveConsentGiven: boolean;
 }>;
 
 // ---------- Repo ----------
