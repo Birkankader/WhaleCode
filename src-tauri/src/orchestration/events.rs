@@ -98,6 +98,26 @@ pub enum RunEvent {
         reason: String,
         suggested_action: Option<String>,
     },
+    /// Phase 3 Step 7: `Settings::auto_approve` was on and the
+    /// lifecycle synthesized an approval for a plan pass instead of
+    /// waiting on the approval sheet. `subtask_ids` is the set of
+    /// subtasks actually dispatched — the wire shape mirrors
+    /// `ApprovalDecision::Approve { subtask_ids }`.
+    AutoApproved {
+        run_id: RunId,
+        subtask_ids: Vec<SubtaskId>,
+    },
+    /// Phase 3 Step 7: auto-approve wanted to synthesize an approval
+    /// but doing so would push the run past
+    /// `Settings::max_subtasks_per_auto_approved_run`. The lifecycle
+    /// falls back to manual approval for this pass and stays manual
+    /// for the rest of the run. Emitted once per run. `reason`
+    /// distinguishes "ceiling hit" from future reasons (safety gate,
+    /// toggle flipped off mid-run).
+    AutoApproveSuspended {
+        run_id: RunId,
+        reason: String,
+    },
 }
 
 impl RunEvent {
@@ -117,7 +137,9 @@ impl RunEvent {
             | RunEvent::MergeConflict { run_id, .. }
             | RunEvent::BaseBranchDirty { run_id, .. }
             | RunEvent::ReplanStarted { run_id, .. }
-            | RunEvent::HumanEscalation { run_id, .. } => run_id,
+            | RunEvent::HumanEscalation { run_id, .. }
+            | RunEvent::AutoApproved { run_id, .. }
+            | RunEvent::AutoApproveSuspended { run_id, .. } => run_id,
         }
     }
 }
@@ -224,6 +246,16 @@ impl EventSink for TauriEventSink {
                     suggested_action,
                 },
             ),
+            RunEvent::AutoApproved { run_id, subtask_ids } => wire::emit_auto_approved(
+                &self.app,
+                &wire::AutoApproved { run_id, subtask_ids },
+            ),
+            RunEvent::AutoApproveSuspended { run_id, reason } => {
+                wire::emit_auto_approve_suspended(
+                    &self.app,
+                    &wire::AutoApproveSuspended { run_id, reason },
+                )
+            }
         };
         if let Err(e) = result {
             eprintln!("[orchestrator] event emit failed: {e}");

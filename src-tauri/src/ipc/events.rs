@@ -38,6 +38,19 @@ pub const EVENT_REPLAN_STARTED: &str = "run:replan_started";
 /// an empty replan meaning "infeasible"). The frontend shows the
 /// human-in-the-loop prompt and transitions the run to `Failed`.
 pub const EVENT_HUMAN_ESCALATION: &str = "run:human_escalation";
+/// Phase 3 Step 7: a plan pass (initial or replan) was auto-approved
+/// on behalf of the user because `Settings::auto_approve` is on. The
+/// frontend shows a subtle "Auto-approved N subtasks" banner so the
+/// user isn't blindsided by work starting immediately.
+pub const EVENT_AUTO_APPROVED: &str = "run:auto_approved";
+/// Phase 3 Step 7: auto-approve was about to approve a plan pass but
+/// the run-lifetime ceiling
+/// (`Settings::max_subtasks_per_auto_approved_run`) would be exceeded,
+/// so the lifecycle falls back to manual approval for this and every
+/// subsequent plan pass in the run. Emitted once per run. The frontend
+/// surfaces this through the existing approval sheet with a "Auto-
+/// approve paused" hint.
+pub const EVENT_AUTO_APPROVE_SUSPENDED: &str = "run:auto_approve_suspended";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,6 +159,29 @@ pub struct HumanEscalation {
     pub suggested_action: Option<String>,
 }
 
+/// Phase 3 Step 7 wire payload for [`EVENT_AUTO_APPROVED`]. Carries the
+/// list of subtask ids that were auto-approved in this plan pass so the
+/// frontend can render a count without inferring it from
+/// `SubtasksProposed`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoApproved {
+    pub run_id: RunId,
+    pub subtask_ids: Vec<SubtaskId>,
+}
+
+/// Phase 3 Step 7 wire payload for [`EVENT_AUTO_APPROVE_SUSPENDED`].
+/// `reason` is a short machine-readable tag the frontend maps onto
+/// localized copy: today the only value is `"subtask_limit"`; future
+/// tags (safety gate denial, explicit user toggle off mid-run) slot in
+/// without a new event.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoApproveSuspended {
+    pub run_id: RunId,
+    pub reason: String,
+}
+
 pub fn emit_status_changed(app: &AppHandle, payload: &StatusChanged) -> tauri::Result<()> {
     app.emit(EVENT_STATUS_CHANGED, payload)
 }
@@ -201,6 +237,17 @@ pub fn emit_human_escalation(
     payload: &HumanEscalation,
 ) -> tauri::Result<()> {
     app.emit(EVENT_HUMAN_ESCALATION, payload)
+}
+
+pub fn emit_auto_approved(app: &AppHandle, payload: &AutoApproved) -> tauri::Result<()> {
+    app.emit(EVENT_AUTO_APPROVED, payload)
+}
+
+pub fn emit_auto_approve_suspended(
+    app: &AppHandle,
+    payload: &AutoApproveSuspended,
+) -> tauri::Result<()> {
+    app.emit(EVENT_AUTO_APPROVE_SUSPENDED, payload)
 }
 
 #[cfg(test)]

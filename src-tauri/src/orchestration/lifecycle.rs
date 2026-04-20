@@ -53,6 +53,8 @@ use crate::orchestration::notes::{RunContext, SharedNotes};
 use crate::orchestration::registry::AgentRegistry;
 use crate::orchestration::run::{Run, SubtaskRuntime};
 use crate::orchestration::{APPROVAL_TIMEOUT, MAX_CONCURRENT_WORKERS};
+use crate::safety::SafetyGate;
+use crate::settings::SettingsStore;
 use crate::storage::models::NewSubtask;
 use crate::storage::Storage;
 use crate::worktree::{DependencyGraph, FileDiff, MergeResult, WorktreeError, WorktreeManager};
@@ -135,6 +137,16 @@ pub enum ApprovalDecision {
     Reject,
 }
 
+/// Phase 3 Step 7: outcome of the auto-approve check at the top of the
+/// approval wait. `Synthesized` means the lifecycle already has a
+/// decision without user input; `Manual` means fall through to the
+/// normal `tokio::select!` on the approval receiver.
+#[derive(Debug)]
+enum AutoApproveOutcome {
+    Synthesized(ApprovalDecision),
+    Manual,
+}
+
 /// What `apply_run`/`discard_run` send into the merge-phase waiter.
 #[derive(Debug)]
 pub enum ApplyDecision {
@@ -161,6 +173,17 @@ pub struct LifecycleDeps {
     pub storage: Arc<Storage>,
     pub event_sink: Arc<dyn EventSink>,
     pub registry: Arc<dyn AgentRegistry>,
+    /// Read at every approval-wait entry point (initial plan + Layer-2
+    /// replan) to decide whether to synthesize an `Approve(all_ids)`
+    /// decision or block on the user's click. Shared with the
+    /// orchestrator so a toggle change from the settings panel takes
+    /// effect on the run's *next* plan pass without restart.
+    pub settings: Arc<SettingsStore>,
+    /// Phase 3 Step 7 integration seam. Held here so it threads
+    /// cleanly into [`DispatcherDeps`] each time the lifecycle hands
+    /// them over; the dispatcher consults it before Phase-7-policed
+    /// worker actions.
+    pub safety_gate: Arc<SafetyGate>,
     /// Shared back-reference to the Orchestrator's approval-decision
     /// sender map. After a Layer-2 replan produces fresh subtasks,
     /// the lifecycle reinstalls a new sender here so the user's next
@@ -279,26 +302,45 @@ pub async fn run_lifecycle(
     let mut current_approval_rx = approval_rx;
     let mut current_cancel = cancel;
     loop {
-        let decision = tokio::select! {
-            d = &mut current_approval_rx => match d {
-                Ok(d) => d,
-                // Sender dropped without deciding: treat as reject so
-                // the run doesn't hang. Only happens if the orchestrator
-                // is torn down; commands consume the sender.
-                Err(_) => ApprovalDecision::Reject,
+        // Phase 3 Step 7: if auto-approve is on and the run hasn't
+        // tripped the ceiling, synthesize an approval and skip the
+        // wait. The helper either:
+        //   - returns `Synthesized(Approve(ids))` — the run has a
+        //     decision without user input; we also drop the sender
+        //     stash so a racing user click errors cleanly instead of
+        //     landing on a dead receiver;
+        //   - emits `AutoApproveSuspended` (once) and returns `Manual` —
+        //     the run falls through to the normal wait path for this
+        //     and every subsequent plan pass in the run.
+        let decision = match try_auto_approve(&deps, &run, &run_id).await {
+            AutoApproveOutcome::Synthesized(d) => {
+                // Remove + drop the pending sender so a late
+                // `approve_subtasks` / `reject_run` click surfaces
+                // `WrongState` rather than racing the lifecycle.
+                deps.approval_senders.lock().await.remove(&run_id);
+                d
+            }
+            AutoApproveOutcome::Manual => tokio::select! {
+                d = &mut current_approval_rx => match d {
+                    Ok(d) => d,
+                    // Sender dropped without deciding: treat as reject so
+                    // the run doesn't hang. Only happens if the orchestrator
+                    // is torn down; commands consume the sender.
+                    Err(_) => ApprovalDecision::Reject,
+                },
+                _ = current_cancel.cancelled() => {
+                    finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
+                    return;
+                }
+                _ = tokio::time::sleep(APPROVAL_TIMEOUT) => {
+                    deps.event_sink.emit(RunEvent::MasterLog {
+                        run_id: run_id.clone(),
+                        line: "approval timed out after 30 minutes; auto-rejecting.".into(),
+                    }).await;
+                    finalize_rejected(&deps, &run).await;
+                    return;
+                }
             },
-            _ = current_cancel.cancelled() => {
-                finalize_cancelled(&deps, &run, CancelReason::UserCancelled).await;
-                return;
-            }
-            _ = tokio::time::sleep(APPROVAL_TIMEOUT) => {
-                deps.event_sink.emit(RunEvent::MasterLog {
-                    run_id: run_id.clone(),
-                    line: "approval timed out after 30 minutes; auto-rejecting.".into(),
-                }).await;
-                finalize_rejected(&deps, &run).await;
-                return;
-            }
         };
 
         match decision {
@@ -315,6 +357,7 @@ pub async fn run_lifecycle(
                     storage: deps.storage.clone(),
                     event_sink: deps.event_sink.clone(),
                     registry: deps.registry.clone(),
+                    safety_gate: deps.safety_gate.clone(),
                 };
 
                 // Inner dispatch/escalation loop. A `Fixed` / `Skipped`
@@ -1043,6 +1086,112 @@ async fn initialize_run_from_plan(
         .await;
 
     Ok(())
+}
+
+/// Phase 3 Step 7: decide whether the lifecycle can skip the approval
+/// sheet and synthesize an approval decision directly.
+///
+/// The bypass fires when *all* of the following hold:
+///   - `Settings::auto_approve` is `true` at the moment of this call.
+///   - The run hasn't already been suspended this session (a prior
+///     plan pass hitting the ceiling latches [`Run::auto_approve_suspended`]
+///     and never retries auto-approve for this run).
+///   - Approving the current Proposed set wouldn't push
+///     [`Run::auto_approved_count`] past
+///     `Settings::max_subtasks_per_auto_approved_run`.
+///
+/// Emission contract:
+///   - On synthesis: emits [`RunEvent::AutoApproved`] with the list of
+///     approved ids. The approval `tokio::select!` is skipped; the
+///     caller also drops the stashed sender so a racing user click
+///     doesn't land on a dead receiver.
+///   - On ceiling trip: emits [`RunEvent::AutoApproveSuspended`] with
+///     `reason = "subtask_limit"` **exactly once** (the latched flag
+///     prevents re-emission on later plan passes), then returns
+///     [`AutoApproveOutcome::Manual`] so the normal approval wait
+///     takes over.
+///   - Disabled / already suspended / settings lock poisoned: returns
+///     `Manual` silently — no emit, no state change.
+///
+/// A subtle case: if the settings snapshot fails (poisoned lock) we
+/// conservatively stay manual so a lock panic doesn't quietly
+/// auto-approve work the user never consented to.
+async fn try_auto_approve(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+) -> AutoApproveOutcome {
+    let (enabled, max) = match deps.settings.snapshot() {
+        Ok(s) => (s.auto_approve, s.max_subtasks_per_auto_approved_run),
+        Err(_) => return AutoApproveOutcome::Manual,
+    };
+    if !enabled {
+        return AutoApproveOutcome::Manual;
+    }
+
+    // Short-circuit if this run already tripped the ceiling — no re-
+    // emit, and no re-walk of the subtasks vec.
+    {
+        let guard = run.read().await;
+        if guard.auto_approve_suspended {
+            return AutoApproveOutcome::Manual;
+        }
+    }
+
+    let (eligible, total_after) = {
+        let guard = run.read().await;
+        let eligible: Vec<SubtaskId> = guard
+            .subtasks
+            .iter()
+            .filter(|s| s.state == SubtaskState::Proposed)
+            .map(|s| s.id.clone())
+            .collect();
+        let total_after = guard
+            .auto_approved_count
+            .saturating_add(eligible.len() as u32);
+        (eligible, total_after)
+    };
+
+    // Defensive: a plan pass with zero Proposed rows shouldn't happen
+    // (we're inside the approval wait because at least one row was
+    // emitted) but if it ever did, synthesizing `Approve(empty)` would
+    // flip every prior terminal row to Skipped through `record_approval`.
+    // Stay manual instead so the user's approval sheet handles the
+    // empty-plan edge cleanly.
+    if eligible.is_empty() {
+        return AutoApproveOutcome::Manual;
+    }
+
+    if total_after > max {
+        // Latch the suspension flag before emitting so a caller that
+        // ends up re-entering this helper (future refactor) doesn't
+        // double-emit.
+        {
+            let mut guard = run.write().await;
+            guard.auto_approve_suspended = true;
+        }
+        deps.event_sink
+            .emit(RunEvent::AutoApproveSuspended {
+                run_id: run_id.clone(),
+                reason: "subtask_limit".into(),
+            })
+            .await;
+        return AutoApproveOutcome::Manual;
+    }
+
+    {
+        let mut guard = run.write().await;
+        guard.auto_approved_count = total_after;
+    }
+    deps.event_sink
+        .emit(RunEvent::AutoApproved {
+            run_id: run_id.clone(),
+            subtask_ids: eligible.clone(),
+        })
+        .await;
+    AutoApproveOutcome::Synthesized(ApprovalDecision::Approve {
+        subtask_ids: eligible,
+    })
 }
 
 /// Mark un-picked subtasks as Skipped, persist, transition to

@@ -53,6 +53,34 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[allow(dead_code)]
     pub editor: Option<String>,
+    /// Phase 3 Step 7: auto-approve plans without showing the
+    /// approval sheet. When `true`, the lifecycle synthesizes an
+    /// `Approve(all_ids)` decision for the initial plan and for any
+    /// Layer-2 replan — *subject* to the `max_subtasks_per_auto_approved_run`
+    /// ceiling. Layer-3 human escalation and the merge/apply step are
+    /// never bypassed. Defaults to `false` so first-time users hit the
+    /// normal approval flow.
+    #[serde(default)]
+    pub auto_approve: bool,
+    /// Hard ceiling on how many subtasks a single auto-approved run is
+    /// allowed to dispatch across all plan passes (initial + replans).
+    /// When an approval pass would push the total past this number,
+    /// auto-approve is suspended for the rest of the run and the user
+    /// falls back into manual approval. 20 is the Q7 default.
+    #[serde(default = "default_max_subtasks_per_auto_approved_run")]
+    pub max_subtasks_per_auto_approved_run: u32,
+    /// `true` after the user has acknowledged the auto-approve consent
+    /// modal at least once. The modal explains that auto-approve skips
+    /// the approval sheet on initial plans and replans, and that
+    /// Layer-3 + apply still require a user click. The frontend shows
+    /// the modal the first time the toggle is flipped on while this
+    /// flag is `false`; flipping it back off does not clear the flag.
+    #[serde(default)]
+    pub auto_approve_consent_given: bool,
+}
+
+fn default_max_subtasks_per_auto_approved_run() -> u32 {
+    20
 }
 
 impl Default for Settings {
@@ -64,6 +92,9 @@ impl Default for Settings {
             codex_binary_path: None,
             gemini_binary_path: None,
             editor: None,
+            auto_approve: false,
+            max_subtasks_per_auto_approved_run: default_max_subtasks_per_auto_approved_run(),
+            auto_approve_consent_given: false,
         }
     }
 }
@@ -116,6 +147,28 @@ pub fn apply_patch(settings: &mut Settings, patch: &serde_json::Value) -> Result
             "codexBinaryPath" => settings.codex_binary_path = from_nullable_string(key, value)?,
             "geminiBinaryPath" => settings.gemini_binary_path = from_nullable_string(key, value)?,
             "editor" => settings.editor = from_nullable_string(key, value)?,
+            "autoApprove" => {
+                settings.auto_approve = value
+                    .as_bool()
+                    .ok_or_else(|| format!("{key}: expected boolean"))?;
+            }
+            "maxSubtasksPerAutoApprovedRun" => {
+                let n = value
+                    .as_u64()
+                    .ok_or_else(|| format!("{key}: expected positive integer"))?;
+                if n == 0 {
+                    return Err(format!("{key}: must be greater than zero"));
+                }
+                if n > u32::MAX as u64 {
+                    return Err(format!("{key}: must fit in u32"));
+                }
+                settings.max_subtasks_per_auto_approved_run = n as u32;
+            }
+            "autoApproveConsentGiven" => {
+                settings.auto_approve_consent_given = value
+                    .as_bool()
+                    .ok_or_else(|| format!("{key}: expected boolean"))?;
+            }
             _ => {} // ignore unknown keys
         }
     }
@@ -198,6 +251,10 @@ mod tests {
             codex_binary_path: None,
             gemini_binary_path: None,
             editor: None,
+            auto_approve: false,
+            max_subtasks_per_auto_approved_run:
+                default_max_subtasks_per_auto_approved_run(),
+            auto_approve_consent_given: false,
         };
         let json = serde_json::to_string(&original).unwrap();
         assert!(json.contains("\"lastRepo\":\"/tmp/repo\""));
@@ -239,6 +296,10 @@ mod tests {
             codex_binary_path: Some("/usr/bin/codex".into()),
             gemini_binary_path: None,
             editor: None,
+            auto_approve: false,
+            max_subtasks_per_auto_approved_run:
+                default_max_subtasks_per_auto_approved_run(),
+            auto_approve_consent_given: false,
         };
         save_to(&original, &path).unwrap();
         let reloaded = load_from(&path);
@@ -311,5 +372,101 @@ mod tests {
         )
         .unwrap();
         assert!(without.editor.is_none());
+    }
+
+    #[test]
+    fn auto_approve_defaults_are_safe() {
+        // Defaults must skip the bypass entirely — a freshly-installed
+        // app never auto-approves until the user opts in.
+        let s = Settings::default();
+        assert!(!s.auto_approve);
+        assert!(!s.auto_approve_consent_given);
+        assert_eq!(s.max_subtasks_per_auto_approved_run, 20);
+    }
+
+    #[test]
+    fn patch_toggles_auto_approve_flags() {
+        let mut s = Settings::default();
+        apply_patch(
+            &mut s,
+            &serde_json::json!({
+                "autoApprove": true,
+                "autoApproveConsentGiven": true,
+            }),
+        )
+        .unwrap();
+        assert!(s.auto_approve);
+        assert!(s.auto_approve_consent_given);
+
+        // Turning auto-approve back off does not clear the consent flag
+        // — the user has seen the modal once and doesn't need to re-ack.
+        apply_patch(&mut s, &serde_json::json!({ "autoApprove": false })).unwrap();
+        assert!(!s.auto_approve);
+        assert!(s.auto_approve_consent_given);
+    }
+
+    #[test]
+    fn patch_updates_max_subtasks() {
+        let mut s = Settings::default();
+        apply_patch(
+            &mut s,
+            &serde_json::json!({ "maxSubtasksPerAutoApprovedRun": 5 }),
+        )
+        .unwrap();
+        assert_eq!(s.max_subtasks_per_auto_approved_run, 5);
+    }
+
+    #[test]
+    fn patch_rejects_zero_max_subtasks() {
+        let mut s = Settings::default();
+        let err = apply_patch(
+            &mut s,
+            &serde_json::json!({ "maxSubtasksPerAutoApprovedRun": 0 }),
+        )
+        .unwrap_err();
+        assert!(err.contains("maxSubtasksPerAutoApprovedRun"));
+        assert_eq!(
+            s.max_subtasks_per_auto_approved_run,
+            default_max_subtasks_per_auto_approved_run()
+        );
+    }
+
+    #[test]
+    fn patch_rejects_wrong_type_for_auto_approve() {
+        let mut s = Settings::default();
+        let err =
+            apply_patch(&mut s, &serde_json::json!({ "autoApprove": "yes" })).unwrap_err();
+        assert!(err.contains("autoApprove"));
+    }
+
+    #[test]
+    fn auto_approve_fields_round_trip_through_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = Settings {
+            auto_approve: true,
+            auto_approve_consent_given: true,
+            max_subtasks_per_auto_approved_run: 7,
+            ..Settings::default()
+        };
+        save_to(&original, &path).unwrap();
+        let reloaded = load_from(&path);
+        assert!(reloaded.auto_approve);
+        assert!(reloaded.auto_approve_consent_given);
+        assert_eq!(reloaded.max_subtasks_per_auto_approved_run, 7);
+    }
+
+    #[test]
+    fn missing_auto_approve_fields_deserialize_to_defaults() {
+        // Upgrading from a pre-Phase-3 settings file must not error —
+        // the new fields fall back to safe defaults.
+        let legacy = r#"{"lastRepo":null,"masterAgent":"claude"}"#;
+        let s: Settings = serde_json::from_str(legacy).unwrap();
+        assert!(!s.auto_approve);
+        assert!(!s.auto_approve_consent_given);
+        assert_eq!(
+            s.max_subtasks_per_auto_approved_run,
+            default_max_subtasks_per_auto_approved_run()
+        );
     }
 }

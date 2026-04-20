@@ -114,6 +114,11 @@ pub struct Orchestrator {
     pub(crate) storage: Arc<Storage>,
     pub(crate) event_sink: Arc<dyn EventSink>,
     pub(crate) registry: Arc<dyn AgentRegistry>,
+    /// Phase 3 Step 7: integration seam. Threaded into every
+    /// per-run `LifecycleDeps`; the dispatcher consults it on
+    /// worker-level actions Phase 7 will police. Today unconditionally
+    /// permits, so holding a single shared instance is free.
+    pub(crate) safety_gate: Arc<crate::safety::SafetyGate>,
     pub(crate) runs: Arc<Mutex<HashMap<RunId, Arc<RwLock<RunState>>>>>,
     /// Pending approval channels. `submit_task` inserts; `approve_subtasks`
     /// or `reject_run` take and `send()` on the sender, then drop the
@@ -160,6 +165,7 @@ impl Orchestrator {
             storage,
             event_sink,
             registry,
+            safety_gate: Arc::new(crate::safety::SafetyGate::new()),
             runs: Arc::new(Mutex::new(HashMap::new())),
             approval_senders: Arc::new(Mutex::new(HashMap::new())),
             apply_senders: Arc::new(Mutex::new(HashMap::new())),
@@ -354,6 +360,8 @@ impl Orchestrator {
             storage: self.storage.clone(),
             event_sink: self.event_sink.clone(),
             registry: self.registry.clone(),
+            settings: self.settings.clone(),
+            safety_gate: self.safety_gate.clone(),
             approval_senders: self.approval_senders.clone(),
             apply_senders: self.apply_senders.clone(),
             resolution_senders: self.resolution_senders.clone(),

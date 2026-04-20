@@ -88,6 +88,11 @@ pub struct DispatcherDeps {
     pub storage: Arc<Storage>,
     pub event_sink: Arc<dyn EventSink>,
     pub registry: Arc<dyn AgentRegistry>,
+    /// Phase 3 Step 7 integration seam. The dispatcher consults this
+    /// before invoking worker-level actions that Phase 7 will police
+    /// (file writes / deletes / shell invocations). Today it always
+    /// returns `true`; the seam is the point.
+    pub safety_gate: Arc<crate::safety::SafetyGate>,
 }
 
 #[derive(Debug)]

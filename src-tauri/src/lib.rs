@@ -5,6 +5,7 @@ mod gitignore;
 mod ipc;
 mod orchestration;
 mod repo;
+mod safety;
 mod settings;
 mod storage;
 mod worktree;

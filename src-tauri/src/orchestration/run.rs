@@ -202,6 +202,19 @@ pub struct Run {
     /// wires them up, and so crash recovery / debugging can inspect
     /// which subtask the run is parked on.
     pub escalated_subtask_ids: Vec<SubtaskId>,
+    /// Phase 3 Step 7: running total of subtasks that have been
+    /// auto-approved across this run's plan passes (initial + any
+    /// Layer-2 replans). Incremented every time the lifecycle
+    /// synthesizes an approval; used as the running total against
+    /// `Settings::max_subtasks_per_auto_approved_run` when deciding
+    /// whether the next pass can also be auto-approved. Stays on the
+    /// run (not storage) because the ceiling is per-run, not per-app.
+    pub auto_approved_count: u32,
+    /// Phase 3 Step 7: set once the ceiling is exceeded, so subsequent
+    /// plan passes in the same run fall through to manual approval
+    /// without re-emitting `AutoApproveSuspended`. Stays `false` for
+    /// runs where auto-approve was never enabled.
+    pub auto_approve_suspended: bool,
 }
 
 impl Run {
@@ -226,6 +239,8 @@ impl Run {
             finished_at: None,
             cancel_token: CancellationToken::new(),
             escalated_subtask_ids: Vec::new(),
+            auto_approved_count: 0,
+            auto_approve_suspended: false,
         }
     }
 

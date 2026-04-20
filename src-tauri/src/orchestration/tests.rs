@@ -3827,3 +3827,404 @@ async fn replan_count_is_one_on_first_layer2_replacement() {
     h.orch.reject_run(&run_id).await.unwrap();
     h.await_status(&run_id, RunStatus::Rejected).await;
 }
+
+// -- Phase 3 Step 7: auto-approve + ceiling ---------------------------
+//
+// These tests drive the `Settings::auto_approve` bypass path through
+// the full lifecycle. Each test mutates the harness's `SettingsStore`
+// BEFORE `submit_task` so the first approval-wait pass sees the toggle
+// already on. Layer-3 and apply remain user-gated even when
+// auto-approve is on; those invariants have their own tests below.
+
+/// Enable auto-approve (and optionally a custom ceiling) on the
+/// harness's live settings store. Tests call this before
+/// `submit_task` so the approval wait sees the toggle on.
+fn enable_auto_approve(h: &Harness, max: Option<u32>) {
+    let mut patch = serde_json::json!({ "autoApprove": true });
+    if let Some(m) = max {
+        patch["maxSubtasksPerAutoApprovedRun"] = serde_json::json!(m);
+    }
+    h.orch.settings.update(&patch).unwrap();
+}
+
+/// Count `AutoApproved` events for this run in the recorded transcript.
+async fn count_auto_approved(h: &Harness, run_id: &RunId) -> usize {
+    h.sink
+        .snapshot()
+        .await
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                RunEvent::AutoApproved { run_id: r, .. } if r == run_id
+            )
+        })
+        .count()
+}
+
+/// Wait for a specific `RunEvent::AutoApproved` payload, returning the
+/// subtask id list. Bounded; panics with the transcript if it doesn't
+/// arrive in time.
+async fn await_auto_approved(h: &Harness, run_id: &RunId) -> Vec<SubtaskId> {
+    expect_event(h, run_id, |e| match e {
+        RunEvent::AutoApproved { subtask_ids, .. } => Some(subtask_ids.clone()),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn auto_approve_bypasses_initial_approval_without_user_click() {
+    // Settings.auto_approve=true → lifecycle synthesizes Approve(all)
+    // for the initial plan. No `approve_subtasks` call; run reaches
+    // Merging on its own and emits `AutoApproved` exactly once.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(2)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "did t0".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await
+        .with_execute(
+            "t1",
+            ExecuteScript::Ok {
+                summary: "did t1".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+    enable_auto_approve(&h, None);
+
+    let run_id = h
+        .orch
+        .submit_task("auto".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // Must reach Merging without a human approve click.
+    h.await_status(&run_id, RunStatus::Merging).await;
+    await_all_subtasks_terminal(&h, &run_id).await;
+
+    let approved = await_auto_approved(&h, &run_id).await;
+    assert_eq!(
+        approved.len(),
+        2,
+        "AutoApproved payload should list both subtasks"
+    );
+    assert_eq!(
+        count_auto_approved(&h, &run_id).await,
+        1,
+        "initial plan should fire AutoApproved exactly once",
+    );
+
+    // No AutoApproveSuspended — the ceiling was never hit.
+    let suspended = h
+        .sink
+        .snapshot()
+        .await
+        .iter()
+        .any(|e| matches!(e, RunEvent::AutoApproveSuspended { run_id: r, .. } if r == &run_id));
+    assert!(
+        !suspended,
+        "AutoApproveSuspended must not fire when under the ceiling",
+    );
+
+    // Clean up: bypass the apply step by discarding.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn auto_approve_off_uses_manual_approval_path() {
+    // Regression guard: when auto_approve is off (the default), the
+    // lifecycle must NOT emit AutoApproved / AutoApproveSuspended and
+    // must wait for `approve_subtasks` like before.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "did t0".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("manual".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // Should stall in AwaitingApproval until we click.
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    // Give the lifecycle a grace window to (wrongly) auto-approve.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.status,
+        RunStatus::AwaitingApproval,
+        "auto-approve off must leave run awaiting approval",
+    );
+    assert_eq!(
+        count_auto_approved(&h, &run_id).await,
+        0,
+        "AutoApproved must never fire with auto_approve=false",
+    );
+
+    approve_all(&h, &run_id).await;
+    await_all_subtasks_terminal(&h, &run_id).await;
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn auto_approve_ceiling_suspends_and_falls_back_to_manual() {
+    // Plan has 3 subtasks, ceiling is 2 → bypass refuses to synthesize,
+    // emits AutoApproveSuspended, run parks in AwaitingApproval waiting
+    // for a real user click.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(3)))
+        .await
+        .with_execute_default(ExecuteScript::Ok {
+            summary: "ok".into(),
+            delay: Duration::from_millis(0),
+        })
+        .await;
+    let h = Harness::new(agent).await;
+    enable_auto_approve(&h, Some(2));
+
+    let run_id = h
+        .orch
+        .submit_task("too-big".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // Park in AwaitingApproval (the fall-through path).
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    // Suspension event must have fired exactly once with the
+    // canonical reason string.
+    let suspended_reason = expect_event(&h, &run_id, |e| match e {
+        RunEvent::AutoApproveSuspended { reason, .. } => Some(reason.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(suspended_reason, "subtask_limit");
+
+    let count_suspended = h
+        .sink
+        .snapshot()
+        .await
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                RunEvent::AutoApproveSuspended { run_id: r, .. } if r == &run_id
+            )
+        })
+        .count();
+    assert_eq!(
+        count_suspended, 1,
+        "AutoApproveSuspended must be emitted exactly once per run"
+    );
+
+    // AutoApproved must NOT have fired — the ceiling blocked synthesis.
+    assert_eq!(
+        count_auto_approved(&h, &run_id).await,
+        0,
+        "AutoApproved must not fire when suspended",
+    );
+
+    // Latch check: flipping settings again shouldn't un-suspend. We
+    // simulate a user retry by lowering the ceiling further and hitting
+    // approve manually. The run should proceed without another
+    // auto-approve event.
+    approve_all(&h, &run_id).await;
+    await_all_subtasks_terminal(&h, &run_id).await;
+    assert_eq!(
+        count_auto_approved(&h, &run_id).await,
+        0,
+        "auto-approve stays suspended after a ceiling trip",
+    );
+
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn auto_approve_does_not_bypass_layer3_escalation() {
+    // Initial plan auto-approves; worker fails; master replan returns
+    // empty → Layer 3 parks on AwaitingHumanFix. The Layer 3 wait must
+    // block on the resolution channel even with auto_approve=true.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
+        .await;
+    let h = Harness::new(agent).await;
+    enable_auto_approve(&h, None);
+
+    let run_id = h
+        .orch
+        .submit_task("will-escalate".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // Initial plan should auto-approve — we never call approve_subtasks.
+    await_auto_approved(&h, &run_id).await;
+
+    // Run must reach Layer 3 park without further user input.
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+    assert!(
+        h.sink
+            .snapshot()
+            .await
+            .iter()
+            .any(|e| matches!(e, RunEvent::HumanEscalation { run_id: r, .. } if r == &run_id)),
+        "HumanEscalation must fire even under auto-approve",
+    );
+
+    // Cleanup: resolve Aborted so the run finalizes to Cancelled.
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+#[tokio::test]
+async fn auto_approve_does_not_bypass_apply_step() {
+    // Reach Merging via auto-approve, then confirm the run stays in
+    // Merging until `apply_run` is called. Auto-approve must never
+    // auto-apply — the user still gates the diff review.
+    let agent = agent_writing(&[("t0", vec![("a.txt", "hello\n")])]).await;
+    let h = Harness::new(agent).await;
+    enable_auto_approve(&h, None);
+
+    let run_id = h
+        .orch
+        .submit_task("auto-then-apply".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    await_auto_approved(&h, &run_id).await;
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // Wait for DiffReady so the apply sender is installed.
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { files, .. } => Some(files.clone()),
+        _ => None,
+    })
+    .await;
+
+    // Give the lifecycle a grace window to (wrongly) auto-apply.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.status,
+        RunStatus::Merging,
+        "auto-approve must not auto-apply; apply still waits for user",
+    );
+
+    // Manually apply — now the run finalizes.
+    h.orch.apply_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Done).await;
+}
+
+#[tokio::test]
+async fn auto_approve_bypasses_replan_plan_pass() {
+    // Initial plan auto-approves; worker fails; master returns a viable
+    // replacement → the replan re-emits SubtasksProposed and the
+    // lifecycle re-enters the approval wait. Auto-approve must fire
+    // again on that pass so the replacement runs without user input.
+    let replacement = Plan {
+        reasoning: "retry".into(),
+        subtasks: vec![PlannedSubtask {
+            title: "recovered".into(),
+            why: "replacement".into(),
+            assigned_worker: AgentKind::Claude,
+            dependencies: vec![],
+        }],
+    };
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        // Fail BOTH the original attempt and the retry so we escalate
+        // to Layer 2 (master replan).
+        .with_fail_attempts(
+            "t0",
+            vec![
+                AgentError::TaskFailed { reason: "first".into() },
+                AgentError::TaskFailed { reason: "second".into() },
+            ],
+        )
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "never-reached".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await
+        .with_execute(
+            "recovered",
+            ExecuteScript::Ok {
+                summary: "replacement ok".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await
+        .with_replan(ReplanScript::OkPlan(replacement))
+        .await;
+    let h = Harness::new(agent).await;
+    enable_auto_approve(&h, None);
+
+    let run_id = h
+        .orch
+        .submit_task("replan-auto".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+
+    // Wait until we've observed TWO auto-approvals: the initial plan and
+    // the replacement plan. Bounded poll — replan + two retries + final
+    // dispatch is well under 3s with no real subprocess work.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if count_auto_approved(&h, &run_id).await >= 2 {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let snap = h.sink.snapshot().await;
+            panic!(
+                "expected AutoApproved twice (initial + replan); got {}. Events: {:#?}",
+                count_auto_approved(&h, &run_id).await,
+                snap,
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Run should eventually reach Merging without any human click.
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // No suspension — both passes were under the default ceiling (20).
+    let suspended = h
+        .sink
+        .snapshot()
+        .await
+        .iter()
+        .any(|e| matches!(e, RunEvent::AutoApproveSuspended { run_id: r, .. } if r == &run_id));
+    assert!(!suspended, "replan pass was within ceiling, must not suspend");
+
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
