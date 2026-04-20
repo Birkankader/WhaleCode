@@ -54,6 +54,22 @@ const PAN_MARGIN = 200;
  * row-max logic.
  */
 const ESCALATION_WORKER_HEIGHT = 280;
+/**
+ * Per-worker container height for states that have a LogBlock (54px) on
+ * top of the title + why + header + chip stack. The default 140px isn't
+ * enough — the why line gets visually overwritten by the LogBlock's
+ * opaque background when flex squeezes the NonProposedBody. 180px is
+ * the middle ground between the compact proposed card (140px) and the
+ * escalated surface (280px), and row-max alignment keeps mixed-state
+ * rows (one proposed + one running) visually aligned to the taller one.
+ */
+const LOGS_WORKER_HEIGHT = 180;
+const LOGS_STATES: ReadonlySet<NodeState> = new Set([
+  'running',
+  'retrying',
+  'done',
+  'failed',
+]);
 
 /** See `onNodeClick` comment below — this noop unblocks pointer-events. */
 const noopNodeClick = () => undefined;
@@ -236,15 +252,26 @@ function buildGraph(
     if (finalNode) layoutEdges.push({ source: st.id, target: finalNode.id });
   }
 
-  // Expand any subtask in `human_escalation` to the taller container
-  // height. `layoutGraph` applies row-max alignment, so row-mates
-  // match automatically and the final node Y math accounts for the
-  // larger row. Empty map = pre-refactor footprint.
+  // Per-subtask height overrides. `layoutGraph` applies row-max
+  // alignment, so row-mates match automatically and the final node
+  // Y math accounts for the larger row. Empty map = pre-refactor
+  // footprint.
+  //
+  // Two tiers above the 140px default:
+  //   - `human_escalation`: 280px, fits EscalationActions surface
+  //   - states with a LogBlock (running/retrying/done/failed): 180px,
+  //     fits header + title + why + LogBlock(54px) + chip
+  // `human_escalation` wins when both apply — the state machine
+  // can only land in one at a time, but the guard is explicit for
+  // future-proofing.
   const workerHeights = new Map<string, number>();
   for (const st of subtasks) {
     const snap = snapshots.get(st.id);
-    if (snap?.value === 'human_escalation') {
+    const state = snap?.value;
+    if (state === 'human_escalation') {
       workerHeights.set(st.id, ESCALATION_WORKER_HEIGHT);
+    } else if (state && LOGS_STATES.has(state as NodeState)) {
+      workerHeights.set(st.id, LOGS_WORKER_HEIGHT);
     }
   }
 
