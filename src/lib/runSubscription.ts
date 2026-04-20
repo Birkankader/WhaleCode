@@ -1,7 +1,7 @@
 /**
  * Run-scoped event subscription helper.
  *
- * Owns the lifecycle of the twelve `run:*` Tauri events for a single
+ * Owns the lifecycle of the fourteen `run:*` Tauri events for a single
  * `runId`: schema-validates each payload, defensively drops events whose
  * `runId` doesn't match the run this subscription was built for, and
  * routes the rest to per-event handlers the caller supplies.

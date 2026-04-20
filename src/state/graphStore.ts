@@ -676,7 +676,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     // Terminal events auto-detach. `merging` is NOT terminal — it's the
     // transient apply state, and conflicts may keep the run alive.
-    if (mapped === 'done' || mapped === 'failed' || mapped === 'rejected') {
+    // `cancelled` IS terminal: the backend's `finalize_cancelled` emits a
+    // single StatusChanged(Cancelled) and stops all workers, so we detach
+    // symmetrically with done/failed/rejected. Without this, the
+    // subscription stays wired to a dead run and `submitTask`'s
+    // `priorIsTerminal` guard throws "A run is already active" — a soft-
+    // lock the user can only escape by full-reloading the app.
+    if (
+      mapped === 'done' ||
+      mapped === 'failed' ||
+      mapped === 'rejected' ||
+      mapped === 'cancelled'
+    ) {
       detachActiveSubscription();
     }
   }
@@ -1063,7 +1074,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const priorIsTerminal =
           priorStatus === 'applied' ||
           priorStatus === 'rejected' ||
-          priorStatus === 'failed';
+          priorStatus === 'failed' ||
+          priorStatus === 'cancelled';
         if (!priorIsTerminal) {
           throw new Error(
             'A run is already active. Reset or discard the current run before submitting again.',

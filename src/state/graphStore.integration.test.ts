@@ -1289,6 +1289,73 @@ describe('graphStore — discard / cancel / reset', () => {
     expect(s.activeSubscription).not.toBeNull();
   });
 
+  it('StatusChanged(cancelled) detaches subscription and unblocks submitTask', async () => {
+    // Regression: before treating `cancelled` as terminal in
+    // `handleStatusChanged` / `submitTask.priorIsTerminal`, the
+    // subscription stayed wired after the backend emitted the final
+    // StatusChanged(Cancelled), so `submitTask` threw "A run is already
+    // active" and the user was soft-locked until a full reload. This
+    // test mirrors the real backend shape: cancel_run returns, then
+    // `finalize_cancelled` emits the single terminal event.
+    await state().submitTask('x');
+    await state().cancelRun();
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'cancelled' });
+
+    const post = state();
+    expect(post.status).toBe('cancelled');
+    expect(post.activeSubscription).toBeNull();
+
+    // A fresh task must go through without throwing. `submitTask`'s
+    // prior-run cleanup path runs `reset()` before attaching the new
+    // subscription; the new `runId` is the same mock value, but the
+    // important assertion is that the call resolves.
+    invokeHandlers.set('submit_task', async () => 'run-integration-002');
+    await expect(state().submitTask('y')).resolves.toBeUndefined();
+    expect(state().runId).toBe('run-integration-002');
+    expect(state().status).toBe('planning');
+  });
+
+  it('preserves graph state (subtasks, logs, snapshots) when run is cancelled', async () => {
+    // Convention: terminal states (done/failed/rejected/cancelled) leave
+    // the graph on screen so the user can inspect the run before moving
+    // on. App.tsx routes back to EmptyState only on user action (submit,
+    // discard, reset) — not on the terminal event itself. This test
+    // documents that the cancel path follows the same rule.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'one',
+          title: 'First step',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    emit(EVENT_MASTER_LOG, { runId: BACKEND_RUN_ID, line: 'planning...' });
+    emit(EVENT_SUBTASK_LOG, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      line: 'working...',
+    });
+
+    await state().cancelRun();
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'cancelled' });
+
+    const s = state();
+    expect(s.status).toBe('cancelled');
+    expect(s.runId).toBe(BACKEND_RUN_ID);
+    expect(s.subtasks).toHaveLength(1);
+    expect(s.nodeSnapshots.has('one')).toBe(true);
+    expect(s.nodeLogs.get(MASTER_ID)?.length ?? 0).toBeGreaterThan(0);
+    expect(s.nodeLogs.get('one')?.length ?? 0).toBeGreaterThan(0);
+    // Subscription is torn down, but the per-run state stays until the
+    // next `submitTask` / `reset` / `discardRun` clears it.
+    expect(s.activeSubscription).toBeNull();
+  });
+
   it('reset detaches subscription and stops actors', async () => {
     await state().submitTask('x');
     const sub = state().activeSubscription;
