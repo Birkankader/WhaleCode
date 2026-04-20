@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { type AgentKind, type AgentStatus } from '../../lib/ipc';
 import { useAgentStore } from '../../state/agentStore';
-import { useGraphStore } from '../../state/graphStore';
+import { useGraphStore, type GraphStatus } from '../../state/graphStore';
 import { useRepoStore } from '../../state/repoStore';
 import { AGENT_FULL_LABEL } from '../primitives/agentColor';
 import { SettingsPanel } from './SettingsPanel';
@@ -25,6 +25,21 @@ const NO_REPO_LABEL = 'No repo loaded';
 const NO_AGENTS_LABEL = 'No agents available';
 
 const DROPDOWN_ORDER: AgentKind[] = ['claude', 'codex', 'gemini'];
+
+/**
+ * Statuses during which a top-level "Cancel run" affordance is offered.
+ * `awaiting_human_fix` is deliberately omitted — the escalation surface on
+ * the affected WorkerNode already carries an "Abort run" inline-confirm
+ * (see EscalationActions); a second entry in the chrome would be
+ * redundant and split the user's attention away from the worker-level
+ * decision they're being asked to make.
+ */
+const CANCELLABLE_STATUSES: ReadonlySet<GraphStatus> = new Set<GraphStatus>([
+  'planning',
+  'awaiting_approval',
+  'running',
+  'merging',
+]);
 
 export function TopBar() {
   const masterAgent = useGraphStore((s) => s.masterNode?.agent ?? s.selectedMasterAgent);
@@ -94,6 +109,7 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <CancelRunButton />
         <div className="relative flex items-center gap-2" ref={menuRef}>
           <span className="text-hint text-fg-tertiary">Master:</span>
           <button
@@ -163,6 +179,118 @@ export function TopBar() {
         </div>
       </div>
     </header>
+  );
+}
+
+/**
+ * Cancel-run affordance in the TopBar. Visible only while the run is in
+ * one of the `CANCELLABLE_STATUSES`; hidden otherwise so the chrome
+ * stays empty when there's no run to cancel.
+ *
+ * Split into an outer gate and an inner prompt so confirm-mode state
+ * naturally resets on each new cancellable window: when `status`
+ * transitions out of the set (done / cancelled / failed / …) the outer
+ * returns `null`, the inner component unmounts, and the next run that
+ * re-enters `planning` mounts a fresh `CancelRunPrompt` with
+ * `confirming = false`. This keeps the state declaration effect-free.
+ */
+function CancelRunButton() {
+  const status = useGraphStore((s) => s.status);
+  if (!CANCELLABLE_STATUSES.has(status)) return null;
+  return <CancelRunPrompt />;
+}
+
+/**
+ * Inner two-step prompt. Click the unarmed button → "Cancel run? Yes / No"
+ * inline. Yes calls `cancelRun`; No or a 4 s idle auto-dismiss returns to
+ * the unarmed state — cancelling a running plan discards worker progress,
+ * so a single click should never be enough.
+ */
+function CancelRunPrompt() {
+  const cancelRun = useGraphStore((s) => s.cancelRun);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  const arm = () => {
+    setConfirming(true);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => setConfirming(false), 4000);
+  };
+
+  const confirm = async () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setBusy(true);
+    try {
+      await cancelRun();
+    } catch {
+      // `currentError` is already populated by the store action — the
+      // ErrorBanner surfaces it. Swallow to avoid unhandled rejection.
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  if (confirming) {
+    return (
+      <span
+        className="flex items-center gap-1 text-hint"
+        data-testid="topbar-cancel-confirm"
+      >
+        <span style={{ color: 'var(--color-status-failed)' }}>Cancel run?</span>
+        <button
+          type="button"
+          onClick={() => void confirm()}
+          disabled={busy}
+          className="rounded-sm border px-1 py-0.5 disabled:opacity-50"
+          style={{
+            borderColor: 'var(--color-status-failed)',
+            color: 'var(--color-status-failed)',
+          }}
+          data-testid="topbar-cancel-confirm-yes"
+          aria-label="Confirm cancel run"
+        >
+          {busy ? 'Cancelling…' : 'Yes'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          disabled={busy}
+          className="rounded-sm border px-1 py-0.5 text-fg-tertiary disabled:opacity-50"
+          style={{ borderColor: 'var(--color-border-default)' }}
+          data-testid="topbar-cancel-confirm-no"
+          aria-label="Keep run running"
+        >
+          No
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={arm}
+      className="rounded-sm border border-border-default bg-bg-elevated px-2 py-0.5 text-hint text-fg-secondary transition-colors hover:border-[var(--color-status-failed)] hover:text-[var(--color-status-failed)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-status-failed)]"
+      data-testid="topbar-cancel-run"
+      aria-label="Cancel run"
+      title="Cancel run"
+    >
+      Cancel run
+    </button>
   );
 }
 

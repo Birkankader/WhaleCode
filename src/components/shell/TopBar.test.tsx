@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../lib/ipc', async () => {
   const actual = await vi.importActual<typeof import('../../lib/ipc')>('../../lib/ipc');
@@ -159,6 +159,123 @@ describe('TopBar auto-approve badge', () => {
     render(<TopBar />);
     expect(screen.getByTestId('auto-approve-badge')).toBeInTheDocument();
     expect(screen.getByLabelText(/auto-approve enabled/i)).toBeInTheDocument();
+  });
+});
+
+describe('TopBar cancel-run button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    resetStores();
+    seedAvailable();
+    useGraphStore.setState({ status: 'idle' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    useGraphStore.setState({ status: 'idle' });
+  });
+
+  const CANCELLABLE: ReadonlyArray<
+    'planning' | 'awaiting_approval' | 'running' | 'merging'
+  > = ['planning', 'awaiting_approval', 'running', 'merging'];
+
+  const NON_CANCELLABLE: ReadonlyArray<
+    'idle' | 'done' | 'applied' | 'rejected' | 'failed' | 'cancelled' | 'awaiting_human_fix'
+  > = [
+    'idle',
+    'done',
+    'applied',
+    'rejected',
+    'failed',
+    'cancelled',
+    'awaiting_human_fix',
+  ];
+
+  it.each(CANCELLABLE)('is visible when status is %s', (status) => {
+    useGraphStore.setState({ status });
+    render(<TopBar />);
+    expect(screen.getByTestId('topbar-cancel-run')).toBeInTheDocument();
+  });
+
+  it.each(NON_CANCELLABLE)('is hidden when status is %s', (status) => {
+    useGraphStore.setState({ status });
+    render(<TopBar />);
+    expect(screen.queryByTestId('topbar-cancel-run')).toBeNull();
+  });
+
+  it('clicking the button arms an inline confirm; clicking Yes calls cancelRun', async () => {
+    useGraphStore.setState({ status: 'running' });
+    const cancelRun = vi.fn().mockResolvedValue(undefined);
+    useGraphStore.setState({ cancelRun });
+
+    render(<TopBar />);
+    fireEvent.click(screen.getByTestId('topbar-cancel-run'));
+    const confirm = screen.getByTestId('topbar-cancel-confirm');
+    expect(confirm).toBeInTheDocument();
+    expect(confirm).toHaveTextContent(/cancel run\?/i);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('topbar-cancel-confirm-yes'));
+    });
+    expect(cancelRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('clicking No dismisses the confirm without calling cancelRun', () => {
+    useGraphStore.setState({ status: 'running' });
+    const cancelRun = vi.fn();
+    useGraphStore.setState({ cancelRun });
+
+    render(<TopBar />);
+    fireEvent.click(screen.getByTestId('topbar-cancel-run'));
+    fireEvent.click(screen.getByTestId('topbar-cancel-confirm-no'));
+    expect(cancelRun).not.toHaveBeenCalled();
+    // Back to the unarmed trigger.
+    expect(screen.getByTestId('topbar-cancel-run')).toBeInTheDocument();
+    expect(screen.queryByTestId('topbar-cancel-confirm')).toBeNull();
+  });
+
+  it('auto-dismisses the inline confirm after 4 seconds', () => {
+    vi.useFakeTimers();
+    useGraphStore.setState({ status: 'running' });
+    render(<TopBar />);
+    fireEvent.click(screen.getByTestId('topbar-cancel-run'));
+    expect(screen.getByTestId('topbar-cancel-confirm')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(4100);
+    });
+    expect(screen.queryByTestId('topbar-cancel-confirm')).toBeNull();
+    expect(screen.getByTestId('topbar-cancel-run')).toBeInTheDocument();
+  });
+
+  it('hides the confirm when status transitions out of cancellable set mid-prompt', async () => {
+    useGraphStore.setState({ status: 'running' });
+    render(<TopBar />);
+    fireEvent.click(screen.getByTestId('topbar-cancel-run'));
+    expect(screen.getByTestId('topbar-cancel-confirm')).toBeInTheDocument();
+
+    // Run finishes naturally (e.g. done or cancelled via some other path).
+    act(() => {
+      useGraphStore.setState({ status: 'done' });
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('topbar-cancel-confirm')).toBeNull();
+      expect(screen.queryByTestId('topbar-cancel-run')).toBeNull();
+    });
+  });
+
+  it('swallows cancelRun rejection (error surfaces via currentError)', async () => {
+    useGraphStore.setState({ status: 'running' });
+    const cancelRun = vi.fn().mockRejectedValue(new Error('backend boom'));
+    useGraphStore.setState({ cancelRun });
+    render(<TopBar />);
+    fireEvent.click(screen.getByTestId('topbar-cancel-run'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('topbar-cancel-confirm-yes'));
+    });
+    expect(cancelRun).toHaveBeenCalled();
+    // Confirm clears regardless of outcome.
+    expect(screen.queryByTestId('topbar-cancel-confirm')).toBeNull();
   });
 });
 
