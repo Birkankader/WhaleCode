@@ -60,15 +60,23 @@ Phase 2's orchestrator had a linear flow. Phase 3 makes it branching:
       └─────  master produces replacement subtasks  ─────┘
            (new rows in `subtask_replans`, `SubtasksProposed` re-emitted)
                           ↓
-                ... or replan cap hit / master fails ...
+                ... or replan cap hit / master fails / empty plan ...
                           ↓
-                HumanEscalation (Layer 3)
+                AwaitingHumanFix   ← Layer 3 park (worktrees + notes preserved)
                           ↓
-                user: Manual fix / Skip / Abort
+         user decision on the resolution channel:
+            ├── Manual fix + mark fixed → subtask: Done
+            ├── Skip (cascades to dependents) → subtasks: Skipped
+            ├── Try replan again (if cap not hit) → Running → Planning → ...
+            └── Abort                         → run: Cancelled (full cleanup)
+                          ↓
+                Running (dispatcher re-evaluates)   or   Cancelled
 ```
 
 Key architectural deltas vs the earlier draft:
-- **No `Escalating` run status.** Layer 2 reuses `Running → Planning → AwaitingApproval`, same as initial planning.
+- **Layer 3 does NOT terminate the run.** Lifecycle parks in `AwaitingHumanFix`; worktrees, notes, and already-completed worker output are preserved. Only **Abort** transitions the run to a terminal state (`Cancelled`) with full cleanup. `mark_fixed` / `skip` / `try_replan_again` signal the per-run resolution channel, the dispatcher wakes, and dependents of the fixed-or-skipped subtask become eligible.
+- **Layer 2 reuses existing statuses.** `Running → Planning → AwaitingApproval`, same as initial planning. No `Escalating` status.
+- **`AwaitingHumanFix` is the one new `RunStatus` Phase 3 adds.** Enum audit below covers its five call sites. Like every other status it serializes as text (no schema migration).
 - **No new "re-plan" events.** The `run:subtasks_proposed` event carries replacement subtasks (with an optional `replaces?: SubtaskId[]` field per subtask).
 - **Retry count lives in the store** (`subtaskRetryCounts: Map<string, number>`), not in the XState machine. Phase 1's `MAX_RETRIES` / `canRetry` guard is removed in Step 3a.
 - **Re-plan count is server-authoritative.** `COUNT(*) FROM subtask_replans` walked back to the chain root — the frontend reads it as a derived field.
@@ -126,6 +134,16 @@ The existing `SubtaskData` shape on the frontend keeps `replanCount: number` and
 | zod schema | `src/lib/ipc.ts` — add to `subtaskStateSchema` |
 | Status mapper | `src/state/graphStore.ts` — `eventsForSubtaskState` handles the new variant |
 | XState bridge | see Step 3 — machine receives `START_RETRY` / `RETRY_SUCCESS` / `RETRY_FAIL` |
+| SQLite persistence | implicit (text column); no schema change |
+
+Phase 3 Step 5 adds one `RunStatus` variant on the same schedule — audit before Step 5 Commit 2a:
+
+| Call site | `RunStatus::AwaitingHumanFix` |
+|---|---|
+| Rust enum | `src-tauri/src/ipc/mod.rs` — add `AwaitingHumanFix` variant (serialized `awaiting-human-fix`) |
+| zod schema | `src/lib/ipc.ts` — add to `runStatusSchema` |
+| Status mapper | `src/state/graphStore.ts` — top-bar chip label + any `RunStatus`-keyed reducer branches |
+| Lifecycle gate | `src-tauri/src/orchestration/lifecycle.rs` — enter on escalation, exit on resolution/abort; edit commands that gate on `AwaitingApproval` stay untouched (escalation is a different park) |
 | SQLite persistence | implicit (text column); no schema change |
 
 Run this audit *before* adding each new variant, not after.
@@ -547,14 +565,25 @@ Master may legitimately conclude "this subtask can't be automated, skip it" and 
 
 ### Step 5: Human escalation (Layer 3)
 
-**Goal:** When automated recovery fails, hand decision authority to the user.
+**Goal:** When automated recovery fails, hand decision authority to the user — without terminating the run.
 
-**Triggers:**
-- Layer 2 re-plan itself errors (master can't produce a plan)
-- Loop limit hit (2 re-plans already tried)
-- Master's replan returns empty + user rejects the skip
+**Trigger:** When a subtask enters Layer 3 (Layer 2 cap hit, Layer 2 master failure, or Layer 2 empty plan), the run does **NOT** transition to `Failed`. Lifecycle parks in the new `AwaitingHumanFix` status, worktrees and notes are preserved in place, and the per-run resolution channel waits for the user's decision: `manual_fix` / `mark_fixed` / `skip` / `try_replan_again` / `abort`. Only `abort` transitions the run to a terminal state (`Cancelled`) with full cleanup.
 
-**Not resumable across restarts.** A run sitting in Layer 3 waiting on a user decision is treated as "active" by the Phase 2 crash-recovery path. If the app is killed or OS-restarted while the user is deliberating, boot-time recovery marks the run `Failed` and sweeps its worktrees — same behaviour as any other active-at-crash run. Fully resumable Layer 3 is v2.5 territory (see `docs/KNOWN_ISSUES.md` "Partial run recovery is cleanup-only, not resume").
+**Lifecycle invariants for Layer 3:**
+
+- **Worktrees are NOT cleaned** while the run sits in `AwaitingHumanFix`. Cleanup happens only on successful apply, discard, or abort — the user needs the worktree available to fix the code by hand.
+- **Shared notes are NOT cleared** during the park. The master's context, worker logs, and prior decisions stay readable.
+- **Already-completed worker output is NOT rolled back.** Fixed-or-skipped subtasks re-enter the dispatcher pool on resume; dependents of a fixed subtask unblock naturally because the runtime's `SubtaskState::Done` makes their dependency gate pass.
+- **Run status enters `AwaitingHumanFix`** on escalation and exits to `Running` when the user resolves with `mark_fixed`, `skip`, or `try_replan_again`, or to `Cancelled` on `abort`.
+- **The dispatcher parks on a `tokio::select!` that includes the resolution channel receiver** alongside the existing worker-completion and cancellation branches. Receiving a `Layer3Decision` variant unblocks forward progress; no spin-loop on subtask state change is needed.
+- **Cancellation still works.** The existing `CancellationToken` branch in the lifecycle select races the resolution channel; whichever fires first wins, and the other drops. See Commit 2a tests for the deadlock coverage.
+
+**Not resumable across restarts.** A run sitting in `AwaitingHumanFix` waiting on a user decision is still treated as "active" by the Phase 2 crash-recovery path. If the app is killed or OS-restarted while the user is deliberating, boot-time recovery marks the run `Failed` and sweeps its worktrees — same behaviour as any other active-at-crash run, using the new `AwaitingHumanFix` status in `list_active_runs`'s "not terminal" set. Fully resumable Layer 3 is v2.5 territory (see `docs/KNOWN_ISSUES.md` "Partial run recovery is cleanup-only, not resume").
+
+**Implementation split (Step 5 Commit 2a → 2b).** The lifecycle infrastructure and the IPC command implementations land in separate commits so review stays bounded:
+
+- **Commit 2a — lifecycle infrastructure (~400-500 LOC).** `RunStatus::AwaitingHumanFix` variant + full enum audit. `Run` gains a `resolution_rx` / `escalated_subtask_ids` pair. `Orchestrator` stores a resolution-channel sender map keyed by run id (mirrors `apply_senders`). Lifecycle's Escalated branch transitions to `AwaitingHumanFix` instead of calling `finalize_failed`, then parks on a select across the resolution channel, the worker-completion receiver, and the cancellation token. `Layer3Decision` enum carries the outcome (`Fixed(SubtaskId)`, `Skipped(Vec<SubtaskId>)`, `ReplanRequested(SubtaskId)`, `Aborted`). The 4 IPC commands (`manual_fix_subtask`, `mark_subtask_fixed`, `skip_subtask`, `try_replan_again`) continue to return `InvalidEdit("not yet implemented")`; Commit 2a's gates pass without exposing new capability to the frontend. Tests: park → resolve → resume for each variant; cancel during escalation; crash-recovery sweeps `AwaitingHumanFix` runs.
+- **Commit 2b — IPC command implementations (~500-700 LOC).** Drives the resolution channel: `manual_fix_subtask` calls `editor::open_in_editor` against the subtask's worktree; `mark_subtask_fixed` auto-commits any dirty diff and sends `Fixed`; `skip_subtask` walks the forward-dependency graph (`compute_skip_cascade`), marks all transitively-blocked subtasks `Skipped`, and sends `Skipped`; `try_replan_again` validates the cap via the same lineage query used for auto-trigger and sends `ReplanRequested`. `SubtaskData` gains `replan_count: u8` populated from the lineage SQL on every `SubtasksProposed` emission. Tests: each command's happy path, wrong-state rejection, diamond dependency cascade, replan cap guard, unblock-dependents-on-fix.
 
 **UI:**
 The failed subtask node enters `human_escalation` state:
@@ -615,15 +644,22 @@ Trusting the user is cleaner than state-machining the editor lifecycle. The "I f
 
 **Abort flow:**
 - Confirmation required: "Abort the whole run? All work will be discarded."
-- If confirmed: cancel all running workers, cleanup worktrees, clear notes, transition to `Idle`
+- If confirmed: fire the run's `CancellationToken`, cancel all running workers, cleanup worktrees, clear notes, run transitions to `Cancelled` (same terminal state as any user-cancelled run — not `Idle`, which is the pre-run shell state).
 
-**Events:**
-- `run:human_escalation { run_id, subtask_id, error, options }` where `options` is a subset of `["manual_fix", "skip", "abort", "try_replan_again"]`. `try_replan_again` is included only when `COUNT(*) FROM subtask_replans` walked to the chain root is less than the cap (2) — see Step 4c and Step 6. `manual_fix` is included unconditionally; on `SpawnFailed` the frontend renders the "Check agent install" variant of the button but the wire option stays the same.
+**Events and commands:**
+- `run:human_escalation { run_id, subtask_id, error, options }` — emitted once per escalation entry; the run status flips to `AwaitingHumanFix` in the same tick. `options` is a subset of `["manual_fix", "skip", "abort", "try_replan_again"]`. `try_replan_again` is included only when `COUNT(*) FROM subtask_replans` walked to the chain root is less than the cap (2) — see Step 4c and Step 6. `manual_fix` is included unconditionally; on `SpawnFailed` the frontend renders the "Check agent install" variant of the button but the wire option stays the same.
+- The four escalation IPC commands (`manual_fix_subtask`, `mark_subtask_fixed`, `skip_subtask`, `try_replan_again`) send `Layer3Decision` variants on the per-run resolution channel (see Commit 2a). The lifecycle task receives the decision, updates subtask state, emits `SubtaskStateChanged` for each affected subtask, and resumes dispatch. `abort` uses the existing `cancel_run` IPC path — no new command.
 
-**Tests:**
-- Fake adapter: master fails to produce replan → UI shows human_escalation
-- Manual fix flow: user clicks manual fix → editor opens (verify shell invocation) → clicks continue → subtask marked done
-- Skip: run continues without the subtask
+**Tests (Commit 2a + 2b combined):**
+- Fake adapter: master fails to produce replan → run enters `AwaitingHumanFix` → frontend shows escalation UI.
+- Manual fix happy path: `manual_fix_subtask` returns `EditorResult::Configured`; `mark_subtask_fixed` auto-commits and transitions the subtask to `Done`; dispatcher wakes, dependents become eligible.
+- Mark-fixed with empty diff: user asserts "nothing to change" — subtask still transitions to `Done`, no commit created.
+- Skip with cascade: run with `A → B → C` where A escalates; `skip_subtask(A)` marks A, B, C all `Skipped` and emits three `SubtaskStateChanged` events.
+- Skip with diamond: `A → B, A → C, B → D, C → D` where A escalates; skipping A cascades to B, C, D.
+- Try replan again, cap not hit: replan runs, plan surfaces via `SubtasksProposed`, approval flow resumes.
+- Try replan again, cap hit: backend returns `InvalidEdit("replan cap exhausted")` even if frontend sends it.
+- Cancel-during-escalation: `cancel_run` while parked in `AwaitingHumanFix` transitions to `Cancelled`, drops the resolution channel cleanly, no deadlock.
+- Crash recovery: app restart with a run in `AwaitingHumanFix` → run is swept to `Failed`, worktrees cleaned, `RecoveryEntry` emitted.
 
 ### Step 6: Master failure handling
 
