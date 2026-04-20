@@ -245,6 +245,15 @@ function ProposedBody({
       // selection on every keystroke focus-change.
       onClick={(e) => e.stopPropagation()}
     >
+      {/*
+        `shrink-0` on title: the card is a fixed 140px and the why field
+        below can wrap to multiple lines. Without this, flex's default
+        shrink would squeeze the title to zero height, and the
+        `truncate` class's `overflow: hidden` would clip it invisible —
+        which is exactly what the proposed cards were doing. Title gets
+        to keep its natural one-line height; the why is the one that
+        shrinks+scrolls when the rationale runs long.
+      */}
       <InlineTextEdit
         value={data.title}
         onSave={onSaveTitle}
@@ -252,7 +261,7 @@ function ProposedBody({
           next.trim().length === 0 ? 'Title is required.' : null
         }
         ariaLabel="Subtask title"
-        textClassName="text-body text-fg-primary truncate"
+        textClassName="shrink-0 text-body text-fg-primary truncate"
         inputClassName="text-body"
         maxLength={TITLE_HARD_LIMIT}
         softLimit={TITLE_SOFT_LIMIT}
@@ -266,7 +275,7 @@ function ProposedBody({
         ariaLabel="Subtask rationale"
         multiline
         maxLength={WHY_HARD_LIMIT}
-        textClassName="text-meta text-fg-tertiary"
+        textClassName="min-h-0 overflow-hidden text-meta text-fg-tertiary"
         inputClassName="text-meta"
         emptyPlaceholder="Add context…"
       />
@@ -304,10 +313,17 @@ function NonProposedBody({
 }) {
   const emptyTitle = title.trim().length === 0;
   const visibleWhy = (why ?? '').trim();
+  // `shrink-0` on both lines: the running-state card packs header +
+  // title + why + LogBlock(54px) + chip into a fixed 140px. Without
+  // shrink-0, the `truncate` class's `overflow: hidden` lets flex
+  // squeeze the `<p>` to zero height and the text disappears —
+  // matching the proposed-state bug the title of this component's
+  // twin has. Title and why are both single-line truncated, so keeping
+  // them at natural height is always cheap.
   return (
     <div className="flex min-h-0 flex-col gap-0.5">
       <p
-        className={`truncate text-body ${emptyTitle ? 'italic text-fg-tertiary' : 'text-fg-primary'}`}
+        className={`shrink-0 truncate text-body ${emptyTitle ? 'italic text-fg-tertiary' : 'text-fg-primary'}`}
         style={strikeTitle ? { textDecoration: 'line-through' } : undefined}
         title={title || 'Untitled subtask'}
       >
@@ -315,7 +331,7 @@ function NonProposedBody({
       </p>
       {visibleWhy.length > 0 ? (
         <p
-          className="truncate text-meta italic text-fg-tertiary"
+          className="shrink-0 truncate text-meta italic text-fg-tertiary"
           title={visibleWhy}
           data-testid="worker-why"
         >

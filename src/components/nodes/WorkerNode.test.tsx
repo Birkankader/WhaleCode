@@ -129,6 +129,25 @@ describe('WorkerNode — inline edit surfaces (proposed only)', () => {
     expect(screen.getByRole('button', { name: /Edit Subtask rationale/i })).toBeDefined();
   });
 
+  // Regression: in proposed state the card is a fixed 140px and the why
+  // field can wrap to multiple lines. Without `shrink-0`, flex's default
+  // shrink + the `truncate` class's `overflow: hidden` squeezed the title
+  // to zero height and the text disappeared on multi-line rationales —
+  // the exact bug observed in Phase 3 Step 9 verification.
+  it('proposed title carries shrink-0 so a long wrapping why cannot squeeze it invisible', () => {
+    renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Write the ThemeProvider module and wire it into the shell',
+      why: 'We need the dark-mode tokens declared before any component can render; this unblocks the approval flow and is the first piece that touches shared styles.',
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const titleButton = screen.getByRole('button', { name: /Edit Subtask title/i });
+    expect(titleButton.className).toMatch(/shrink-0/);
+  });
+
   it('non-proposed renders read-only title, no inline editors', () => {
     renderNode('auth', {
       state: 'running',
@@ -303,6 +322,27 @@ describe('WorkerNode — non-proposed body', () => {
     });
     const title = screen.getByText('Failed subtask');
     expect(title.getAttribute('style')).toMatch(/line-through/);
+  });
+
+  // Regression: the running-state card packs header + title + why +
+  // LogBlock(54px) + chip into a fixed 140px. If the title or why loses
+  // `shrink-0`, flex's default shrink + the `truncate` class's
+  // `overflow: hidden` squeeze the line to zero height and the text
+  // disappears — the exact bug we shipped in Phase 3 Step 9 verification.
+  it('title and why carry shrink-0 so flex cannot squeeze them invisible', () => {
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Apply theme tokens across the design system audit',
+      why: 'Needed before components can render in dark mode, once more',
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const title = screen.getByText(/Apply theme tokens/i);
+    const why = screen.getByTestId('worker-why');
+    expect(title.className).toMatch(/shrink-0/);
+    expect(why.className).toMatch(/shrink-0/);
   });
 });
 
