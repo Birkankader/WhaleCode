@@ -140,6 +140,12 @@ impl SubtaskRuntime {
     /// emit (lifecycle step) and the Phase 3 re-emit after an edit
     /// (orchestrator step). An empty `why` maps to `None` so the
     /// frontend doesn't render a zero-length reasoning block.
+    ///
+    /// `replan_count` defaults to 0 here because the runtime row
+    /// doesn't know its lineage depth without querying storage;
+    /// callers that care (the lifecycle's `SubtasksProposed` emit
+    /// path) use [`Self::to_data_with_replan_count`] to overlay the
+    /// storage-derived count.
     pub fn to_data(&self) -> SubtaskData {
         SubtaskData {
             id: self.id.clone(),
@@ -148,7 +154,18 @@ impl SubtaskRuntime {
             assigned_worker: self.data.assigned_worker,
             dependencies: self.dependency_ids.clone(),
             replaces: self.replaces.clone(),
+            replan_count: 0,
         }
+    }
+
+    /// Variant of [`Self::to_data`] that stamps the storage-derived
+    /// `replan_count` — used by the lifecycle when emitting
+    /// `SubtasksProposed` so the frontend can hide the "Try replan
+    /// again" action once the lineage cap is reached.
+    pub fn to_data_with_replan_count(&self, replan_count: u32) -> SubtaskData {
+        let mut data = self.to_data();
+        data.replan_count = replan_count;
+        data
     }
 }
 

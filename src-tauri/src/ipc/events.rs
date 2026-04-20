@@ -243,6 +243,7 @@ mod tests {
                 assigned_worker: AgentKind::Claude,
                 dependencies: vec![],
                 replaces: vec![],
+                replan_count: 0,
             }],
         };
         let json = serde_json::to_value(&payload).unwrap();

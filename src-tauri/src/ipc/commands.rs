@@ -31,7 +31,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SubtaskDraft, SubtaskId, SubtaskPatch,
+    AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SkipResult, SubtaskDraft, SubtaskId,
+    SubtaskPatch,
 };
 use crate::detection::Detector;
 use crate::editor::EditorResult;
@@ -211,7 +212,7 @@ pub async fn skip_subtask(
     orch: State<'_, Arc<Orchestrator>>,
     run_id: RunId,
     subtask_id: SubtaskId,
-) -> Result<(), String> {
+) -> Result<SkipResult, String> {
     orch.skip_subtask(&run_id, &subtask_id)
         .await
         .map_err(|e| e.to_string())

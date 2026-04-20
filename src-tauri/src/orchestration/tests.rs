@@ -3335,3 +3335,495 @@ async fn replan_master_error_finalizes_run_failed() {
     // Cleanup ran.
     assert!(!h.repo_path.join(".whalecode-worktrees").exists());
 }
+
+// -- Phase 3 Step 5 Commit 2b: Layer-3 IPC commands --------------------
+//
+// These tests exercise the four real IPC commands
+// (`mark_subtask_fixed`, `skip_subtask`, `try_replan_again`,
+// `manual_fix_subtask`) rather than pushing decisions through the
+// backdoor `send_resolution` helper. Validation paths (wrong state,
+// wrong subtask, cap guard) plus the happy-path end-to-end flow are
+// covered here. The earlier `layer3_*_resolution_*` tests stay
+// valid — they still exercise the lifecycle's park select in
+// isolation, which is useful when a regression makes the IPC
+// layer unreachable.
+
+#[tokio::test]
+async fn mark_subtask_fixed_ipc_drives_to_merging() {
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+    let run_id = h
+        .orch
+        .submit_task("ipc-mark-fixed".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids.clone()).await.unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    let failed_sid = ids[0].clone();
+    h.orch
+        .mark_subtask_fixed(&run_id, &failed_sid)
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // Storage confirms the transition.
+    let stored = h.storage.get_subtask(&failed_sid).await.unwrap().unwrap();
+    assert_eq!(stored.state, SubtaskState::Done);
+    // Resolution sender was taken out of the map.
+    assert!(
+        h.orch
+            .resolution_senders
+            .lock()
+            .await
+            .get(&run_id)
+            .is_none(),
+        "resolution sender must be consumed by the IPC call",
+    );
+}
+
+#[tokio::test]
+async fn mark_subtask_fixed_rejects_wrong_run_state() {
+    // Run is in AwaitingApproval, not AwaitingHumanFix — the IPC must
+    // refuse before touching `resolution_senders`.
+    let (h, run_id, subs) = harness_awaiting(plan_of(1)).await;
+    let err = h
+        .orch
+        .mark_subtask_fixed(&run_id, &subs[0].id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::WrongState { .. }));
+    // The run is still approvable — reject to clean up.
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn mark_subtask_fixed_rejects_non_escalated_subtask() {
+    // Run parked on AwaitingHumanFix but user passes a subtask id that
+    // isn't the escalated target. Must be an InvalidEdit, and the park
+    // must remain intact so the user can try again.
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+    let run_id = h
+        .orch
+        .submit_task("ipc-wrong-sid".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let ids: Vec<SubtaskId> = h
+        .storage
+        .list_subtasks_for_run(&run_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    let err = h
+        .orch
+        .mark_subtask_fixed(&run_id, &"not-escalated".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+    // Sender is still installed — user can retry with the correct id.
+    assert!(
+        h.orch
+            .resolution_senders
+            .lock()
+            .await
+            .get(&run_id)
+            .is_some(),
+        "sender must not be consumed on validation failure",
+    );
+
+    // Clean up the run so it doesn't leak.
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+#[tokio::test]
+async fn skip_subtask_ipc_returns_full_cascade() {
+    // Diamond: A (fails) → B, A → C, B → D, C → D. When A escalates
+    // and the user skips it, the cascade must include all four.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&[
+            ("A", &[]),
+            ("B", &[0]),
+            ("C", &[0]),
+            ("D", &[1, 2]),
+        ])))
+        .await
+        .with_execute("A", ExecuteScript::Fail("boom".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("ipc-skip-cascade".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids_by_title: std::collections::HashMap<String, SubtaskId> = subs
+        .iter()
+        .map(|s| (s.title.clone(), s.id.clone()))
+        .collect();
+    let a_id = ids_by_title["A"].clone();
+    let all_ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch
+        .approve_subtasks(&run_id, all_ids.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    let result = h.orch.skip_subtask(&run_id, &a_id).await.unwrap();
+    assert_eq!(result.skipped_count, 4);
+    // All four ids should appear in the cascade.
+    for id in &all_ids {
+        assert!(
+            result.skipped_ids.contains(id),
+            "cascade must include {id}, got {:?}",
+            result.skipped_ids,
+        );
+    }
+
+    h.await_status(&run_id, RunStatus::Merging).await;
+    // Apply the empty diff; the run terminates cleanly.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn skip_subtask_rejects_wrong_run_state() {
+    let (h, run_id, subs) = harness_awaiting(plan_of(1)).await;
+    let err = h
+        .orch
+        .skip_subtask(&run_id, &subs[0].id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::WrongState { .. }));
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn try_replan_again_rejects_when_budget_exhausted() {
+    // Manually seed two lineage edges in storage so the cap guard
+    // trips even though the run's in-memory state has a fresh failed
+    // subtask. This keeps the scripted-agent surface small while
+    // still exercising the storage-backed guard.
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+    let run_id = h
+        .orch
+        .submit_task("ipc-cap-guard".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    let current_id = ids[0].clone();
+    h.orch
+        .approve_subtasks(&run_id, ids.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    // Fabricate a two-deep lineage: orig0 ← orig1 ← current_id. We
+    // have to insert the ancestor subtasks as well so the replan
+    // edge FKs resolve.
+    for anc in ["orig0", "orig1"] {
+        h.storage
+            .insert_subtask(&crate::storage::models::NewSubtask {
+                id: anc.into(),
+                run_id: run_id.clone(),
+                title: anc.into(),
+                why: None,
+                assigned_worker: AgentKind::Claude,
+                state: SubtaskState::Failed,
+            })
+            .await
+            .unwrap();
+    }
+    h.storage
+        .insert_replan("orig0", "orig1", None)
+        .await
+        .unwrap();
+    h.storage
+        .insert_replan("orig1", &current_id, None)
+        .await
+        .unwrap();
+
+    let err = h
+        .orch
+        .try_replan_again(&run_id, &current_id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, OrchestratorError::InvalidEdit(_)),
+        "budget guard must surface as InvalidEdit, got {err:?}",
+    );
+    // Sender is still installed — user can abort / skip instead.
+    assert!(
+        h.orch
+            .resolution_senders
+            .lock()
+            .await
+            .get(&run_id)
+            .is_some(),
+        "sender must not be consumed on cap-guard rejection",
+    );
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+#[tokio::test]
+async fn manual_fix_subtask_rejects_non_escalated_subtask() {
+    // Happy-path `manual_fix_subtask` would shell out to `open` /
+    // `xdg-open`; covering the validation-only path keeps the test
+    // free of OS-level side effects while still pinning the contract.
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+    let run_id = h
+        .orch
+        .submit_task("ipc-manual-wrong-sid".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let ids: Vec<SubtaskId> = h
+        .storage
+        .list_subtasks_for_run(&run_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    let err = h
+        .orch
+        .manual_fix_subtask(&run_id, &"not-escalated".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+    // The park must still be alive.
+    assert!(
+        h.orch
+            .resolution_senders
+            .lock()
+            .await
+            .get(&run_id)
+            .is_some(),
+        "manual_fix_subtask must not consume the resolution sender",
+    );
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+// -- Critical timing test ----------------------------------------------
+//
+// This is the smoking-gun for the Commit 2b dispatcher change:
+// `mark_subtask_fixed` must unblock a previously-Waiting dependent.
+// Before the change, the dispatcher's `NeedsReplan` branch cancelled
+// the run's token and drained every Waiting subtask to Skipped — so
+// even if `resolve_fixed` flipped A to Done, B was already terminal
+// and the second dispatcher pass had nothing to do. The new flow
+// preserves B's Waiting state across the park, and the lifecycle
+// hands a fresh cancel token to `run_dispatcher` after resolve.
+
+#[tokio::test]
+async fn mark_subtask_fixed_unblocks_waiting_dependent_and_reaches_merging() {
+    // Plan: A → B. A fails, empty replan → park. User marks A fixed.
+    // Expected: B transitions Waiting → Running → Done, run reaches
+    // Merging, A ends Done, B ends Done.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&[("A", &[]), ("B", &[0])])))
+        .await
+        .with_execute("A", ExecuteScript::Fail("boom".into()))
+        .await
+        .with_execute(
+            "B",
+            ExecuteScript::OkWrite {
+                summary: "B done".into(),
+                files: vec![(PathBuf::from("b.txt"), "b".into())],
+            },
+        )
+        .await
+        .with_replan(ReplanScript::Empty)
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("A-then-B".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids_by_title: std::collections::HashMap<String, SubtaskId> = subs
+        .iter()
+        .map(|s| (s.title.clone(), s.id.clone()))
+        .collect();
+    let a_id = ids_by_title["A"].clone();
+    let b_id = ids_by_title["B"].clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![a_id.clone(), b_id.clone()])
+        .await
+        .unwrap();
+
+    // Park on escalation for A.
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+    // B must still be Waiting — NOT drained to Skipped.
+    let at_park = h.storage.get_subtask(&b_id).await.unwrap().unwrap();
+    assert_eq!(
+        at_park.state,
+        SubtaskState::Waiting,
+        "B must remain Waiting across the Layer-3 park (dispatcher must not drain)",
+    );
+
+    // User fixes A via the real IPC.
+    h.orch
+        .mark_subtask_fixed(&run_id, &a_id)
+        .await
+        .unwrap();
+
+    // Back through the dispatcher; B runs, run merges.
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    let final_a = h.storage.get_subtask(&a_id).await.unwrap().unwrap();
+    assert_eq!(final_a.state, SubtaskState::Done);
+    let final_b = h.storage.get_subtask(&b_id).await.unwrap().unwrap();
+    assert_eq!(
+        final_b.state,
+        SubtaskState::Done,
+        "B must have run and completed after A was marked fixed",
+    );
+
+    // Transcript: B must have gone through Running.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        snap.iter().any(|e| matches!(
+            e,
+            RunEvent::SubtaskStateChanged { subtask_id, state, .. }
+            if subtask_id == &b_id && *state == SubtaskState::Running
+        )),
+        "expected SubtaskStateChanged(Running) for B after the fix",
+    );
+}
+
+// -- replan_count wire ------------------------------------------------
+
+#[tokio::test]
+async fn replan_count_is_zero_on_initial_subtasks_proposed() {
+    // The very first SubtasksProposed emit (initial plan) must carry
+    // replan_count = 0 for every subtask — no lineage exists yet.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(2)))
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("replan-count-initial".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    let payload = last_proposed_payload(&h, &run_id).await;
+    assert_eq!(payload.len(), 2);
+    for sub in &payload {
+        assert_eq!(
+            sub.replan_count, 0,
+            "initial plan must emit replan_count=0, got {sub:?}",
+        );
+    }
+
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn replan_count_is_one_on_first_layer2_replacement() {
+    // Plan: t0 fails → master replans with a viable replacement. The
+    // `SubtasksProposed` re-emit after `install_replacement_subtasks`
+    // must carry replan_count = 1 for the replacement row (lineage
+    // depth of 1) and 0 for the original (still present, now Failed).
+    let replacement = Plan {
+        reasoning: "try again".into(),
+        subtasks: vec![PlannedSubtask {
+            title: "good".into(),
+            why: "replacement".into(),
+            assigned_worker: AgentKind::Claude,
+            dependencies: vec![],
+        }],
+    };
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom".into()))
+        .await
+        .with_replan(ReplanScript::OkPlan(replacement))
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("replan-count-1".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let initial_ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, initial_ids).await.unwrap();
+
+    // Wait for the replan to re-install AwaitingApproval.
+    //
+    // We already saw one AwaitingApproval from the initial plan, so
+    // poll the transcript for a SubtasksProposed with a replacement
+    // row (non-empty `replaces`).
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let snap = h.sink.snapshot().await;
+        let has_replacement_emit = snap.iter().any(|e| match e {
+            RunEvent::SubtasksProposed { run_id: r, subtasks }
+                if r == &run_id =>
+            {
+                subtasks.iter().any(|s| !s.replaces.is_empty())
+            }
+            _ => false,
+        });
+        if has_replacement_emit {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for replacement SubtasksProposed. Events: {:#?}",
+                snap,
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let payload = last_proposed_payload(&h, &run_id).await;
+    let replacement_row = payload
+        .iter()
+        .find(|s| !s.replaces.is_empty())
+        .expect("replacement must appear in the post-replan payload");
+    assert_eq!(
+        replacement_row.replan_count, 1,
+        "first replacement in the lineage must carry replan_count=1",
+    );
+    let original_row = payload
+        .iter()
+        .find(|s| s.replaces.is_empty())
+        .expect("original subtask still appears in the list");
+    assert_eq!(
+        original_row.replan_count, 0,
+        "the original subtask's lineage is empty; its replan_count stays 0",
+    );
+
+    // Clean up by rejecting the new plan.
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}

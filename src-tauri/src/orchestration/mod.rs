@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::ipc::{
-    AgentKind, RecoveryEntry, RunId, RunStatus, SubtaskData, SubtaskDraft, SubtaskId, SubtaskPatch,
+    AgentKind, RecoveryEntry, RunId, RunStatus, SubtaskDraft, SubtaskId, SubtaskPatch,
     SubtaskState,
 };
 use crate::settings::SettingsStore;
@@ -517,7 +517,7 @@ impl Orchestrator {
             .await
             .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
 
-        let (storage_op, emit) = {
+        let (storage_op, snapshot) = {
             let mut guard = run_arc.write().await;
             if guard.status != RunStatus::AwaitingApproval {
                 return Err(OrchestratorError::WrongState {
@@ -554,15 +554,8 @@ impl Orchestrator {
             let why_for_storage: Option<String> = Some(sub.data.why.clone()).filter(|w| !w.is_empty());
             let worker = sub.data.assigned_worker;
             let sub_id = sub.id.clone();
-            let proposed: Vec<SubtaskData> =
-                guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
-            (
-                (sub_id, title, why_for_storage, worker),
-                RunEvent::SubtasksProposed {
-                    run_id: run_id.clone(),
-                    subtasks: proposed,
-                },
-            )
+            let snap: Vec<SubtaskRuntime> = guard.subtasks.clone();
+            ((sub_id, title, why_for_storage, worker), snap)
         };
 
         let (sub_id, title, why, worker) = storage_op;
@@ -570,7 +563,14 @@ impl Orchestrator {
             .update_subtask_fields(&sub_id, &title, why.as_deref(), worker)
             .await
             .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
-        self.event_sink.emit(emit).await;
+        let subtasks =
+            crate::orchestration::lifecycle::build_subtasks_wire(&self.storage, &snapshot).await;
+        self.event_sink
+            .emit(RunEvent::SubtasksProposed {
+                run_id: run_id.clone(),
+                subtasks,
+            })
+            .await;
         Ok(())
     }
 
@@ -596,7 +596,7 @@ impl Orchestrator {
         let new_why = draft.why.clone().unwrap_or_default();
         let new_worker = draft.assigned_worker;
 
-        let (emit_payload, new_subtask_row) = {
+        let (snapshot, new_subtask_row) = {
             let mut guard = run_arc.write().await;
             if guard.status != RunStatus::AwaitingApproval {
                 return Err(OrchestratorError::WrongState {
@@ -618,8 +618,7 @@ impl Orchestrator {
                 vec![],
             );
             guard.subtasks.push(runtime);
-            let proposed: Vec<SubtaskData> =
-                guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
+            let snap: Vec<SubtaskRuntime> = guard.subtasks.clone();
             let row = NewSubtask {
                 id: new_id.clone(),
                 run_id: guard.id.clone(),
@@ -628,20 +627,21 @@ impl Orchestrator {
                 assigned_worker: new_worker,
                 state: SubtaskState::Proposed,
             };
-            (
-                RunEvent::SubtasksProposed {
-                    run_id: run_id.clone(),
-                    subtasks: proposed,
-                },
-                row,
-            )
+            (snap, row)
         };
 
         self.storage
             .insert_user_added_subtask(&new_subtask_row)
             .await
             .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
-        self.event_sink.emit(emit_payload).await;
+        let subtasks =
+            crate::orchestration::lifecycle::build_subtasks_wire(&self.storage, &snapshot).await;
+        self.event_sink
+            .emit(RunEvent::SubtasksProposed {
+                run_id: run_id.clone(),
+                subtasks,
+            })
+            .await;
         Ok(new_id)
     }
 
@@ -660,7 +660,7 @@ impl Orchestrator {
             .await
             .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
 
-        let emit = {
+        let snapshot: Vec<SubtaskRuntime> = {
             let mut guard = run_arc.write().await;
             if guard.status != RunStatus::AwaitingApproval {
                 return Err(OrchestratorError::WrongState {
@@ -689,103 +689,417 @@ impl Orchestrator {
                 return Err(OrchestratorError::HasDependents(subtask_id.clone()));
             }
             guard.subtasks.remove(pos);
-            let proposed: Vec<SubtaskData> =
-                guard.subtasks.iter().map(SubtaskRuntime::to_data).collect();
-            RunEvent::SubtasksProposed {
-                run_id: run_id.clone(),
-                subtasks: proposed,
-            }
+            guard.subtasks.clone()
         };
 
         self.storage
             .delete_subtask(subtask_id)
             .await
             .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
-        self.event_sink.emit(emit).await;
+        let subtasks =
+            crate::orchestration::lifecycle::build_subtasks_wire(&self.storage, &snapshot).await;
+        self.event_sink
+            .emit(RunEvent::SubtasksProposed {
+                run_id: run_id.clone(),
+                subtasks,
+            })
+            .await;
         Ok(())
     }
 
-    // -- Phase 3 Step 5 Layer-3 escalation skeletons ---------------------
+    // -- Phase 3 Step 5 Layer-3 escalation commands ---------------------
     //
-    // Commit 1 wires the IPC surface only; the orchestration logic
-    // (transition the subtask out of human-escalation, cascade-skip
-    // dependents, replan again) lands in commit 2. Each stub validates
-    // that the run exists so the frontend gets an honest error, then
-    // returns [`OrchestratorError::InvalidEdit`] to make the "not yet
-    // implemented" edge obvious if anything in the UI wires up early.
+    // The lifecycle parks on a per-run `resolution_senders` oneshot
+    // when a replan exhausts (or the master returns infeasible). Each
+    // of these four commands does the same three-part dance:
+    //   1. Validate: the run exists, is in `AwaitingHumanFix`, and the
+    //      `subtask_id` matches the escalated target (so mis-routed
+    //      clicks on already-terminal subtasks don't steal the
+    //      resolution channel).
+    //   2. Take: atomically remove the resolution sender from the
+    //      shared map (preventing double-resolve) and `send()` the
+    //      appropriate `Layer3Decision` variant on it. The lifecycle's
+    //      `tokio::select!` unparks and handles the decision.
+    //   3. Return: any extra data the frontend needs (the
+    //      [`EditorResult`] tier, the [`SkipResult`] cascade count).
+    //
+    // `manual_fix_subtask` is the odd one out — it doesn't resolve
+    // the escalation (the user may open the editor, edit, and then
+    // *not* click "mark fixed"). It just exposes the fallback-chain
+    // tier that succeeded so the status line can render correctly.
 
-    /// Open the subtask's escalation worktree file in the user's
-    /// editor. Returns the tier that actually succeeded so the
-    /// frontend can surface the correct status line (or switch to
-    /// clipboard-only behaviour).
+    /// Open the escalated subtask's worktree in the user's editor.
+    /// Returns the [`crate::editor::EditorResult`] tier that actually
+    /// succeeded so the frontend can render "Opened in VS Code" vs
+    /// "Copied path to clipboard". Does NOT resolve the park — the
+    /// user opens the editor, makes changes, then calls
+    /// [`Self::mark_subtask_fixed`] (or `skip_subtask` / `cancel_run`)
+    /// to end the park.
     pub async fn manual_fix_subtask(
         &self,
         run_id: &RunId,
         subtask_id: &SubtaskId,
     ) -> Result<crate::editor::EditorResult, OrchestratorError> {
-        let _ = self
+        let run_arc = self
             .get_run(run_id)
             .await
             .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
-        let _ = subtask_id;
-        Err(OrchestratorError::InvalidEdit(
-            "manual_fix_subtask not yet implemented (Phase 3 Step 5 commit 2)".into(),
+        let worktree_path = {
+            let guard = run_arc.read().await;
+            if guard.status != RunStatus::AwaitingHumanFix {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-human-fix",
+                });
+            }
+            if !guard.escalated_subtask_ids.contains(subtask_id) {
+                return Err(OrchestratorError::InvalidEdit(format!(
+                    "subtask {subtask_id} is not the escalated target for run {run_id}"
+                )));
+            }
+            let sub = guard
+                .find_subtask(subtask_id)
+                .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+            sub.worktree_path.clone().ok_or_else(|| {
+                OrchestratorError::InvalidEdit(format!(
+                    "subtask {subtask_id} has no worktree to open"
+                ))
+            })?
+        };
+
+        let configured: Option<String> = self
+            .settings
+            .snapshot()
+            .ok()
+            .and_then(|s| s.editor)
+            .filter(|e| !e.trim().is_empty());
+        Ok(crate::editor::open_in_editor(
+            &worktree_path,
+            configured.as_deref(),
         ))
     }
 
     /// User finished editing by hand and confirmed the subtask is
-    /// green. Transitions the subtask `human_escalation → done` and
-    /// lets the dispatcher pick up any subtasks unblocked by it.
+    /// green. Sends [`Layer3Decision::Fixed`] to the lifecycle, which
+    /// auto-commits any changes, flips the subtask to `Done`, and
+    /// re-enters the dispatcher so previously-Waiting dependents can
+    /// run.
     pub async fn mark_subtask_fixed(
         &self,
         run_id: &RunId,
         subtask_id: &SubtaskId,
     ) -> Result<(), OrchestratorError> {
-        let _ = self
-            .get_run(run_id)
-            .await
-            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
-        let _ = subtask_id;
-        Err(OrchestratorError::InvalidEdit(
-            "mark_subtask_fixed not yet implemented (Phase 3 Step 5 commit 2)".into(),
-        ))
+        self.resolve_escalation(run_id, subtask_id, |sid| {
+            Layer3Decision::Fixed(sid)
+        })
+        .await
+        .map(|_| ())
     }
 
-    /// Skip the subtask and every subtask that transitively depends on
-    /// it. Commit 2 walks the DAG with BFS and surfaces the count to
-    /// the confirm dialog on the frontend; this skeleton just validates
-    /// the run.
+    /// Skip the escalated subtask and every still-Waiting subtask that
+    /// transitively depends on it. Returns the full cascade so the
+    /// frontend can render a "Skipped N subtasks" toast. The lifecycle
+    /// flips each to `Skipped` and re-enters the dispatcher, which
+    /// observes every remaining subtask is terminal and proceeds to
+    /// Merging.
     pub async fn skip_subtask(
         &self,
         run_id: &RunId,
         subtask_id: &SubtaskId,
-    ) -> Result<(), OrchestratorError> {
-        let _ = self
+    ) -> Result<crate::ipc::SkipResult, OrchestratorError> {
+        let run_arc = self
             .get_run(run_id)
             .await
             .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
-        let _ = subtask_id;
-        Err(OrchestratorError::InvalidEdit(
-            "skip_subtask not yet implemented (Phase 3 Step 5 commit 2)".into(),
-        ))
+        let cascade: Vec<SubtaskId> = {
+            let guard = run_arc.read().await;
+            if guard.status != RunStatus::AwaitingHumanFix {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-human-fix",
+                });
+            }
+            if !guard.escalated_subtask_ids.contains(subtask_id) {
+                return Err(OrchestratorError::InvalidEdit(format!(
+                    "subtask {subtask_id} is not the escalated target for run {run_id}"
+                )));
+            }
+            compute_skip_cascade(&guard.subtasks, subtask_id)
+        };
+
+        let sender = self
+            .resolution_senders
+            .lock()
+            .await
+            .remove(run_id)
+            .ok_or_else(|| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::AwaitingHumanFix,
+                expected: "awaiting-human-fix",
+            })?;
+        sender
+            .send(Layer3Decision::Skipped(cascade.clone()))
+            .map_err(|_| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::AwaitingHumanFix,
+                expected: "awaiting-human-fix",
+            })?;
+
+        Ok(crate::ipc::SkipResult {
+            skipped_count: cascade.len() as u32,
+            skipped_ids: cascade,
+        })
     }
 
-    /// Ask the master for one more replan. Only legal when
-    /// `subtask.replan_count < 2`; the frontend hides the button
-    /// otherwise but the backend double-checks.
+    /// Ask the master for one more replan. Only legal when the failed
+    /// subtask's lineage hasn't burned the two-replan budget — the
+    /// frontend hides the button once the cap is reached, but the
+    /// backend double-checks via `count_replans_in_lineage` so a stale
+    /// UI can't sneak a third replan through.
     pub async fn try_replan_again(
         &self,
         run_id: &RunId,
         subtask_id: &SubtaskId,
     ) -> Result<(), OrchestratorError> {
-        let _ = self
+        let run_arc = self
             .get_run(run_id)
             .await
             .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
-        let _ = subtask_id;
-        Err(OrchestratorError::InvalidEdit(
-            "try_replan_again not yet implemented (Phase 3 Step 5 commit 2)".into(),
-        ))
+        {
+            let guard = run_arc.read().await;
+            if guard.status != RunStatus::AwaitingHumanFix {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-human-fix",
+                });
+            }
+            if !guard.escalated_subtask_ids.contains(subtask_id) {
+                return Err(OrchestratorError::InvalidEdit(format!(
+                    "subtask {subtask_id} is not the escalated target for run {run_id}"
+                )));
+            }
+        }
+
+        let prior_replans = self
+            .storage
+            .count_replans_in_lineage(subtask_id)
+            .await
+            .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
+        if prior_replans >= lifecycle::REPLAN_LINEAGE_CAP {
+            return Err(OrchestratorError::InvalidEdit(format!(
+                "replan budget exhausted ({prior_replans} replans already fired); cannot request another"
+            )));
+        }
+
+        let sender = self
+            .resolution_senders
+            .lock()
+            .await
+            .remove(run_id)
+            .ok_or_else(|| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::AwaitingHumanFix,
+                expected: "awaiting-human-fix",
+            })?;
+        sender
+            .send(Layer3Decision::ReplanRequested(subtask_id.clone()))
+            .map_err(|_| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::AwaitingHumanFix,
+                expected: "awaiting-human-fix",
+            })?;
+        Ok(())
+    }
+
+    /// Shared validate-and-send path for `mark_subtask_fixed`.
+    /// `skip_subtask` and `try_replan_again` have extra payload /
+    /// extra validation so they call the same lock + sender dance
+    /// inline rather than squeeze through this helper.
+    async fn resolve_escalation(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+        make_decision: impl FnOnce(SubtaskId) -> Layer3Decision,
+    ) -> Result<(), OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        {
+            let guard = run_arc.read().await;
+            if guard.status != RunStatus::AwaitingHumanFix {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "awaiting-human-fix",
+                });
+            }
+            if !guard.escalated_subtask_ids.contains(subtask_id) {
+                return Err(OrchestratorError::InvalidEdit(format!(
+                    "subtask {subtask_id} is not the escalated target for run {run_id}"
+                )));
+            }
+        }
+
+        let sender = self
+            .resolution_senders
+            .lock()
+            .await
+            .remove(run_id)
+            .ok_or_else(|| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::AwaitingHumanFix,
+                expected: "awaiting-human-fix",
+            })?;
+        sender
+            .send(make_decision(subtask_id.clone()))
+            .map_err(|_| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::AwaitingHumanFix,
+                expected: "awaiting-human-fix",
+            })?;
+        Ok(())
+    }
+}
+
+/// Breadth-first cascade of a skip decision: starting from the
+/// escalated subtask, collect every still-eligible (Waiting or
+/// Proposed) subtask that transitively depends on it. Already-terminal
+/// subtasks (Done, Failed, Skipped) are omitted — they don't need to
+/// be re-flipped and cluttering `SkipResult` with them would mislead
+/// the confirmation toast's count.
+///
+/// The traversal starts with the escalated subtask itself (which is
+/// always included in the output even if it's already Failed) so
+/// `SkipResult.skipped_count` matches what the user expects: "the
+/// one I clicked + its dependents".
+pub(crate) fn compute_skip_cascade(
+    subtasks: &[SubtaskRuntime],
+    origin: &SubtaskId,
+) -> Vec<SubtaskId> {
+    let mut result: Vec<SubtaskId> = Vec::new();
+    let mut queue: std::collections::VecDeque<SubtaskId> = std::collections::VecDeque::new();
+    let mut seen: std::collections::HashSet<SubtaskId> = std::collections::HashSet::new();
+    queue.push_back(origin.clone());
+    seen.insert(origin.clone());
+
+    while let Some(current) = queue.pop_front() {
+        result.push(current.clone());
+        for s in subtasks {
+            if !matches!(s.state, SubtaskState::Waiting | SubtaskState::Proposed) {
+                continue;
+            }
+            if !s.dependency_ids.contains(&current) {
+                continue;
+            }
+            if seen.insert(s.id.clone()) {
+                queue.push_back(s.id.clone());
+            }
+        }
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod cascade_tests {
+    use super::*;
+    use crate::agents::PlannedSubtask;
+
+    /// Build a `SubtaskRuntime` fixture. The `state` controls whether
+    /// the cascade BFS will follow edges into this node (only Waiting
+    /// and Proposed nodes are eligible).
+    fn rt(id: &str, deps: &[&str], state: SubtaskState) -> SubtaskRuntime {
+        let mut s = SubtaskRuntime::new(
+            id.into(),
+            PlannedSubtask {
+                title: id.into(),
+                why: String::new(),
+                assigned_worker: AgentKind::Claude,
+                dependencies: vec![],
+            },
+            deps.iter().map(|d| (*d).into()).collect(),
+        );
+        s.state = state;
+        s
+    }
+
+    #[test]
+    fn cascade_is_just_origin_when_no_dependents() {
+        let subs = vec![
+            rt("a", &[], SubtaskState::Failed),
+            rt("b", &[], SubtaskState::Waiting),
+        ];
+        let out = compute_skip_cascade(&subs, &"a".into());
+        assert_eq!(out, vec!["a"]);
+    }
+
+    #[test]
+    fn cascade_walks_a_linear_chain() {
+        // a ← b ← c, a is failed, b + c are Waiting.
+        let subs = vec![
+            rt("a", &[], SubtaskState::Failed),
+            rt("b", &["a"], SubtaskState::Waiting),
+            rt("c", &["b"], SubtaskState::Waiting),
+        ];
+        let out = compute_skip_cascade(&subs, &"a".into());
+        assert_eq!(out, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn cascade_dedupes_diamond() {
+        // a ← b, a ← c, b ← d, c ← d — d is reachable via both b and c.
+        let subs = vec![
+            rt("a", &[], SubtaskState::Failed),
+            rt("b", &["a"], SubtaskState::Waiting),
+            rt("c", &["a"], SubtaskState::Waiting),
+            rt("d", &["b", "c"], SubtaskState::Waiting),
+        ];
+        let mut out = compute_skip_cascade(&subs, &"a".into());
+        out.sort();
+        assert_eq!(out, vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn cascade_stops_at_already_terminal_nodes() {
+        // b is Done already; its descendants shouldn't be walked.
+        let subs = vec![
+            rt("a", &[], SubtaskState::Failed),
+            rt("b", &["a"], SubtaskState::Done),
+            rt("c", &["b"], SubtaskState::Waiting),
+        ];
+        let out = compute_skip_cascade(&subs, &"a".into());
+        // `b` is terminal so it's skipped from the cascade; `c`
+        // depends only on `b`, not `a`, so it never enters.
+        assert_eq!(out, vec!["a"]);
+    }
+
+    #[test]
+    fn cascade_includes_proposed_dependents() {
+        // Not strictly a production path today (escalation targets are
+        // post-Proposed) but confirming the BFS treats Proposed the
+        // same as Waiting so the helper is safe to reuse.
+        let subs = vec![
+            rt("a", &[], SubtaskState::Failed),
+            rt("b", &["a"], SubtaskState::Proposed),
+        ];
+        let out = compute_skip_cascade(&subs, &"a".into());
+        assert_eq!(out, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn cascade_ignores_siblings_that_dont_depend_on_origin() {
+        // `b` and `c` are both Waiting, but only `b` depends on `a`.
+        let subs = vec![
+            rt("a", &[], SubtaskState::Failed),
+            rt("b", &["a"], SubtaskState::Waiting),
+            rt("c", &[], SubtaskState::Waiting),
+        ];
+        let out = compute_skip_cascade(&subs, &"a".into());
+        assert_eq!(out, vec!["a", "b"]);
     }
 }
 

@@ -96,6 +96,16 @@ export const subtaskDataSchema = z.object({
    * compatible — the wire format serialises `[]` when empty.
    */
   replaces: z.array(subtaskIdSchema).default([]),
+  /**
+   * How many Layer-2 replans have already fired in this subtask's
+   * lineage. `0` means "freshly planned" (the master's initial output
+   * or a user-added subtask); `1` means one replan has been burned on
+   * the lineage; `>= 2` means the cap is exhausted. The escalation UI
+   * uses this to hide the "Try replan again" action when
+   * `replanCount >= 2`. `.default(0)` keeps older backend builds (or
+   * pre-Phase-3 fixtures) compatible.
+   */
+  replanCount: z.number().int().nonnegative().default(0),
 });
 export type SubtaskData = z.infer<typeof subtaskDataSchema>;
 

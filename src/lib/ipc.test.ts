@@ -128,6 +128,35 @@ describe('subtaskDataSchema', () => {
     });
     expect(parsed.assignedWorker).toBe('codex');
     expect(parsed.why).toBeNull();
+    // `replaces` / `replanCount` omitted in wire → default [] / 0.
+    expect(parsed.replaces).toEqual([]);
+    expect(parsed.replanCount).toBe(0);
+  });
+
+  it('accepts an explicit replanCount from the wire', () => {
+    const parsed = subtaskDataSchema.parse({
+      id: 's2',
+      title: 'replacement',
+      why: 'original failed',
+      assignedWorker: 'claude',
+      dependencies: [],
+      replaces: ['s1'],
+      replanCount: 2,
+    });
+    expect(parsed.replaces).toEqual(['s1']);
+    expect(parsed.replanCount).toBe(2);
+  });
+
+  it('rejects a negative replanCount', () => {
+    const result = subtaskDataSchema.safeParse({
+      id: 's3',
+      title: 't',
+      why: null,
+      assignedWorker: 'claude',
+      dependencies: [],
+      replanCount: -1,
+    });
+    expect(result.success).toBe(false);
   });
 });
 

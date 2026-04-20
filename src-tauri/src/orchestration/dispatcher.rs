@@ -431,17 +431,35 @@ pub async fn run_dispatcher(
                     }
                     WorkerOutcome::Escalate(kind) => {
                         // Mark the failing subtask as Failed with the
-                        // escalation's error text. The lifecycle's
-                        // replan helper will either produce replacement
-                        // subtasks (lineage budget remaining) or
-                        // escalate to a human (budget spent). Either
-                        // way the failed subtask stays Failed in
-                        // storage — replan produces *new* subtasks, it
-                        // doesn't resurrect the old one.
+                        // escalation's error text, then hand control
+                        // back to the lifecycle with the rest of the
+                        // run's state *preserved*. We deliberately do
+                        // NOT fire `cancel.cancel()` and do NOT call
+                        // `drain_as_skipped` — that was the Phase-3
+                        // fail-fast behaviour, but Layer 3 (commit 2b)
+                        // needs any `Waiting` subtasks to stay
+                        // `Waiting` so that a `Fixed` / `Skipped`
+                        // resolution can re-enter the dispatcher and
+                        // let dependents progress. Any sibling workers
+                        // that are still in flight continue running;
+                        // they're awaited to natural completion by
+                        // `await_in_flight_naturally` so their outputs
+                        // persist (Done) or propagate (Failed cascades
+                        // on re-entry). The lifecycle's replan /
+                        // escalation helpers decide what to do next.
                         let err_msg = escalate_error_text(&kind);
                         mark_failed(deps, &run, &run_id, &sub_id, err_msg).await;
-                        cancel.cancel();
-                        drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
+                        await_in_flight_naturally(
+                            deps,
+                            &run,
+                            &run_id,
+                            &notes,
+                            master.as_ref(),
+                            &cancel,
+                            &mut join_set,
+                            &mut in_flight,
+                        )
+                        .await;
                         return DispatchOutcome::NeedsReplan {
                             failed_subtask_id: sub_id,
                             kind,
@@ -917,6 +935,64 @@ async fn mark_skipped(
             state: SubtaskState::Skipped,
         })
         .await;
+}
+
+/// Drain any in-flight workers while preserving their natural
+/// outcomes. Used on the `NeedsReplan` return path (Commit 2b) where
+/// the dispatcher hands control back to the lifecycle but the run is
+/// NOT terminating: siblings that were already running should commit
+/// their completions, failures should surface through the normal
+/// cascade on re-entry, and waiting subtasks must not be touched.
+///
+/// The run's `cancel_token` is NOT fired here — the lifecycle's
+/// `do_replan_subtask` / `handle_escalation` path decides whether to
+/// keep the token live (so the user can cancel during park) or swap
+/// it for a fresh one (after `ResumeDispatch`). Contrast with
+/// `drain_as_skipped`, which *does* mark every waiting subtask as
+/// Skipped because it's only called on terminating paths.
+#[allow(clippy::too_many_arguments)]
+async fn await_in_flight_naturally(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    notes: &Arc<SharedNotes>,
+    master: &dyn AgentImpl,
+    cancel: &CancellationToken,
+    join_set: &mut JoinSet<(SubtaskId, WorkerOutcome)>,
+    in_flight: &mut HashSet<SubtaskId>,
+) {
+    while let Some(joined) = join_set.join_next().await {
+        let (sub_id, outcome) = match joined {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("[dispatcher] worker task panicked during drain: {e}");
+                continue;
+            }
+        };
+        in_flight.remove(&sub_id);
+        match outcome {
+            WorkerOutcome::Done(res) => {
+                on_worker_done(deps, run, run_id, &sub_id, &res, notes).await;
+                maybe_consolidate(notes, master, cancel, &deps.event_sink, run_id).await;
+            }
+            WorkerOutcome::Failed(err) => {
+                mark_failed(deps, run, run_id, &sub_id, err).await;
+            }
+            WorkerOutcome::Cancelled => {
+                mark_skipped(deps, run, run_id, &sub_id).await;
+            }
+            WorkerOutcome::Escalate(kind) => {
+                // A second in-flight worker also escalated while we
+                // were draining. Mark it Failed too; the lifecycle
+                // only handles one failed subtask per replan call,
+                // but persisting both as Failed keeps storage honest
+                // and cascade_skip on re-entry picks up any
+                // dependents that should now be skipped.
+                let err_msg = escalate_error_text(&kind);
+                mark_failed(deps, run, run_id, &sub_id, err_msg).await;
+            }
+        }
+    }
 }
 
 async fn drain_as_skipped(

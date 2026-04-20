@@ -112,6 +112,15 @@ pub struct SubtaskData {
     /// schema can default without needing `#[serde(skip)]`.
     #[serde(default)]
     pub replaces: Vec<SubtaskId>,
+    /// How many replans have already fired in this subtask's lineage.
+    /// `0` for a freshly-planned subtask; up to
+    /// [`crate::orchestration::lifecycle::REPLAN_LINEAGE_CAP`] for a
+    /// replacement. The frontend uses it to hide the "Try replan
+    /// again" button once the budget is exhausted (Commit 2b of
+    /// Phase 3 Step 5). Absent on the wire in older runs so it
+    /// defaults to 0 rather than requiring migration.
+    #[serde(default)]
+    pub replan_count: u32,
 }
 
 #[allow(dead_code)]
@@ -187,5 +196,22 @@ pub struct SubtaskDraft {
 pub struct RecoveryEntry {
     pub task: String,
     pub repo_path: String,
+}
+
+/// Returned by the `skip_subtask` IPC command. The escalated subtask
+/// plus every downstream subtask the BFS determined was Waiting or
+/// Proposed and transitively depended on it has been flipped to
+/// `Skipped`. The frontend uses `skipped_count` to render a
+/// confirmation toast ("Skipped 3 subtasks") without a second round-
+/// trip.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkipResult {
+    /// Number of subtasks transitioned to `Skipped` — including the
+    /// escalated one itself. A lone leaf escalation returns `1`.
+    pub skipped_count: u32,
+    /// The full list of subtask ids that were skipped. Order is the
+    /// BFS traversal order starting from the escalated subtask.
+    pub skipped_ids: Vec<SubtaskId>,
 }
 
