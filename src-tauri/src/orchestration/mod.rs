@@ -46,7 +46,7 @@ mod tests;
 
 #[allow(unused_imports)]
 pub use events::{EventSink, RunEvent, TauriEventSink};
-pub use lifecycle::{ApplyDecision, ApprovalDecision};
+pub use lifecycle::{ApplyDecision, ApprovalDecision, Layer3Decision};
 #[allow(unused_imports)]
 pub use registry::{AgentRegistry, DefaultAgentRegistry, RegistryError};
 #[allow(unused_imports)]
@@ -125,6 +125,15 @@ pub struct Orchestrator {
     /// phase starts; `apply_run` / `discard_run` take and `send()` on
     /// the sender. Same drop semantics as `approval_senders`.
     pub(crate) apply_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<ApplyDecision>>>>,
+    /// Pending Layer-3 resolution channels. Populated by the lifecycle
+    /// the moment it parks the run in `AwaitingHumanFix`; consumed by
+    /// the four escalation IPC commands (`manual_fix_subtask` /
+    /// `mark_subtask_fixed` / `skip_subtask` / `try_replan_again`).
+    /// If a `ReplanRequested` resolution re-escalates (master returns
+    /// another empty plan), the lifecycle reinstalls a fresh sender
+    /// here for the next park. On lifecycle exit the map entry is
+    /// dropped alongside `approval_senders` and `apply_senders`.
+    pub(crate) resolution_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<Layer3Decision>>>>,
     pub(crate) max_concurrent_workers: usize,
     /// How long the merge phase waits on the apply/discard decision
     /// before auto-discarding. Defaults to [`APPLY_TIMEOUT`]; tests
@@ -154,6 +163,7 @@ impl Orchestrator {
             runs: Arc::new(Mutex::new(HashMap::new())),
             approval_senders: Arc::new(Mutex::new(HashMap::new())),
             apply_senders: Arc::new(Mutex::new(HashMap::new())),
+            resolution_senders: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_workers: MAX_CONCURRENT_WORKERS,
             apply_timeout: APPLY_TIMEOUT,
             recovery_report: Arc::new(Mutex::new(Vec::new())),
@@ -346,11 +356,13 @@ impl Orchestrator {
             registry: self.registry.clone(),
             approval_senders: self.approval_senders.clone(),
             apply_senders: self.apply_senders.clone(),
+            resolution_senders: self.resolution_senders.clone(),
             apply_timeout: self.apply_timeout,
         };
         let runs_map = self.runs.clone();
         let approval_senders = self.approval_senders.clone();
         let apply_senders = self.apply_senders.clone();
+        let resolution_senders = self.resolution_senders.clone();
         let task_run_id = run_id.clone();
         tokio::spawn(async move {
             run_lifecycle(deps, run_arc, master, approval_rx, apply_rx).await;
@@ -362,6 +374,7 @@ impl Orchestrator {
             runs_map.lock().await.remove(&task_run_id);
             approval_senders.lock().await.remove(&task_run_id);
             apply_senders.lock().await.remove(&task_run_id);
+            resolution_senders.lock().await.remove(&task_run_id);
         });
 
         Ok(run_id)
@@ -973,6 +986,33 @@ mod init_tests {
             row.error.as_deref(),
             Some("App restarted while run was active")
         );
+    }
+
+    #[tokio::test]
+    async fn recover_sweeps_awaiting_human_fix_runs() {
+        // Phase 3 Step 5 Commit 2a: a crash while a run was parked on
+        // Layer-3 human escalation must not leave a stale
+        // `awaiting-human-fix` row. The resolution channel is ephemeral
+        // in-memory state — after a crash the lifecycle task is gone,
+        // so the only honest move is to finalize the run Failed and
+        // let the user start over.
+        let (orch, storage, _repo, repo_path) = make_with_repo().await;
+        seed_active_run(
+            &storage,
+            "01PARKED",
+            &repo_path.to_string_lossy(),
+            RunStatus::AwaitingHumanFix,
+        )
+        .await;
+
+        let recovered = orch.recover_active_runs().await;
+        assert_eq!(
+            recovered, 1,
+            "AwaitingHumanFix rows must be swept by recovery"
+        );
+
+        let row = storage.get_run("01PARKED").await.unwrap().unwrap();
+        assert_eq!(row.status, RunStatus::Failed);
     }
 
     #[tokio::test]

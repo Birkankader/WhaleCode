@@ -70,7 +70,8 @@ const REPLAN_LINEAGE_CAP: u32 = 2;
 
 /// Outcome of a Layer-2 replan attempt. Distinct from [`DispatchOutcome`]
 /// so the lifecycle can decide whether to loop back into approval
-/// (`NewPlan`) or finalize the run (`Escalated` / `Error`).
+/// (`NewPlan`), park on human escalation (`Escalated`), or finalize the
+/// run (`Error`).
 enum ReplanOutcome {
     /// Master produced at least one replacement subtask, rows were
     /// persisted, and the run is back in `AwaitingApproval` with a
@@ -78,12 +79,50 @@ enum ReplanOutcome {
     NewPlan,
     /// Layer-3 escalation: either the lineage cap was hit or the
     /// master returned an empty plan (infeasible). `HumanEscalation`
-    /// has already been emitted; the lifecycle should finalize to
-    /// `Failed`.
-    Escalated { reason: String },
+    /// has already been emitted; the lifecycle parks the run in
+    /// `AwaitingHumanFix` and waits on the resolution channel.
+    /// `subtask_id` is the subtask the user needs to act on; `kind`
+    /// is preserved so a user-initiated `ReplanRequested` can rebuild
+    /// the replan context with the same escalation reason.
+    Escalated {
+        reason: String,
+        subtask_id: SubtaskId,
+        kind: EscalateToMaster,
+    },
     /// Replan itself errored (master crashed, storage write failed,
     /// etc.). Lifecycle finalizes to `Failed` with this message.
     Error(String),
+}
+
+/// What the four Layer-3 IPC commands send on the per-run resolution
+/// channel. The lifecycle task is parked on this channel while the run
+/// sits in `AwaitingHumanFix`; receiving any variant unblocks forward
+/// progress. In Commit 2a the IPC commands still return
+/// `InvalidEdit("not yet implemented")`, so production code never
+/// produces these — only the lifecycle's internal `park_on_escalation`
+/// receives from tests that push decisions directly via the orchestrator's
+/// `resolution_senders` map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layer3Decision {
+    /// User asserts the escalated subtask is now correct (either by
+    /// editing the worktree or by re-running manually). Lifecycle
+    /// marks the subtask `Done` and re-enters the dispatcher so any
+    /// dependents unblocked by it can run.
+    Fixed(SubtaskId),
+    /// User wants to drop the escalated subtask and any descendant
+    /// that can't run without it. The vec carries the full forward-
+    /// dependency cascade (computed by the `skip_subtask` IPC command
+    /// in Commit 2b); the lifecycle marks every entry `Skipped`.
+    Skipped(Vec<SubtaskId>),
+    /// User wants one more Layer-2 replan attempt. Only legal when the
+    /// chain's `replan_count` is below the cap; the IPC command guards
+    /// this (Commit 2b) and the lifecycle double-checks via
+    /// `count_replans_in_lineage`.
+    ReplanRequested(SubtaskId),
+    /// User gave up. Lifecycle fires the run's cancel token and drops
+    /// through to `finalize_cancelled`, same terminal state as any
+    /// user-cancelled run.
+    Aborted,
 }
 
 /// What `approve_subtasks`/`reject_run` send into the waiting task.
@@ -135,6 +174,14 @@ pub struct LifecycleDeps {
     /// sender here so the next `apply_run`/`discard_run` has somewhere
     /// to land.
     pub apply_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<ApplyDecision>>>>,
+    /// Shared back-reference to the Orchestrator's Layer-3 resolution
+    /// sender map. Populated by the lifecycle itself at the moment of
+    /// parking (on a Layer-3 escalation) and consumed by the four IPC
+    /// commands (`manual_fix_subtask` / `mark_subtask_fixed` /
+    /// `skip_subtask` / `try_replan_again`). If an escalation cycles
+    /// (user asks for `ReplanRequested`, master re-escalates), the
+    /// lifecycle reinstalls a fresh sender for the next park.
+    pub resolution_senders: Arc<Mutex<HashMap<RunId, oneshot::Sender<Layer3Decision>>>>,
     /// How long to wait on the apply/discard decision before auto-
     /// discarding. Plumbed through from the orchestrator so tests can
     /// shrink it without changing the global constant.
@@ -330,11 +377,50 @@ pub async fn run_lifecycle(
                                 current_cancel = run.read().await.cancel_token.clone();
                                 continue;
                             }
-                            ReplanOutcome::Escalated { reason } => {
-                                // `HumanEscalation` already emitted by
-                                // the helper; run transitions to Failed.
-                                finalize_failed(&deps, &run, reason).await;
-                                return;
+                            ReplanOutcome::Escalated {
+                                reason,
+                                subtask_id,
+                                kind,
+                            } => {
+                                // Layer-3: hand off to the escalation
+                                // handler. It parks the run in
+                                // `AwaitingHumanFix`, waits on the
+                                // resolution channel, and either resumes
+                                // dispatch (Fixed / Skipped), loops back
+                                // to approval (ReplanRequested →
+                                // NewPlan), or finalizes (Aborted /
+                                // cancel / internal error).
+                                match handle_escalation(
+                                    &deps,
+                                    &run,
+                                    master.as_ref(),
+                                    &run_id,
+                                    &task_text,
+                                    &repo_root,
+                                    subtask_id,
+                                    reason,
+                                    kind,
+                                )
+                                .await
+                                {
+                                    EscalationResolved::ProceedToMerge => {
+                                        if let Err(e) =
+                                            transition_to_merging(&deps, &run).await
+                                        {
+                                            finalize_failed(&deps, &run, e).await;
+                                            return;
+                                        }
+                                        merge_phase(&deps, &run, apply_rx).await;
+                                        return;
+                                    }
+                                    EscalationResolved::ResumeApproval(new_rx) => {
+                                        current_approval_rx = new_rx;
+                                        current_cancel =
+                                            run.read().await.cancel_token.clone();
+                                        continue;
+                                    }
+                                    EscalationResolved::Terminated => return,
+                                }
                             }
                             ReplanOutcome::Error(err) => {
                                 finalize_failed(&deps, &run, err).await;
@@ -1038,7 +1124,11 @@ async fn do_replan_subtask(
                 suggested_action: None,
             })
             .await;
-        return ReplanOutcome::Escalated { reason };
+        return ReplanOutcome::Escalated {
+            reason,
+            subtask_id: failed_subtask_id.clone(),
+            kind: kind.clone(),
+        };
     }
 
     // 3. Build ReplanContext from the current run state.
@@ -1105,7 +1195,11 @@ async fn do_replan_subtask(
                 suggested_action: None,
             })
             .await;
-        return ReplanOutcome::Escalated { reason };
+        return ReplanOutcome::Escalated {
+            reason,
+            subtask_id: failed_subtask_id.clone(),
+            kind,
+        };
     }
 
     // 6. Persist the replacement subtasks + lineage edges, stamp
@@ -1300,6 +1394,321 @@ async fn install_replacement_subtasks(
             status: RunStatus::AwaitingApproval,
         })
         .await;
+    Ok(())
+}
+
+// -- Layer-3 escalation ---------------------------------------------
+
+/// What `handle_escalation` returns to the approval-loop caller once
+/// the parked run has a resolution in hand. Distinct from
+/// [`ReplanOutcome`] because the shapes of the continuations differ:
+/// Layer-2 either retries approval or escalates; Layer-3 either merges
+/// what landed, rewinds to approval, or has already finalized.
+enum EscalationResolved {
+    /// `Fixed` / `Skipped`: subtask state updated in memory + SQLite,
+    /// event emitted, `escalated_subtask_ids` cleared. Run is no longer
+    /// parked; every subtask is terminal (Fixed's subtask is now Done,
+    /// Skipped's are Skipped — everything else was already `drain_as_
+    /// skipped` out by the dispatcher before `NeedsReplan` fired). The
+    /// caller transitions to Merging and runs the merge phase with the
+    /// lifecycle's `apply_rx`.
+    ProceedToMerge,
+    /// `ReplanRequested` → [`ReplanOutcome::NewPlan`]: the master
+    /// produced replacement subtasks, `install_replacement_subtasks`
+    /// flipped status to `AwaitingApproval`, and a fresh approval
+    /// sender is in the orchestrator's map. The caller resumes the
+    /// approval loop with the paired receiver.
+    ResumeApproval(oneshot::Receiver<ApprovalDecision>),
+    /// `Aborted`, the run's cancel token fired during park, or an
+    /// internal error (storage write, replan crash). The helper has
+    /// already called `finalize_cancelled` / `finalize_failed`; the
+    /// caller just returns.
+    Terminated,
+}
+
+/// Park the run on the Layer-3 resolution channel and process the
+/// resolution when it arrives. Looping because a `ReplanRequested`
+/// decision may itself re-escalate (master still judges the goal
+/// infeasible); each cycle re-parks with the new escalation's
+/// `subtask_id` + `kind`.
+///
+/// Event sequence for one park pass (shown for `Fixed` resolution):
+///
+/// ```text
+///   StatusChanged{AwaitingHumanFix}      ← from here
+///   (wait on resolution_rx or cancel)
+///   SubtaskStateChanged{Fixed sid → Done}
+///   (returns ProceedToMerge; caller emits StatusChanged{Merging})
+/// ```
+///
+/// `HumanEscalation` itself is emitted by `do_replan_subtask`
+/// *before* returning `ReplanOutcome::Escalated`, so by the time this
+/// function runs the frontend has already flipped the UI into "human
+/// escalation" mode. Entering here is pure lifecycle bookkeeping:
+/// flip the status, stamp `escalated_subtask_ids`, and wait.
+#[allow(clippy::too_many_arguments)]
+async fn handle_escalation(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    master: &dyn AgentImpl,
+    run_id: &RunId,
+    task_text: &str,
+    repo_root: &std::path::Path,
+    initial_subtask_id: SubtaskId,
+    initial_reason: String,
+    initial_kind: EscalateToMaster,
+) -> EscalationResolved {
+    // Loop variables — updated when a `ReplanRequested` yields another
+    // `Escalated` (master still can't find a path). Each re-park uses
+    // the fresh escalation's subtask id / kind so the next
+    // `ReplanRequested` dispatches the right replan context.
+    let mut subtask_id = initial_subtask_id;
+    let mut kind = initial_kind;
+    let mut reason = initial_reason;
+
+    loop {
+        // Park: flip to `AwaitingHumanFix`, stamp the escalated id,
+        // persist + emit StatusChanged, re-read the run's cancel token
+        // (may have been replaced by a prior `do_replan_subtask` pass).
+        let cancel = {
+            let mut guard = run.write().await;
+            guard.status = RunStatus::AwaitingHumanFix;
+            guard.escalated_subtask_ids = vec![subtask_id.clone()];
+            guard.cancel_token.clone()
+        };
+        if let Err(e) = deps
+            .storage
+            .update_run_status(run_id, RunStatus::AwaitingHumanFix)
+            .await
+        {
+            finalize_failed(
+                deps,
+                run,
+                format!("update_run_status(awaiting-human-fix): {e}"),
+            )
+            .await;
+            return EscalationResolved::Terminated;
+        }
+        deps.event_sink
+            .emit(RunEvent::StatusChanged {
+                run_id: run_id.clone(),
+                status: RunStatus::AwaitingHumanFix,
+            })
+            .await;
+        deps.event_sink
+            .emit(RunEvent::MasterLog {
+                run_id: run_id.clone(),
+                line: format!("parked on human escalation: {}", reason.as_str()),
+            })
+            .await;
+
+        // Install a resolution sender. Overwrites any stale entry from
+        // a prior park in this same run (cycling re-escalations); the
+        // four IPC commands (commit 2b) remove the entry when they
+        // consume the sender, so a normal flow never sees a stale one.
+        let (tx, mut rx) = oneshot::channel::<Layer3Decision>();
+        deps.resolution_senders
+            .lock()
+            .await
+            .insert(run_id.clone(), tx);
+
+        let decision = tokio::select! {
+            d = &mut rx => match d {
+                Ok(d) => d,
+                // Sender dropped without deciding — can only happen if
+                // someone evicts the entry out-of-band (not in Commit
+                // 2b's flow). Treat as Abort so the run doesn't hang.
+                Err(_) => Layer3Decision::Aborted,
+            },
+            _ = cancel.cancelled() => {
+                // External cancel during park. Clear the marker so
+                // `finalize_cancelled`'s terminal view isn't a run that
+                // still advertises an escalation.
+                {
+                    let mut guard = run.write().await;
+                    guard.escalated_subtask_ids.clear();
+                }
+                // `finalize_cancelled` handles cleanup + terminal event.
+                finalize_cancelled(deps, run, CancelReason::UserCancelled).await;
+                return EscalationResolved::Terminated;
+            }
+        };
+
+        match decision {
+            Layer3Decision::Fixed(sid) => {
+                if let Err(e) = resolve_fixed(deps, run, run_id, &sid).await {
+                    finalize_failed(deps, run, e).await;
+                    return EscalationResolved::Terminated;
+                }
+                return EscalationResolved::ProceedToMerge;
+            }
+            Layer3Decision::Skipped(sids) => {
+                if let Err(e) = resolve_skipped(deps, run, run_id, &sids).await {
+                    finalize_failed(deps, run, e).await;
+                    return EscalationResolved::Terminated;
+                }
+                return EscalationResolved::ProceedToMerge;
+            }
+            Layer3Decision::Aborted => {
+                // Fire the run's cancel token so any surviving workers
+                // (there shouldn't be any — the dispatcher drained
+                // before `NeedsReplan`) and any hanging awaits notice.
+                // Then drop through to `finalize_cancelled`; the
+                // terminal sequence is identical to an external cancel
+                // so the UI doesn't care which path got us here.
+                let token = {
+                    let mut guard = run.write().await;
+                    guard.escalated_subtask_ids.clear();
+                    guard.cancel_token.clone()
+                };
+                token.cancel();
+                finalize_cancelled(deps, run, CancelReason::UserCancelled).await;
+                return EscalationResolved::Terminated;
+            }
+            Layer3Decision::ReplanRequested(sid) => {
+                // Human granted another replan attempt. Flip back to
+                // Planning so the UI chip reflects "master thinking"
+                // instead of "awaiting human" while the call is in
+                // flight; `install_replacement_subtasks` will transition
+                // to `AwaitingApproval` on success, or we'll re-park
+                // into `AwaitingHumanFix` on another Escalated.
+                {
+                    let mut guard = run.write().await;
+                    guard.status = RunStatus::Planning;
+                    guard.escalated_subtask_ids.clear();
+                }
+                if let Err(e) = deps
+                    .storage
+                    .update_run_status(run_id, RunStatus::Planning)
+                    .await
+                {
+                    finalize_failed(
+                        deps,
+                        run,
+                        format!("update_run_status(planning): {e}"),
+                    )
+                    .await;
+                    return EscalationResolved::Terminated;
+                }
+                deps.event_sink
+                    .emit(RunEvent::StatusChanged {
+                        run_id: run_id.clone(),
+                        status: RunStatus::Planning,
+                    })
+                    .await;
+
+                match do_replan_subtask(
+                    deps,
+                    run,
+                    master,
+                    run_id,
+                    task_text,
+                    repo_root,
+                    &sid,
+                    kind.clone(),
+                )
+                .await
+                {
+                    ReplanOutcome::NewPlan => {
+                        let (new_tx, new_rx) = oneshot::channel();
+                        deps.approval_senders
+                            .lock()
+                            .await
+                            .insert(run_id.clone(), new_tx);
+                        return EscalationResolved::ResumeApproval(new_rx);
+                    }
+                    ReplanOutcome::Escalated {
+                        reason: new_reason,
+                        subtask_id: new_sid,
+                        kind: new_kind,
+                    } => {
+                        // `HumanEscalation` already re-emitted by
+                        // `do_replan_subtask`. Loop and re-park on the
+                        // new escalation's subtask id.
+                        subtask_id = new_sid;
+                        kind = new_kind;
+                        reason = new_reason;
+                        continue;
+                    }
+                    ReplanOutcome::Error(err) => {
+                        finalize_failed(deps, run, err).await;
+                        return EscalationResolved::Terminated;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Apply a `Fixed(sid)` resolution: flip the subtask Failed → Done,
+/// persist + emit, clear the escalation marker. Does NOT transition the
+/// run status — the caller (`run_lifecycle`) flips directly to Merging
+/// via `transition_to_merging`, so the UI sees a clean
+/// `AwaitingHumanFix → Merging` rather than a transient `Running`.
+async fn resolve_fixed(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sid: &SubtaskId,
+) -> Result<(), String> {
+    {
+        let mut guard = run.write().await;
+        guard.escalated_subtask_ids.clear();
+        match guard.subtasks.iter_mut().find(|s| &s.id == sid) {
+            Some(s) => s.mark_done(),
+            None => return Err(format!("fixed subtask {sid} not found in run")),
+        }
+    }
+    deps.storage
+        .update_subtask_state(sid, SubtaskState::Done, None)
+        .await
+        .map_err(|e| format!("update_subtask_state(done): {e}"))?;
+    deps.event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: sid.clone(),
+            state: SubtaskState::Done,
+        })
+        .await;
+    Ok(())
+}
+
+/// Apply a `Skipped(sids)` resolution: flip every listed subtask's
+/// state to Skipped (no-op if already terminal-Skipped), persist +
+/// emit per change, clear the escalation marker. The caller
+/// transitions the run to Merging.
+async fn resolve_skipped(
+    deps: &LifecycleDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sids: &[SubtaskId],
+) -> Result<(), String> {
+    let mut changed: Vec<SubtaskId> = Vec::new();
+    {
+        let mut guard = run.write().await;
+        guard.escalated_subtask_ids.clear();
+        for sid in sids {
+            if let Some(s) = guard.subtasks.iter_mut().find(|x| &x.id == sid) {
+                if !matches!(s.state, SubtaskState::Skipped) {
+                    s.mark_skipped();
+                    changed.push(sid.clone());
+                }
+            }
+        }
+    }
+    for sid in &changed {
+        deps.storage
+            .update_subtask_state(sid, SubtaskState::Skipped, None)
+            .await
+            .map_err(|e| format!("update_subtask_state(skipped, {sid}): {e}"))?;
+        deps.event_sink
+            .emit(RunEvent::SubtaskStateChanged {
+                run_id: run_id.clone(),
+                subtask_id: sid.clone(),
+                state: SubtaskState::Skipped,
+            })
+            .await;
+    }
     Ok(())
 }
 

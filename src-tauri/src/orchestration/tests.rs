@@ -947,12 +947,14 @@ async fn dispatcher_respects_concurrency_cap() {
 }
 
 #[tokio::test]
-async fn worker_failure_fails_the_run_fast() {
-    // Phase 3 Step 4: a worker failure no longer fail-fasts the run
-    // directly — it triggers Layer 2 (master replan). To preserve this
-    // test's "fail-fast" intent, the master's replan is scripted to
-    // return an empty plan (infeasible), which the lifecycle surfaces
-    // as a `HumanEscalation` + finalizes the run to Failed.
+async fn worker_failure_parks_on_escalation_then_aborts() {
+    // Phase 3 Step 5 (Commit 2a): a worker failure no longer fail-fasts
+    // the run directly — it triggers Layer 2 (master replan). When the
+    // master returns an empty plan, the lifecycle parks in
+    // `AwaitingHumanFix` and waits on the resolution channel. This test
+    // drives the park → `Aborted` → `Cancelled` path so the original
+    // "fail-fast on unrecoverable worker failure" intent still has a
+    // deterministic terminal state.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(2)))
         .await
@@ -977,18 +979,25 @@ async fn worker_failure_fails_the_run_fast() {
     let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
     h.orch.approve_subtasks(&run_id, ids).await.unwrap();
 
-    h.await_status(&run_id, RunStatus::Failed).await;
-    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
-    assert_eq!(stored.status, RunStatus::Failed);
-    // The run's error now reflects the Layer-3 escalation reason (the
-    // master's replan reasoning), not the worker's original error. The
-    // failing subtask still carries "boom" in its own error field.
+    // Run should park in AwaitingHumanFix after the empty replan.
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    // HumanEscalation event must have fired before the park.
     let snap = h.sink.snapshot().await;
     assert!(
         snap.iter()
             .any(|e| matches!(e, RunEvent::HumanEscalation { .. })),
         "expected HumanEscalation emit after empty replan",
     );
+
+    // Fire the resolution channel with `Aborted`; the lifecycle finalizes
+    // to Cancelled (same terminal as user-cancelled runs).
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Cancelled);
+    // The failing subtask still carries its original "boom" error.
     let subs_after = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
     let failed = subs_after
         .iter()
@@ -1066,15 +1075,14 @@ async fn cancel_during_running_cleans_up_worktrees() {
 }
 
 #[tokio::test]
-async fn worker_failure_cleans_up_worktrees() {
-    // Regression: finalize_failed must tear down worktrees the
-    // dispatcher created for the failing (and any in-flight) subtask.
-    // Before the fix these leaked on disk.
-    //
-    // Phase 3 Step 4: the failing subtask now routes through Layer 2;
-    // a scripted empty replan ensures we still end in Failed, so the
-    // cleanup contract (which runs in `finalize_failed`) remains
-    // testable end-to-end.
+async fn worker_failure_cleans_up_worktrees_after_abort() {
+    // Regression: worktree cleanup must fire on the cancel path too.
+    // Phase 3 Step 4 moved worker failures through Layer 2; Step 5
+    // Commit 2a parks at Layer 3 instead of finalize_failed. The
+    // cleanup contract now runs in `finalize_cancelled` (Aborted
+    // resolution path), so this test drives the empty replan into
+    // `AwaitingHumanFix` and then fires `Aborted` to confirm the
+    // worktree + shared-notes files are swept.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(1)))
         .await
@@ -1094,10 +1102,12 @@ async fn worker_failure_cleans_up_worktrees() {
     let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
     h.orch.approve_subtasks(&run_id, ids).await.unwrap();
 
-    h.await_status(&run_id, RunStatus::Failed).await;
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
 
     let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
-    assert_eq!(stored.status, RunStatus::Failed);
+    assert_eq!(stored.status, RunStatus::Cancelled);
     let subs_after = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
     let failed = subs_after
         .iter()
@@ -1106,9 +1116,285 @@ async fn worker_failure_cleans_up_worktrees() {
     assert!(failed.error.as_deref().unwrap_or_default().contains("boom"));
     assert!(
         !h.repo_path.join(".whalecode-worktrees").exists(),
-        "worktrees must be cleaned after worker failure"
+        "worktrees must be cleaned after abort"
     );
     assert!(!h.repo_path.join(".whalecode/notes.md").exists());
+}
+
+// -- Phase 3 Step 5 Commit 2a: Layer-3 human escalation park/resolve ---
+//
+// These tests exercise `handle_escalation` in `lifecycle.rs`: the run
+// must park on `AwaitingHumanFix`, wait on the resolution channel, and
+// resume forward progress based on the `Layer3Decision` variant. The
+// four IPC commands (manual_fix_subtask / mark_subtask_fixed /
+// skip_subtask / try_replan_again) still stub "not yet implemented" in
+// Commit 2a; tests push decisions directly through the Orchestrator's
+// `resolution_senders` map via the `send_resolution` helper.
+
+/// Helper: script a plan that fails its one subtask and returns an
+/// empty replan, so the lifecycle parks at Layer 3. Callers pick the
+/// resolution variant to test.
+async fn agent_parks_at_escalation() -> ScriptedAgent {
+    ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
+        .await
+}
+
+#[tokio::test]
+async fn layer3_fixed_resolution_proceeds_to_merging() {
+    // User marks the escalated subtask as fixed; lifecycle should flip
+    // it Failed → Done, skip re-entering the dispatcher (no remaining
+    // Waiting subtasks), and jump straight to Merging.
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+
+    let run_id = h
+        .orch
+        .submit_task("fix-me".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch
+        .approve_subtasks(&run_id, ids.clone())
+        .await
+        .unwrap();
+
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    // User manually fixed the failing subtask — send Fixed(sid).
+    let failed_sid = ids[0].clone();
+    send_resolution(&h, &run_id, Layer3Decision::Fixed(failed_sid.clone())).await;
+
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // The escalated subtask is now Done in storage.
+    let subs_after = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let resolved = subs_after
+        .iter()
+        .find(|s| s.id == failed_sid)
+        .expect("escalated subtask must still be in storage");
+    assert_eq!(resolved.state, SubtaskState::Done);
+
+    // Transcript should include SubtaskStateChanged{Done} for the sid.
+    let snap = h.sink.snapshot().await;
+    assert!(
+        snap.iter().any(|e| matches!(
+            e,
+            RunEvent::SubtaskStateChanged { subtask_id, state, .. }
+            if *subtask_id == failed_sid && *state == SubtaskState::Done
+        )),
+        "expected SubtaskStateChanged(Done) for the fixed subtask",
+    );
+}
+
+#[tokio::test]
+async fn layer3_skipped_resolution_proceeds_to_merging() {
+    // User skips the escalated subtask; lifecycle marks it Skipped and
+    // proceeds to Merging (nothing left to run — the dispatcher already
+    // drained siblings as Skipped on NeedsReplan).
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+
+    let run_id = h
+        .orch
+        .submit_task("skip-me".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch
+        .approve_subtasks(&run_id, ids.clone())
+        .await
+        .unwrap();
+
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    let failed_sid = ids[0].clone();
+    send_resolution(
+        &h,
+        &run_id,
+        Layer3Decision::Skipped(vec![failed_sid.clone()]),
+    )
+    .await;
+
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    let subs_after = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let resolved = subs_after
+        .iter()
+        .find(|s| s.id == failed_sid)
+        .expect("escalated subtask must still be in storage");
+    assert_eq!(resolved.state, SubtaskState::Skipped);
+
+    let snap = h.sink.snapshot().await;
+    assert!(
+        snap.iter().any(|e| matches!(
+            e,
+            RunEvent::SubtaskStateChanged { subtask_id, state, .. }
+            if *subtask_id == failed_sid && *state == SubtaskState::Skipped
+        )),
+        "expected SubtaskStateChanged(Skipped) for the skipped subtask",
+    );
+}
+
+#[tokio::test]
+async fn layer3_replan_requested_resolves_to_new_approval() {
+    // User requests another replan attempt; master returns a viable
+    // plan on the second try. Lifecycle should flip back to Planning,
+    // install the replacement subtask, and re-enter AwaitingApproval.
+    let replacement = Plan {
+        reasoning: "try a different approach".into(),
+        subtasks: vec![PlannedSubtask {
+            title: "replacement".into(),
+            why: "the manual fix".into(),
+            assigned_worker: AgentKind::Claude,
+            dependencies: vec![],
+        }],
+    };
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom".into()))
+        .await
+        // First replan: empty → park on Layer 3.
+        .with_replan(ReplanScript::Empty)
+        .await
+        // Second replan (triggered by ReplanRequested): viable plan.
+        .with_replan(ReplanScript::OkPlan(replacement))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("replan-again".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let initial_ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch
+        .approve_subtasks(&run_id, initial_ids.clone())
+        .await
+        .unwrap();
+
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    let failed_sid = initial_ids[0].clone();
+    send_resolution(
+        &h,
+        &run_id,
+        Layer3Decision::ReplanRequested(failed_sid.clone()),
+    )
+    .await;
+
+    // The replacement subtask "replacement" must land in storage as
+    // Proposed; poll against storage (not the event transcript) because
+    // an earlier `AwaitingApproval` emit would match a simple
+    // `await_status` immediately.
+    let replacement_id =
+        await_subtask_with_title_in_state(&h, &run_id, "replacement", SubtaskState::Proposed)
+            .await;
+    // The lineage row must point back at the original failed subtask —
+    // proves `ReplanRequested` went through the normal replan install
+    // path rather than a shortcut.
+    let lineage = h
+        .storage
+        .get_replaces_for_subtask(&replacement_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        lineage,
+        vec![failed_sid.clone()],
+        "ReplanRequested replacement must carry the failed sid in its lineage",
+    );
+    // Run status has flipped back to AwaitingApproval after the install.
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::AwaitingApproval);
+    // The escalation marker must be cleared on the in-memory run state.
+    let run_guard = h
+        .orch
+        .runs
+        .lock()
+        .await
+        .get(&run_id)
+        .cloned()
+        .expect("run must still be tracked");
+    assert!(
+        run_guard.read().await.escalated_subtask_ids.is_empty(),
+        "escalated_subtask_ids must be cleared after ReplanRequested install",
+    );
+}
+
+#[tokio::test]
+async fn layer3_aborted_resolution_finalizes_cancelled() {
+    // User aborts the escalated run; lifecycle fires the cancel token
+    // and drops through to finalize_cancelled. Terminal state is
+    // Cancelled, worktrees + notes are swept.
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+
+    let run_id = h
+        .orch
+        .submit_task("abort-me".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Cancelled);
+    assert!(!h.repo_path.join(".whalecode-worktrees").exists());
+    assert!(!h.repo_path.join(".whalecode/notes.md").exists());
+}
+
+#[tokio::test]
+async fn layer3_cancel_during_park_finalizes_cancelled() {
+    // External cancel fires while the lifecycle is parked on
+    // `AwaitingHumanFix`. The select!'s cancel branch must win,
+    // `finalize_cancelled` runs, terminal is Cancelled. Mirrors
+    // `cancel_during_running_cleans_up_worktrees` but at the Layer-3
+    // park instead of mid-dispatch.
+    let h = Harness::new(agent_parks_at_escalation().await).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cancel-during-park".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+    // External cancel — lifecycle's park-select should notice.
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Cancelled);
+    // The resolution sender should no longer be in the map — lifecycle
+    // exit cleanup clears it alongside approval/apply senders.
+    assert!(
+        h.orch
+            .resolution_senders
+            .lock()
+            .await
+            .get(&run_id)
+            .is_none(),
+        "resolution sender must be cleaned up after cancel",
+    );
 }
 
 // -- 8d: merge / apply / discard / cancel paths ------------------------
@@ -1128,6 +1414,23 @@ async fn approve_all(h: &Harness, run_id: &RunId) {
     let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
     h.orch.approve_subtasks(run_id, ids).await.unwrap();
     h.await_status(run_id, RunStatus::Merging).await;
+}
+
+/// Send a Layer-3 resolution directly into the lifecycle's park select.
+/// Mirrors what the four escalation IPC commands (Commit 2b) will do:
+/// take the sender out of `resolution_senders` and fire it. Panics if
+/// the sender isn't present — callers must `await_status(AwaitingHumanFix)`
+/// first so the lifecycle has inserted it.
+async fn send_resolution(h: &Harness, run_id: &RunId, decision: Layer3Decision) {
+    let tx = h
+        .orch
+        .resolution_senders
+        .lock()
+        .await
+        .remove(run_id)
+        .expect("resolution sender must be installed by lifecycle park");
+    tx.send(decision)
+        .expect("lifecycle's resolution_rx must be alive at park time");
 }
 
 /// Build a scripted agent whose execute for `title` writes `files`
@@ -2364,13 +2667,12 @@ async fn retry_single_failure_then_success_transitions_through_retrying() {
 }
 
 #[tokio::test]
-async fn retry_double_failure_escalates_and_fails_the_run() {
+async fn retry_double_failure_escalates_and_parks() {
     // Both attempts fail → Layer 1 exhausted → Layer 2 replan fires.
-    // Scripted replan returns empty (infeasible), which routes to
-    // Layer 3 (HumanEscalation) and finalizes the run Failed.
-    //
-    // The retry event is still emitted before the terminal Failed;
-    // the state trace is asserted below.
+    // Scripted replan returns empty (infeasible), which parks the run
+    // in `AwaitingHumanFix` (Phase 3 Step 5 Commit 2a). The retry state
+    // trace is still observable before the park; the test drives
+    // `Aborted` to finalize deterministically.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(1)))
         .await
@@ -2405,7 +2707,8 @@ async fn retry_double_failure_escalates_and_fails_the_run() {
         .approve_subtasks(&run_id, vec![sub_id.clone()])
         .await
         .unwrap();
-    h.await_status(&run_id, RunStatus::Failed).await;
+    // The run parks at Layer 3; assert state trace before driving Aborted.
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
 
     let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
     assert_eq!(subs[0].state, SubtaskState::Failed);
@@ -2431,6 +2734,10 @@ async fn retry_double_failure_escalates_and_fails_the_run() {
         ],
         "unexpected state sequence: {states:?}"
     );
+
+    // Drain the park → Cancelled so the harness teardown is clean.
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
 }
 
 #[tokio::test]
@@ -2438,7 +2745,7 @@ async fn retry_spawn_failed_short_circuits_layer_one() {
     // SpawnFailed is deterministic: the binary is missing or the OS
     // refused execve. Retrying only burns time — skip Layer 1 and
     // escalate to Layer 2. Retrying must NOT appear in the state trace.
-    // The scripted replan returns empty so the run ends in Failed.
+    // The scripted replan returns empty so the run parks at Layer 3.
     let agent = ScriptedAgent::new(AgentKind::Claude)
         .with_plan(Ok(plan_of(1)))
         .await
@@ -2468,7 +2775,7 @@ async fn retry_spawn_failed_short_circuits_layer_one() {
         .approve_subtasks(&run_id, vec![sub_id.clone()])
         .await
         .unwrap();
-    h.await_status(&run_id, RunStatus::Failed).await;
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
 
     // Exactly one execute call — no retry was attempted.
     let ctx_calls = agent_handle.extra_context_calls().await;
@@ -2490,6 +2797,10 @@ async fn retry_spawn_failed_short_circuits_layer_one() {
         Some(SubtaskState::Failed),
         "expected terminal Failed; got {states:?}"
     );
+
+    // Drain the park so the harness teardown is clean.
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
 }
 
 #[tokio::test]
@@ -2888,9 +3199,9 @@ async fn replan_lineage_cap_escalates_after_chained_replans() {
         .await
         .unwrap();
 
-    // Run finalizes Failed; HumanEscalation fires for r2 with a
-    // reason mentioning the exhausted retry budget.
-    h.await_status(&run_id, RunStatus::Failed).await;
+    // Run parks at Layer 3 when the cap is hit; HumanEscalation fires
+    // for r2 with a reason mentioning the exhausted retry budget.
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
 
     let snap = h.sink.snapshot().await;
     let escalation = snap
@@ -2940,7 +3251,12 @@ async fn replan_lineage_cap_escalates_after_chained_replans() {
             s.state,
         );
     }
-    // Worktrees cleaned up on the Failed finalize.
+
+    // Drive Aborted → Cancelled so cleanup fires and the harness tears
+    // down cleanly (Phase 3 Step 5 Commit 2a moved worktree cleanup
+    // from the Failed finalize to the cancel finalize for this path).
+    send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+    h.await_status(&run_id, RunStatus::Cancelled).await;
     assert!(!h.repo_path.join(".whalecode-worktrees").exists());
 }
 

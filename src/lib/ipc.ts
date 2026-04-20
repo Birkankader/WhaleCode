@@ -57,6 +57,13 @@ export const runStatusSchema = z.enum([
   'done',
   'rejected',
   'failed',
+  'cancelled',
+  // Phase 3 Step 5: Layer-3 human escalation is active. The lifecycle
+  // task is parked on a resolution channel while the UI surfaces
+  // "open in editor / skip / replan again / abort". Non-terminal:
+  // resolution returns the run to `running` or forwards to
+  // `cancelled`/`failed`.
+  'awaiting-human-fix',
 ]);
 export type RunStatus = z.infer<typeof runStatusSchema>;
 

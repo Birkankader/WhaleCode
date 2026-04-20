@@ -174,6 +174,17 @@ pub struct Run {
     /// notices on its next `tokio::select!` branch and kills its
     /// subprocess.
     pub cancel_token: CancellationToken,
+    /// Subtask ids currently in Layer-3 human escalation (Phase 3 Step
+    /// 5). Populated when the lifecycle parks on the resolution channel
+    /// after a Layer-2 replan exhaustion / infeasibility; cleared when
+    /// the user resolves the escalation (`Fixed` / `Skipped` /
+    /// `ReplanRequested`) or aborts. The frontend doesn't read this
+    /// directly (it drives off `RunEvent::HumanEscalation`); the field
+    /// is held on the run so the backend can validate incoming IPC
+    /// commands target a genuinely-escalated subtask once Commit 2b
+    /// wires them up, and so crash recovery / debugging can inspect
+    /// which subtask the run is parked on.
+    pub escalated_subtask_ids: Vec<SubtaskId>,
 }
 
 impl Run {
@@ -197,6 +208,7 @@ impl Run {
             started_at: Utc::now(),
             finished_at: None,
             cancel_token: CancellationToken::new(),
+            escalated_subtask_ids: Vec::new(),
         }
     }
 

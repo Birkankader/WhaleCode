@@ -113,7 +113,7 @@ enum WorkerOutcome {
 /// into Layer 2 while still short-circuiting `UserCancelled` — the
 /// variant split is deliberately coarse-grained so the retry function
 /// stays a stable contract across phases.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)] // Fields inspected in Step 4 (Layer 2 routing).
 pub enum EscalateToMaster {
     /// Cancellation came from outside (user, run token). No retry

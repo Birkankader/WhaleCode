@@ -215,11 +215,17 @@ impl Storage {
     /// Runs whose status is non-terminal: anything the orchestrator
     /// would own if the app hadn't crashed. Used by startup recovery
     /// to mark them `Failed` and sweep any worktrees they left behind.
+    ///
+    /// `awaiting-human-fix` (Phase 3 Step 5) is treated as non-terminal:
+    /// the lifecycle task is parked on a resolution channel and owns
+    /// worktrees + notes just like during `running`. A crash while the
+    /// user was resolving an escalation leaves the same kind of residue,
+    /// so recovery must sweep it.
     pub async fn list_active_runs(&self) -> StorageResult<Vec<Run>> {
         let rows = sqlx::query(
             "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error \
              FROM runs \
-             WHERE status IN ('planning', 'awaiting-approval', 'running', 'merging') \
+             WHERE status IN ('planning', 'awaiting-approval', 'running', 'merging', 'awaiting-human-fix') \
              ORDER BY started_at ASC",
         )
         .fetch_all(&self.pool)

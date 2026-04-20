@@ -62,6 +62,15 @@ pub enum RunStatus {
     Rejected,
     Failed,
     Cancelled,
+    /// Phase 3 Step 5: Layer-3 human escalation is active. The lifecycle
+    /// task is parked on a resolution channel (see
+    /// [`crate::orchestration::lifecycle::Layer3Decision`]) while the UI
+    /// surfaces the "open in editor / skip / replan again / abort"
+    /// choices. This is a non-terminal state — resolution moves the run
+    /// back to `Running` (Fixed/Skipped/ReplanRequested) or forward to
+    /// `Cancelled`/`Failed` (Aborted/crash recovery). `list_active_runs`
+    /// includes it so a crash during escalation is swept on reboot.
+    AwaitingHumanFix,
 }
 
 // SubtaskState / SubtaskData / FileDiff / RunSummary are scaffolding for the

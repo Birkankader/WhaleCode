@@ -148,7 +148,7 @@ pub struct ExecutionResult {
 // `ParseFailed` means the plan came back but we couldn't understand
 // it — the right retry is usually "ask again with stricter format".
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum AgentError {
     #[error("agent process crashed (exit={exit_code:?}, signal={signal:?})")]
     ProcessCrashed {

@@ -126,7 +126,15 @@ export type GraphStatus =
   | 'done'
   | 'applied'
   | 'rejected'
-  | 'failed';
+  | 'failed'
+  | 'cancelled'
+  // Phase 3 Step 5: Layer-3 human escalation is active. The backend
+  // parked the lifecycle on a resolution channel; the UI surfaces the
+  // escalation actions (open in editor / skip / replan again / abort)
+  // on the affected WorkerNode. Resolution returns the run to
+  // `running` (Fixed/Skipped/ReplanRequested) or forwards it to a
+  // terminal state (Aborted → cancelled).
+  | 'awaiting_human_fix';
 
 type NodeActorRef = ActorRefFrom<typeof nodeMachine>;
 
@@ -328,6 +336,10 @@ function mapRunStatus(s: RunStatus): GraphStatus {
       return 'rejected';
     case 'failed':
       return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'awaiting-human-fix':
+      return 'awaiting_human_fix';
   }
 }
 
