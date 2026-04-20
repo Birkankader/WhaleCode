@@ -246,6 +246,16 @@ export type GraphState = {
    * Latched — backend only emits once per run.
    */
   autoApproveSuspended: { reason: string } | null;
+  /**
+   * Bug #5 follow-up: the window between `submitTask`'s optimistic local
+   * runId (`pending_*`) and the real backend runId landing is roughly an
+   * IPC round-trip, but if the user clicks Cancel in that window the
+   * naive path calls `cancelRunIpc('pending_xxx')` — an id the backend
+   * doesn't recognise, so `cancel_run` returns `Ok(())` silently and
+   * nothing actually happens. This flag defers the cancel until the real
+   * id lands in `submitTask`; the tail of `submitTask` consumes it.
+   */
+  pendingCancel: boolean;
 
   setMasterAgent: (agent: BackendAgentKind) => void;
   submitTask: (input: string, masterAgent?: BackendAgentKind) => Promise<void>;
@@ -410,6 +420,7 @@ const initial: Pick<
   | 'currentError'
   | 'autoApproved'
   | 'autoApproveSuspended'
+  | 'pendingCancel'
 > = {
   runId: null,
   taskInput: '',
@@ -432,6 +443,7 @@ const initial: Pick<
   currentError: null,
   autoApproved: null,
   autoApproveSuspended: null,
+  pendingCancel: false,
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -673,6 +685,19 @@ export const useGraphStore = create<GraphState>((set, get) => {
     // overall run state without separate master-specific events.
     if (mapped === 'planning') sendTo(MASTER_ID, { type: 'THINK' });
     if (mapped === 'running') sendTo(MASTER_ID, { type: 'APPROVE' });
+
+    // Cancelled: sweep every non-final actor into the `cancelled` terminal
+    // state so the graph stops animating. Without this, a run cancelled
+    // during `planning` leaves the master node stuck in its pulsing
+    // thinking loop forever — visually identical to "still running", which
+    // is exactly how users read the cancel as "didn't work" (bug #5).
+    // CANCEL is a no-op from `done`/`skipped` (XState finals don't accept
+    // events), so it's safe to fan out blindly.
+    if (mapped === 'cancelled') {
+      for (const id of get().nodeActors.keys()) {
+        sendTo(id, { type: 'CANCEL' });
+      }
+    }
 
     // Terminal events auto-detach. `merging` is NOT terminal — it's the
     // transient apply state, and conflicts may keep the run alive.
@@ -1103,6 +1128,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         selectedMasterAgent: agent,
         status: 'planning',
         currentError: null,
+        // Fresh submit clears any deferred-cancel flag from a previous
+        // aborted submit.
+        pendingCancel: false,
       });
 
       let realRunId: string;
@@ -1127,6 +1155,21 @@ export const useGraphStore = create<GraphState>((set, get) => {
       }
 
       set({ runId: realRunId, activeSubscription: subscription });
+
+      // Consume any cancel-click that landed during the submit window.
+      // The `pendingCancel` flag was set by `cancelRun` detecting the
+      // optimistic `pending_*` id. Now that the real id is wired, fire
+      // the backend cancel — the lifecycle task reacts with
+      // `finalize_cancelled`, which emits `StatusChanged(Cancelled)`
+      // and routes through the normal cancel path. Fire-and-forget:
+      // errors surface via `currentError` through the same mapping
+      // used by explicit user-clicks.
+      if (get().pendingCancel) {
+        set({ pendingCancel: false });
+        void cancelRunIpc(realRunId).catch((err: unknown) => {
+          set({ currentError: `Cancel failed: ${String(err)}` });
+        });
+      }
     },
 
     toggleSubtaskSelection(id) {
@@ -1213,6 +1256,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
     async cancelRun() {
       const runId = get().runId;
       if (!runId) return;
+      // The optimistic `pending_*` id set by `submitTask` is a local
+      // placeholder — the backend hasn't seen it, so
+      // `cancelRunIpc('pending_xxx')` would just return Ok(()) with no
+      // effect (see `Orchestrator::cancel_run`'s "run not found → Ok"
+      // branch). Defer to `pendingCancel`: the tail of `submitTask`
+      // fires the cancel as soon as the real run id lands.
+      if (runId.startsWith('pending_')) {
+        set({ pendingCancel: true });
+        return;
+      }
       try {
         await cancelRunIpc(runId);
       } catch (err) {

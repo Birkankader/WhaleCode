@@ -90,6 +90,12 @@ function styleForState(variant: Variant, state: NodeState, agent: string): CSSPr
       return { border: `1px solid ${agent}` };
     case 'skipped':
       return { border: `1px solid ${subtle}`, opacity: 0.4 };
+    case 'cancelled':
+      // Distinct from `skipped` (which is bypassed-on-purpose during a live
+      // run): `cancelled` is the whole-run stop. Slightly stronger opacity
+      // + dashed border signals "frozen tombstone" rather than "skipped
+      // this one". Matches the design-system tombstone intent.
+      return { border: `1px dashed ${subtle}`, opacity: 0.5 };
     case 'idle':
     default:
       return variant === 'final'

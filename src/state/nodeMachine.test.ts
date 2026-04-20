@@ -162,6 +162,91 @@ describe('nodeMachine — escalation path', () => {
   });
 });
 
+describe('nodeMachine — cancelled terminal', () => {
+  // Bug #5: after a cancelled run, every actor must stop animating. The
+  // machine gains a `cancelled` final state reachable from every non-
+  // final state so `handleStatusChanged` can blanket-dispatch CANCEL
+  // without caring what the actor was doing.
+  it('CANCEL from idle lands in cancelled', () => {
+    const snap = run(['CANCEL']);
+    expect(snap.value).toBe('cancelled');
+    expect(snap.status).toBe('done');
+  });
+
+  it('CANCEL from thinking lands in cancelled (master mid-plan)', () => {
+    const snap = run(['THINK', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from proposed lands in cancelled (awaiting approval)', () => {
+    const snap = run(['PROPOSE', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from approved lands in cancelled', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from running lands in cancelled (worker mid-execute)', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from waiting lands in cancelled', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'BLOCK', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from retrying lands in cancelled', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'START_RETRY', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from failed lands in cancelled (user gives up on a stuck run)', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from escalating lands in cancelled', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'FAIL', 'ESCALATE', 'CANCEL']);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from human_escalation lands in cancelled', () => {
+    const snap = run([
+      'PROPOSE',
+      'APPROVE',
+      'START',
+      'FAIL',
+      'ESCALATE',
+      'HUMAN_NEEDED',
+      'CANCEL',
+    ]);
+    expect(snap.value).toBe('cancelled');
+  });
+
+  it('CANCEL from done is a no-op (final states ignore events)', () => {
+    const snap = run(['PROPOSE', 'APPROVE', 'START', 'COMPLETE', 'CANCEL']);
+    expect(snap.value).toBe('done');
+  });
+
+  it('CANCEL from skipped is a no-op', () => {
+    const snap = run(['PROPOSE', 'SKIP', 'CANCEL']);
+    expect(snap.value).toBe('skipped');
+  });
+
+  it('cancelled is final — further events ignored', () => {
+    const actor = createActor(nodeMachine).start();
+    actor.send({ type: 'CANCEL' });
+    expect(actor.getSnapshot().value).toBe('cancelled');
+    expect(actor.getSnapshot().status).toBe('done');
+    expect(() => actor.send({ type: 'THINK' })).not.toThrow();
+    expect(actor.getSnapshot().value).toBe('cancelled');
+    actor.stop();
+  });
+});
+
 describe('nodeMachine — invalid transitions are no-ops', () => {
   it('COMPLETE from idle does nothing', () => {
     const snap = run(['COMPLETE']);

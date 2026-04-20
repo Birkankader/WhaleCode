@@ -71,6 +71,7 @@ const STATE_LABEL: Record<NodeState, string> = {
   human_escalation: 'Needs you',
   done: 'Done',
   skipped: 'Skipped',
+  cancelled: 'Cancelled',
 };
 
 const LOG_VISIBLE_STATES: ReadonlySet<NodeState> = new Set([

@@ -1356,6 +1356,89 @@ describe('graphStore — discard / cancel / reset', () => {
     expect(s.activeSubscription).toBeNull();
   });
 
+  it('StatusChanged(cancelled) sweeps every actor into the cancelled state', async () => {
+    // Bug #5: without the CANCEL fan-out in `handleStatusChanged`, the
+    // master node stayed in `thinking` forever after the user confirmed
+    // a cancel — visually identical to "still running", which is
+    // exactly how users read the cancel as "didn't work." The fan-out
+    // blanket-dispatches CANCEL to every non-final actor; final states
+    // (done/skipped) no-op as XState drops events once a machine is done.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+        { id: 'b', title: 'B', why: null, assignedWorker: 'claude', dependencies: [] },
+      ],
+    });
+    // Snapshots before cancel — SubtasksProposed fanned PROPOSE to
+    // master + each subtask, so they're all in `proposed`. None are
+    // in a final state yet.
+    expect(snap(MASTER_ID)?.value).toBe('proposed');
+    expect(snap('a')?.value).toBe('proposed');
+    expect(snap('b')?.value).toBe('proposed');
+
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'cancelled' });
+
+    // Post-cancel: every actor lands on `cancelled` so the graph stops
+    // animating. The master in particular must not be stuck on
+    // `thinking` — that was the "master alone on screen" symptom.
+    expect(snap(MASTER_ID)?.value).toBe('cancelled');
+    expect(snap('a')?.value).toBe('cancelled');
+    expect(snap('b')?.value).toBe('cancelled');
+  });
+
+  it('cancelRun during submit window defers until the real run id lands', async () => {
+    // Bug #5 race: between `submitTask` setting the optimistic
+    // `pending_*` id and the real backend id landing, a user click on
+    // Cancel would call `cancelRunIpc('pending_xxx')` — an id the
+    // backend doesn't recognise, so `cancel_run` returns `Ok(())` with
+    // no effect and the cancel silently vanished. The fix stashes a
+    // `pendingCancel` flag and fires the IPC once the real id is set.
+    //
+    // We simulate the window by making `submit_task` hang on a promise
+    // we control; `cancelRun` fires mid-hang; we resolve, observe the
+    // flag got consumed, and assert the real id was sent to
+    // `cancel_run` (not the `pending_*` placeholder).
+    let resolveSubmit: (id: string) => void = () => undefined;
+    const submitPromise = new Promise<string>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    invokeHandlers.set('submit_task', () => submitPromise);
+
+    const cancelCalls: unknown[] = [];
+    invokeHandlers.set('cancel_run', async (args) => {
+      cancelCalls.push(args);
+      return undefined;
+    });
+
+    const submitTaskPromise = state().submitTask('x');
+
+    // Mid-submit: the optimistic id is a `pending_*` placeholder.
+    expect(state().runId?.startsWith('pending_')).toBe(true);
+    expect(state().pendingCancel).toBe(false);
+
+    // User clicks Cancel while the IPC is still in flight. cancelRun
+    // sees the pending id and stashes the intent instead of calling
+    // the backend with a bogus id.
+    await state().cancelRun();
+    expect(cancelCalls).toEqual([]);
+    expect(state().pendingCancel).toBe(true);
+
+    // Backend eventually returns the real run id — `submitTask`'s
+    // tail consumes the flag and fires a cancel with the real id.
+    resolveSubmit(BACKEND_RUN_ID);
+    await submitTaskPromise;
+
+    // Drain the microtask that handles the deferred cancel.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(state().pendingCancel).toBe(false);
+    expect(cancelCalls).toHaveLength(1);
+    expect(cancelCalls[0]).toMatchObject({ runId: BACKEND_RUN_ID });
+  });
+
   it('reset detaches subscription and stops actors', async () => {
     await state().submitTask('x');
     const sub = state().activeSubscription;

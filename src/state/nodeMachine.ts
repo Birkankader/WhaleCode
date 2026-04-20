@@ -12,7 +12,8 @@ export type NodeState =
   | 'escalating'
   | 'human_escalation'
   | 'done'
-  | 'skipped';
+  | 'skipped'
+  | 'cancelled';
 
 export type NodeEventType =
   | 'THINK'
@@ -30,7 +31,8 @@ export type NodeEventType =
   | 'ESCALATE'
   | 'REPLAN_DONE'
   | 'HUMAN_NEEDED'
-  | 'MANUAL_FIX';
+  | 'MANUAL_FIX'
+  | 'CANCEL';
 
 export type NodeEvent = { type: NodeEventType };
 
@@ -75,17 +77,20 @@ export const nodeMachine = setup({
       on: {
         THINK: 'thinking',
         PROPOSE: 'proposed',
+        CANCEL: 'cancelled',
       },
     },
     thinking: {
       on: {
         PROPOSE: 'proposed',
+        CANCEL: 'cancelled',
       },
     },
     proposed: {
       on: {
         APPROVE: 'approved',
         SKIP: 'skipped',
+        CANCEL: 'cancelled',
       },
     },
     approved: {
@@ -95,11 +100,13 @@ export const nodeMachine = setup({
         // Master only: re-enters thinking when a subtask escalates and it has
         // to draft a replacement plan. Workers never drive this transition.
         THINK: 'thinking',
+        CANCEL: 'cancelled',
       },
     },
     waiting: {
       on: {
         UNBLOCK: 'approved',
+        CANCEL: 'cancelled',
       },
     },
     running: {
@@ -111,32 +118,44 @@ export const nodeMachine = setup({
         // START_RETRY; we don't guess it from here.
         FAIL: 'failed',
         START_RETRY: 'retrying',
+        CANCEL: 'cancelled',
       },
     },
     retrying: {
       on: {
         RETRY_SUCCESS: 'running',
         RETRY_FAIL: 'failed',
+        CANCEL: 'cancelled',
       },
     },
     failed: {
       on: {
         ESCALATE: 'escalating',
+        CANCEL: 'cancelled',
       },
     },
     escalating: {
       on: {
         REPLAN_DONE: 'done',
         HUMAN_NEEDED: 'human_escalation',
+        CANCEL: 'cancelled',
       },
     },
     human_escalation: {
       on: {
         MANUAL_FIX: 'done',
         SKIP: 'skipped',
+        CANCEL: 'cancelled',
       },
     },
     done: { type: 'final' },
     skipped: { type: 'final' },
+    // User-initiated cancel or approval timeout. Terminal; unlike `failed`,
+    // there's no retry/escalation path — the run is over. The
+    // `handleStatusChanged` bridge dispatches CANCEL to every non-final
+    // actor when the run flips to `status: 'cancelled'` so the graph stops
+    // looking alive (the master node in particular: a frozen `thinking`
+    // spinner with no forward motion is how users read "it didn't work").
+    cancelled: { type: 'final' },
   },
 });
