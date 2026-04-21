@@ -1,5 +1,9 @@
 # WhaleCode
 
+> **v2 redesign in progress.** The content below describes v1 and is preserved for reference only. The product is being rebuilt around a single live execution graph — see [CLAUDE.md](./CLAUDE.md) and [docs/phase-1-spec.md](./docs/phase-1-spec.md) for the current scope. This README will be rewritten at launch prep (Phase 8). Build and run instructions below are not guaranteed to work during the v2 rewrite.
+
+---
+
 A native desktop app that orchestrates multiple CLI-based AI coding agents on shared projects. Built with Tauri v2 (Rust) and React.
 
 ## Supported Agents

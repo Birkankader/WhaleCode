@@ -1,0 +1,188 @@
+import { render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Capture the props `<ReactFlow>` receives so we can assert which event
+// handlers are wired. `@xyflow/react` ships a heavy DOM/canvas stack that
+// we don't want to exercise here — we only care about the handler wiring.
+const reactFlowProps = vi.fn();
+vi.mock('@xyflow/react', () => ({
+  ReactFlow: (props: Record<string, unknown>) => {
+    reactFlowProps(props);
+    return null;
+  },
+  ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useReactFlow: () => ({
+    setViewport: () => undefined,
+    zoomIn: () => undefined,
+    zoomOut: () => undefined,
+  }),
+  // Background / Controls are rendered as ReactFlow's children in v12. The
+  // canvas test only cares about props on <ReactFlow> — stub both to
+  // render-nothing so the import chain resolves without pulling in the
+  // real DOM/canvas stack.
+  Background: () => null,
+  BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
+  Controls: () => null,
+  useStore: () => 1,
+}));
+
+vi.mock('../../hooks/useRecenterShortcut', () => ({
+  useRecenterShortcut: () => undefined,
+}));
+
+vi.mock('../../hooks/useZoomShortcuts', () => ({
+  useZoomShortcuts: () => undefined,
+}));
+
+import { useGraphStore } from '../../state/graphStore';
+
+import { GraphCanvas } from './GraphCanvas';
+
+beforeEach(() => {
+  reactFlowProps.mockClear();
+  // jsdom doesn't ship ResizeObserver — the canvas uses it to track the
+  // container for compact-mode layout. Stub it so the layout effect can run.
+  if (!('ResizeObserver' in globalThis)) {
+    (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      } as unknown as typeof ResizeObserver;
+  }
+  const s = useGraphStore.getState();
+  s.reset();
+  // GraphCanvas early-returns unless it has a master node to render.
+  useGraphStore.setState({
+    masterNode: { id: 'master', label: 'Master', agent: 'claude' },
+  });
+});
+
+afterEach(() => {
+  useGraphStore.getState().reset();
+});
+
+describe('GraphCanvas — pointer-events unblock', () => {
+  // Regression: @xyflow/react NodeWrapper sets inline `pointer-events: none`
+  // whenever a node is non-draggable, non-selectable, and has no node-level
+  // mouse handlers — which matches our config exactly. That inline style
+  // beats our CSS, so inner card onClicks silently stop firing. Passing any
+  // `onNodeClick` (even a noop) flips the wrapper back to pointer-events:all
+  // without enabling RF's built-in selection UI. Losing this prop broke the
+  // entire approval flow in the live app once, so lock it down.
+  it('passes an onNodeClick handler to ReactFlow so node pointer-events stay enabled', () => {
+    render(<GraphCanvas />);
+    expect(reactFlowProps).toHaveBeenCalled();
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(typeof props.onNodeClick).toBe('function');
+  });
+
+  // Step 2 inline-edit guard: RF's default `deleteKeyCode="Backspace"` would
+  // let Backspace inside an input fall through to a graph-level delete if
+  // `elementsSelectable` ever flipped back on. Setting it to null removes
+  // that footgun permanently.
+  it('disables RF deleteKeyCode so Backspace/Delete inside inputs can never delete graph elements', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(props.deleteKeyCode).toBeNull();
+  });
+});
+
+describe('GraphCanvas — zoom and pan wiring', () => {
+  // Phase 3.5 Item 4: zoom out to fit large plans and zoom in to read
+  // streaming logs on a small laptop screen. The previous config had
+  // scroll/pinch zoom turned off and a 1.0 max — the graph could only
+  // shrink, never grow. These asserts lock in the new bounds so a future
+  // "simplify the ReactFlow props" refactor can't silently regress.
+  it('allows zoom up to 2.5 (reading logs) and down to 0.4 (wide plans)', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(props.minZoom).toBe(0.4);
+    expect(props.maxZoom).toBe(2.5);
+  });
+
+  it('scroll-wheel and pinch zoom default on; trackpad pans via drag, not scroll', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    // panOnScroll must be explicitly false so scroll is zoom, not pan.
+    expect(props.panOnScroll).toBe(false);
+    // panOnDrag stays on so middle-click / space-drag still pans.
+    expect(props.panOnDrag).toBe(true);
+    // zoomOnScroll / zoomOnPinch must NOT be explicitly false; RF's
+    // defaults (true) are what we want here.
+    expect(props.zoomOnScroll).toBeUndefined();
+    expect(props.zoomOnPinch).toBeUndefined();
+  });
+
+  it('keeps double-click zoom disabled (reserved for future node actions)', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(props.zoomOnDoubleClick).toBe(false);
+  });
+});
+
+describe('GraphCanvas — per-state worker height', () => {
+  // States that render a LogBlock grow the worker card to 180px so the
+  // title + why + LogBlock stack doesn't overflow the default 140px —
+  // the visual bug that hid `why` behind the LogBlock's opaque dark
+  // background during Phase 3 Step 9 verification.
+  function seedTwoWorkerDag(
+    aState: string,
+    bState: string,
+  ): Array<{ id: string; data: { height?: number } }> {
+    useGraphStore.setState({
+      subtasks: [
+        { id: 'a', title: 'A', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        { id: 'b', title: 'B', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+      ],
+      nodeSnapshots: new Map([
+        ['a', { value: aState as never }],
+        ['b', { value: bState as never }],
+      ]),
+    });
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    return (props.nodes as Array<{ id: string; data: { height?: number } }>) ?? [];
+  }
+
+  it('running worker gets the 180px height override', () => {
+    const nodes = seedTwoWorkerDag('running', 'proposed');
+    const a = nodes.find((n) => n.id === 'a');
+    expect(a?.data.height).toBe(180);
+  });
+
+  it('row-max alignment: proposed neighbour in a running row also renders at 180px', () => {
+    // Same row (layout is one-row default). The row-max lifts `b` to
+    // match `a`'s expanded height so the grid stays visually even.
+    const nodes = seedTwoWorkerDag('running', 'proposed');
+    const b = nodes.find((n) => n.id === 'b');
+    expect(b?.data.height).toBe(180);
+  });
+
+  it('done, retrying, and failed also get 180px (each has a LogBlock)', () => {
+    for (const state of ['done', 'retrying', 'failed']) {
+      reactFlowProps.mockClear();
+      const nodes = seedTwoWorkerDag(state, state);
+      const a = nodes.find((n) => n.id === 'a');
+      expect(a?.data.height, `height for ${state}`).toBe(180);
+    }
+  });
+
+  it('human_escalation still wins at 280px (bigger override takes precedence)', () => {
+    const nodes = seedTwoWorkerDag('human_escalation', 'running');
+    const a = nodes.find((n) => n.id === 'a');
+    const b = nodes.find((n) => n.id === 'b');
+    expect(a?.data.height).toBe(280);
+    // Row-max lifts the running neighbour to 280 too, not 180.
+    expect(b?.data.height).toBe(280);
+  });
+
+  it('states without LogBlock stay at default 140px', () => {
+    for (const state of ['proposed', 'approved', 'waiting', 'skipped']) {
+      reactFlowProps.mockClear();
+      const nodes = seedTwoWorkerDag(state, state);
+      const a = nodes.find((n) => n.id === 'a');
+      expect(a?.data.height, `height for ${state}`).toBe(140);
+    }
+  });
+});

@@ -1,0 +1,18 @@
+dist
+node_modules
+src-tauri/target
+src-tauri/gen
+src/bindings.ts
+pnpm-lock.yaml
+
+# Planning artifacts — not auto-formatted
+.gsd
+.planning
+
+# Prose docs we hand-format (line breaks are deliberate — prettier's
+# markdown reflow destroys careful paragraph and list layout in these).
+docs/architecture.md
+docs/ux-flows.md
+CHANGELOG.md
+CLAUDE.md
+README.md

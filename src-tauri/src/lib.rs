@@ -1,253 +1,102 @@
-mod adapters;
-mod commands;
-mod config;
-mod credentials;
+mod agents;
 mod detection;
+mod editor;
+mod gitignore;
 mod ipc;
-mod messenger;
-mod process;
-mod context;
-mod prompt;
-mod router;
+mod orchestration;
+mod repo;
+mod safety;
+mod settings;
+mod storage;
 mod worktree;
-mod state;
-mod git;
-mod fs_explorer;
-mod error;
-mod utils;
 
-use commands::{
-    cancel_process, check_worktree_conflicts, cleanup_worktrees, create_worktree,
-    delete_claude_api_key, delete_codex_api_key, delete_gemini_api_key, detect_agents, fetch_agent_usage,
-    dispatch_orchestrated_task, dispatch_task, get_agent_context_info, get_context_summary,
-    get_orchestration_history, get_recent_changes, get_task_count, get_worktree_diff, has_claude_api_key, has_codex_api_key,
-    has_gemini_api_key, list_worktrees, merge_worktree, optimize_prompt, pause_process,
-    record_task_completion_cmd, remove_single_worktree, resume_process, get_running_processes, set_claude_api_key, set_codex_api_key,
-    set_gemini_api_key, spawn_claude_task, spawn_codex_task, spawn_gemini_task, spawn_process,
-    send_to_process, start_stream, suggest_tool, validate_claude_result, validate_codex_result,
-    validate_gemini_result, cleanup_completed_processes,
-    clear_orchestration_context, answer_user_question,
-    approve_decomposition, reject_decomposition, approve_orchestration,
-    git_status, git_stage_files, git_unstage_files, git_commit,
-    git_diff_file, git_log, git_pull, git_push,
-    check_git_repo, init_git_repo,
-    list_directory, read_file, write_file,
-    get_config, set_config,
-};
-use state::AppState;
+use std::sync::Arc;
+
+use detection::Detector;
+use ipc::commands;
+use orchestration::{DefaultAgentRegistry, Orchestrator, TauriEventSink};
+use settings::SettingsStore;
+use storage::{migrations, Storage};
 use tauri::Manager;
-use tauri_specta::collect_commands;
+
+/// DB filename under `$app_config_dir`. Shared by `tauri-plugin-sql` (frontend
+/// access) and the Rust-side `Storage` (orchestrator, step 8). Both pools open
+/// the same file; migrations are idempotent so whichever runs first wins.
+const DB_FILENAME: &str = "whalecode.db";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
-        start_stream,
-        get_task_count,
-        spawn_process,
-        cancel_process,
-        pause_process,
-        resume_process,
-        get_running_processes,
-        spawn_claude_task,
-        set_claude_api_key,
-        has_claude_api_key,
-        validate_claude_result,
-        delete_claude_api_key,
-        record_task_completion_cmd,
-        get_recent_changes,
-        get_context_summary,
-        create_worktree,
-        check_worktree_conflicts,
-        get_worktree_diff,
-        merge_worktree,
-        cleanup_worktrees,
-        list_worktrees,
-        remove_single_worktree,
-        spawn_gemini_task,
-        set_gemini_api_key,
-        has_gemini_api_key,
-        validate_gemini_result,
-        delete_gemini_api_key,
-        spawn_codex_task,
-        set_codex_api_key,
-        has_codex_api_key,
-        validate_codex_result,
-        delete_codex_api_key,
-        suggest_tool,
-        dispatch_task,
-        dispatch_orchestrated_task,
-        get_agent_context_info,
-        optimize_prompt,
-        send_to_process,
-        cleanup_completed_processes,
-        clear_orchestration_context,
-        answer_user_question,
-        approve_decomposition,
-        reject_decomposition,
-        approve_orchestration,
-        detect_agents,
-        fetch_agent_usage,
-        git_status,
-        git_stage_files,
-        git_unstage_files,
-        git_commit,
-        git_diff_file,
-        git_log,
-        git_pull,
-        git_push,
-        check_git_repo,
-        init_git_repo,
-        list_directory,
-        read_file,
-        write_file,
-        get_config,
-        set_config,
-        get_orchestration_history,
-    ]);
-
-    #[cfg(debug_assertions)]
-    {
-        let export_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/bindings.ts");
-        println!("Exporting bindings to: {:?}", export_path);
-        builder
-            .export(specta_typescript::Typescript::default(), &export_path)
-            .expect("Failed to export typescript bindings");
-
-        // Post-process: fix TAURI_CHANNEL type alias for TypeScript compatibility.
-        // specta generates `export type TAURI_CHANNEL<TSend> = null` which conflicts
-        // with the Channel import and causes type errors when passing Channel objects.
-        if let Ok(contents) = std::fs::read_to_string(&export_path) {
-            let patched = contents
-                // Fix TAURI_CHANNEL type: null → actual Channel type
-                .replace(
-                    "export type TAURI_CHANNEL<TSend> = null",
-                    "export type TAURI_CHANNEL<TSend> = TAURI_CHANNEL_IMPORT<TSend>",
-                )
-                // Rename Channel import to avoid name conflict with the type alias
-                .replace(
-                    "Channel as TAURI_CHANNEL,",
-                    "Channel as TAURI_CHANNEL_IMPORT,",
-                )
-                // Suppress unused __makeEvents__ warning
-                .replace(
-                    "\nfunction __makeEvents__",
-                    "\n// @ts-ignore — auto-generated by tauri-specta\nfunction __makeEvents__",
-                );
-            let _ = std::fs::write(&export_path, patched);
-        }
-
-        println!("Bindings exported successfully");
-    }
-
-    let invoke_handler = builder.invoke_handler();
-
     tauri::Builder::default()
-        .manage(AppState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(invoke_handler)
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations(&format!("sqlite:{DB_FILENAME}"), migrations::all())
+                .build(),
+        )
         .setup(|app| {
-            // Expand PATH for GUI-launched apps.
-            // Finder/Dock launches get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
-            // that doesn't include Homebrew, npm globals, or user-local bin dirs where
-            // CLI agents (claude, gemini, codex) are typically installed.
-            expand_path_for_gui();
+            // Settings: load once, share via Arc so Detector can hold a clone
+            // while commands borrow through Tauri's `State<Arc<...>>`.
+            let settings_path = settings::resolve_path(app.handle())?;
+            let settings = Arc::new(SettingsStore::load_at(settings_path));
+            app.manage(settings.clone());
 
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                Box::<dyn std::error::Error>::from(format!("Failed to get app_data_dir: {}", e))
-            })?;
-            let db_path =
-                context::store::ContextStore::db_path_for_project(&app_data_dir, "default");
-            let context_store = context::store::ContextStore::new(&db_path).map_err(|e| {
-                Box::<dyn std::error::Error>::from(format!("Failed to init ContextStore: {}", e))
-            })?;
-            app.manage(context_store);
+            // Detector: stateless apart from its settings handle. Arc so the
+            // registry and `detect_agents` command share the same probe.
+            let detector = Arc::new(Detector::new(settings.clone()));
+            app.manage(detector.clone());
+
+            // Storage: Rust-side pool against the same DB file plugin-sql uses.
+            let db_path = app
+                .path()
+                .app_config_dir()
+                .map(|d| d.join(DB_FILENAME))?;
+            let storage = Arc::new(tauri::async_runtime::block_on(Storage::open(&db_path))?);
+            app.manage(storage.clone());
+
+            // Orchestrator: single owner of every in-flight run. Constructed
+            // once here and shared to commands via `State<Arc<Orchestrator>>`.
+            let event_sink = Arc::new(TauriEventSink::new(app.handle().clone()));
+            let registry = Arc::new(DefaultAgentRegistry::new(detector));
+            let orchestrator =
+                Arc::new(Orchestrator::new(settings, storage, event_sink, registry));
+
+            // Sweep stale `Running`/`Merging` rows and orphan worktrees left
+            // by a previous crash. Must run before the frontend attaches a
+            // RunSubscription — frontend window isn't shown until setup
+            // returns, so block_on is the simplest way to honour that
+            // contract. Recovery is bounded (O(active runs) DB + fs ops);
+            // typically zero work.
+            let recovered = tauri::async_runtime::block_on(orchestrator.recover_active_runs());
+            if recovered > 0 {
+                eprintln!("[orchestrator] recovered {recovered} active run(s) from prior session");
+            }
+
+            app.manage(orchestrator);
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("Failed to build Tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                println!("App exiting — killing all tracked processes");
-                let state: tauri::State<AppState> = app_handle.state();
-                let lock_result = state.lock();
-                let mut inner = lock_result;
-                for (_id, proc) in inner.processes.drain() {
-                    let _ = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(proc.pgid),
-                        nix::sys::signal::Signal::SIGKILL,
-                    );
-                }
-            }
-        });
-}
-
-/// Expand the process PATH to include common CLI tool install locations.
-///
-/// When launched from Finder, Dock, or a DMG, macOS gives the app a minimal
-/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`). This misses:
-/// - `/opt/homebrew/bin` (Homebrew on Apple Silicon)
-/// - `/usr/local/bin` (Homebrew on Intel, many installers)
-/// - `~/.local/bin` (Claude Code CLI)
-/// - `~/.cargo/bin` (Rust tools)
-/// - npm/nvm global dirs
-///
-/// We also try `zsh -ilc 'echo $PATH'` to pick up the user's actual shell
-/// PATH (respecting .zshrc, .zprofile, etc). If that fails, we fall back
-/// to appending well-known directories.
-fn expand_path_for_gui() {
-    let current_path = std::env::var("PATH").unwrap_or_default();
-
-    // Try to get the user's real shell PATH
-    if let Ok(output) = std::process::Command::new("/bin/zsh")
-        .args(["-ilc", "echo $PATH"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let shell_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !shell_path.is_empty() && shell_path.contains('/') {
-                // Merge: shell PATH first (has user config), then current PATH
-                let merged = merge_paths(&shell_path, &current_path);
-                std::env::set_var("PATH", &merged);
-                eprintln!("[whalecode] PATH expanded via shell: {} dirs", merged.matches(':').count() + 1);
-                return;
-            }
-        }
-    }
-
-    // Fallback: append well-known directories
-    let home = std::env::var("HOME").unwrap_or_default();
-    let extra_dirs = [
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        &format!("{}/.local/bin", home),
-        &format!("{}/.cargo/bin", home),
-        &format!("{}/.nvm/versions/node/current/bin", home),
-        "/usr/local/share/npm/bin",
-    ];
-
-    let mut parts: Vec<&str> = current_path.split(':').collect();
-    for dir in &extra_dirs {
-        if !parts.contains(dir) && std::path::Path::new(dir).is_dir() {
-            parts.push(dir);
-        }
-    }
-    let expanded = parts.join(":");
-    std::env::set_var("PATH", &expanded);
-    eprintln!("[whalecode] PATH expanded via fallback: {} dirs", parts.len());
-}
-
-/// Merge two PATH strings, deduplicating entries. `primary` entries come first.
-fn merge_paths(primary: &str, secondary: &str) -> String {
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::new();
-    for dir in primary.split(':').chain(secondary.split(':')) {
-        if !dir.is_empty() && seen.insert(dir.to_string()) {
-            result.push(dir);
-        }
-    }
-    result.join(":")
+        .invoke_handler(tauri::generate_handler![
+            commands::submit_task,
+            commands::approve_subtasks,
+            commands::reject_run,
+            commands::apply_run,
+            commands::discard_run,
+            commands::cancel_run,
+            commands::update_subtask,
+            commands::add_subtask,
+            commands::remove_subtask,
+            commands::detect_agents,
+            commands::set_master_agent,
+            commands::get_settings,
+            commands::set_settings,
+            commands::consume_recovery_report,
+            commands::manual_fix_subtask,
+            commands::mark_subtask_fixed,
+            commands::skip_subtask,
+            commands::try_replan_again,
+            repo::pick_repo,
+            repo::validate_repo,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

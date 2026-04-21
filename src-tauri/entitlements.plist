@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Required by WebKit's JavaScriptCore JIT inside WKWebView on
+        signed/notarized macOS builds. Without this entitlement the
+        hardened-runtime loader blocks the JIT allocations WebKit
+        needs at startup, and the app window renders a white screen.
+        Narrower alternative `com.apple.security.cs.allow-jit` is
+        insufficient on some macOS versions we support; this pairs
+        with Tauri's default macOS build flags.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

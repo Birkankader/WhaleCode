@@ -1,0 +1,711 @@
+import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+
+import { NODE_DIMENSIONS } from '../../lib/layout';
+import {
+  isSubtaskAdded,
+  isSubtaskEdited,
+  useGraphStore,
+} from '../../state/graphStore';
+import { isSelectable, useAgentStore } from '../../state/agentStore';
+import type { AgentKind as BackendAgentKind } from '../../lib/ipc';
+import type { NodeState } from '../../state/nodeMachine';
+import { Badge } from '../primitives/Badge';
+import { Chip } from '../primitives/Chip';
+import { Dropdown, type DropdownOption } from '../primitives/Dropdown';
+import { InlineTextEdit } from '../primitives/InlineTextEdit';
+import { NodeContainer } from '../primitives/NodeContainer';
+import { StatusDot } from '../primitives/StatusDot';
+import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
+import { EscalationActions } from './EscalationActions';
+
+export type WorkerNodeData = {
+  state: NodeState;
+  /**
+   * Narrowed to `BackendAgentKind` (no `'master'`) because workers are never
+   * the master actor — `WorkerNode` is only rendered for subtasks, whose
+   * `assignedWorker` comes from the backend as one of the three CLIs. Keeps
+   * the inline worker dropdown well-typed without a cast.
+   */
+  agent: BackendAgentKind;
+  title: string;
+  /** Master's rationale. `null` = no rationale; only visible while `proposed`. */
+  why: string | null;
+  /** Upstream subtask ids. Rendered as `Depends on: #N, #N` while `proposed`. */
+  dependsOn: string[];
+  /**
+   * Subtask ids this node replaces — non-empty only for Layer-2 replan
+   * replacements the master produced after an original worker ran out of
+   * retries. Drives the "replaces #N" badge so lineage is readable.
+   */
+  replaces: string[];
+  retries: number;
+  /**
+   * Layer-2 replans already consumed on this subtask's lineage. The
+   * EscalationActions surface hides "Try replan again" when `>= 2`;
+   * all other states ignore this field. Optional because only relevant
+   * in `human_escalation` state — older test fixtures that build
+   * WorkerNodeData literals by hand can omit it and fall through to 0.
+   */
+  replanCount?: number;
+  /**
+   * Per-node height emitted by `layoutGraph`. The container sizes to
+   * this value so escalated workers can host the EscalationActions
+   * surface (~280px) while the rest of the grid stays at the default
+   * 140px. Optional: defaults to `NODE_DIMENSIONS.worker.height` when
+   * unset.
+   */
+  height?: number;
+};
+
+const STATE_LABEL: Record<NodeState, string> = {
+  idle: 'Queued',
+  thinking: 'Thinking',
+  proposed: 'Proposed',
+  approved: 'Approved',
+  waiting: 'Waiting',
+  running: 'Running',
+  retrying: 'Retrying',
+  failed: 'Failed',
+  escalating: 'Escalating',
+  human_escalation: 'Needs you',
+  done: 'Done',
+  skipped: 'Skipped',
+  cancelled: 'Cancelled',
+};
+
+const LOG_VISIBLE_STATES: ReadonlySet<NodeState> = new Set([
+  'running',
+  'retrying',
+  'done',
+  'failed',
+]);
+
+// 100-char soft limit with a counter after 80 (pre-confirmed with user).
+// Backend enforces a 500-char hard floor; nothing user-visible caps that.
+const TITLE_SOFT_LIMIT = 100;
+const TITLE_SOFT_WARN = 80;
+const TITLE_HARD_LIMIT = 500;
+// `why` is advisory; no soft counter — the 200px textarea max-height is the
+// visual budget and caps are enforced at the backend.
+const WHY_HARD_LIMIT = 2000;
+
+const AGENT_ORDER: readonly BackendAgentKind[] = ['claude', 'codex', 'gemini'];
+
+export function WorkerNode({ id, data }: NodeProps) {
+  const d = data as unknown as WorkerNodeData;
+  const { width } = NODE_DIMENSIONS.worker;
+  // `data.height` is the per-row max emitted by `layoutGraph` — it
+  // expands to ~280px when this or another row-mate is in
+  // `human_escalation` (so the row aligns visually). Fall back to
+  // the default worker height for data shapes that haven't been
+  // through the new layout pipeline (e.g. unit tests that build
+  // nodes by hand).
+  const height = d.height ?? NODE_DIMENSIONS.worker.height;
+  const color = AGENT_COLOR_VAR[d.agent];
+  const isProposed = d.state === 'proposed';
+  const isEscalated = d.state === 'human_escalation';
+  const strikeTitle = d.state === 'escalating' || d.state === 'skipped';
+  const showLogs = LOG_VISIBLE_STATES.has(d.state);
+
+  const isSelected = useGraphStore((s) => s.selectedSubtaskIds.has(id));
+  const toggle = useGraphStore((s) => s.toggleSubtaskSelection);
+  // Subscribe only to this node's logs — identity-stable when other nodes
+  // append so this worker doesn't rerender on every graph-wide log write.
+  const logs = useGraphStore((s) => s.nodeLogs.get(id));
+
+  // Derived provenance badges. Both selectors are cheap (map/set lookups
+  // plus a three-field comparison), and subscribing to the whole state
+  // slice keeps them in sync with both re-plan re-emits and local edits.
+  const edited = useGraphStore((s) => isSubtaskEdited(s, id));
+  const added = useGraphStore((s) => isSubtaskAdded(s, id));
+
+  // Inline-edit one-shot: if the store just coined this id via addSubtask,
+  // auto-enter edit mode on the title. Consume the flag in a layout effect
+  // so we don't re-trigger on re-renders of the same node.
+  const autoEnter = useGraphStore((s) => s.lastAddedSubtaskId === id);
+  const clearLastAdded = useGraphStore((s) => s.clearLastAddedSubtaskId);
+  useLayoutEffect(() => {
+    if (autoEnter) clearLastAdded();
+  }, [autoEnter, clearLastAdded]);
+
+  return (
+    <NodeContainer
+      variant="worker"
+      state={d.state}
+      agentColor={color}
+      width={width}
+      height={height}
+      // Whole-card click is a mouse affordance for toggling selection in
+      // the proposed state. The checkbox is the accessible truth — it
+      // stops propagation below so a direct click doesn't double-toggle.
+      // In proposed state the inner inputs/dropdown all wear `nodrag
+      // nopan` + `stopPropagation` so card-click only fires from empty
+      // padding regions, which is the intended affordance.
+      onClick={isProposed ? () => toggle(id) : undefined}
+      // `group` opts the whole card into Tailwind's group-hover pattern
+      // so the remove button fades in on hover without JS state. Only
+      // relevant while proposed — in other states RemoveButton isn't
+      // rendered and the class is a no-op.
+      className={isProposed ? 'group' : undefined}
+    >
+      <Handle type="target" position={Position.Top} className="!border-0 !bg-transparent" />
+      <header className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {isProposed ? (
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={() => toggle(id)}
+              onClick={(e) => e.stopPropagation()}
+              aria-label={`Select ${d.title || id}`}
+              className="size-3 cursor-pointer accent-[var(--color-agent-master)]"
+            />
+          ) : (
+            <StatusDot color={statusColor(d.state, color)} />
+          )}
+          <span className="text-hint uppercase tracking-wide text-fg-secondary">
+            {STATE_LABEL[d.state]}
+          </span>
+          {isProposed && added ? (
+            <Badge variant="added" tooltip="Added by you — not from master's original plan.">
+              added
+            </Badge>
+          ) : null}
+          {isProposed && edited ? (
+            <Badge variant="edited" tooltip="Modified from master's original plan.">
+              edited
+            </Badge>
+          ) : null}
+          {d.replaces.length > 0 ? <ReplacesBadge ids={d.replaces} /> : null}
+        </div>
+        <div className="flex items-center gap-2">
+          {d.retries > 0 ? (
+            <span className="text-hint text-fg-tertiary">retry {d.retries}</span>
+          ) : null}
+          {isProposed ? <RemoveButton id={id} title={d.title} /> : null}
+        </div>
+      </header>
+
+      {isProposed ? (
+        <ProposedBody id={id} data={d} autoEnter={autoEnter} />
+      ) : (
+        <NonProposedBody title={d.title} why={d.why} strikeTitle={strikeTitle} />
+      )}
+
+      {isEscalated ? (
+        <EscalationActions subtaskId={id} replanCount={d.replanCount ?? 0} />
+      ) : null}
+
+      {showLogs ? <LogBlock lines={logs ?? []} animateCursor={isStreaming(d.state)} /> : null}
+
+      <footer className="mt-auto flex items-center justify-end">
+        {isProposed ? (
+          <WorkerDropdown id={id} value={d.agent} />
+        ) : (
+          <Chip variant="agent" color={color}>
+            {AGENT_LABEL[d.agent]}
+          </Chip>
+        )}
+      </footer>
+      <Handle type="source" position={Position.Bottom} className="!border-0 !bg-transparent" />
+    </NodeContainer>
+  );
+}
+
+// ---------- Proposed-state sub-components ----------
+
+function ProposedBody({
+  id,
+  data,
+  autoEnter,
+}: {
+  id: string;
+  data: WorkerNodeData;
+  autoEnter: boolean;
+}) {
+  const updateSubtask = useGraphStore((s) => s.updateSubtask);
+
+  const onSaveTitle = async (next: string) => {
+    const trimmed = next.trim();
+    await updateSubtask(id, { title: trimmed });
+  };
+
+  const onSaveWhy = async (next: string) => {
+    // Empty string → null → backend clears. InlineTextEdit's "no-op save"
+    // already skips the call when the value didn't change.
+    await updateSubtask(id, { why: next.trim().length === 0 ? null : next });
+  };
+
+  return (
+    <div
+      className="flex min-h-0 flex-col gap-1"
+      // Card-click-to-toggle is an empty-padding affordance. Keep inline
+      // edit clicks from bubbling up so typing in the title doesn't flip
+      // selection on every keystroke focus-change.
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/*
+        `shrink-0` on title: the card is a fixed 140px and the why field
+        below can wrap to multiple lines. Without this, flex's default
+        shrink would squeeze the title to zero height, and the
+        `truncate` class's `overflow: hidden` would clip it invisible —
+        which is exactly what the proposed cards were doing. Title gets
+        to keep its natural one-line height; the why is the one that
+        shrinks+scrolls when the rationale runs long.
+      */}
+      <InlineTextEdit
+        value={data.title}
+        onSave={onSaveTitle}
+        validate={(next) =>
+          next.trim().length === 0 ? 'Title is required.' : null
+        }
+        ariaLabel="Subtask title"
+        textClassName="shrink-0 text-body text-fg-primary truncate"
+        inputClassName="text-body"
+        maxLength={TITLE_HARD_LIMIT}
+        softLimit={TITLE_SOFT_LIMIT}
+        softLimitWarnAt={TITLE_SOFT_WARN}
+        autoEnterEdit={autoEnter}
+        emptyPlaceholder="Untitled subtask"
+      />
+      <InlineTextEdit
+        value={data.why ?? ''}
+        onSave={onSaveWhy}
+        ariaLabel="Subtask rationale"
+        multiline
+        maxLength={WHY_HARD_LIMIT}
+        textClassName="min-h-0 overflow-hidden text-meta text-fg-tertiary"
+        inputClassName="text-meta"
+        emptyPlaceholder="Add context…"
+      />
+      {data.dependsOn.length > 0 ? <DependsOn ids={data.dependsOn} /> : null}
+    </div>
+  );
+}
+
+/**
+ * Read-only body for approved/running/done/escalating WorkerNodes.
+ *
+ * Two visibility guarantees the old `<p>{d.title}</p>` lacked:
+ * - **Empty-title fallback**: an italic "(Untitled subtask)" in tertiary
+ *   so a card whose upstream producer somehow emitted an empty title
+ *   (a user-added subtask the user approved without typing, a master
+ *   parser regression, etc.) never renders as an invisible card body.
+ *   The spec allows empty titles in proposed state; this keeps the
+ *   card legible after the approval boundary without relaxing the
+ *   approval invariant.
+ * - **Why line**: the master's rationale was previously only visible
+ *   while a subtask was in `proposed` state. For `approved`/`running`/
+ *   `done`/`failed` states we render it as a single truncated italic
+ *   line beneath the title — context for the user watching a worker
+ *   execute. Hidden when empty; hovering reveals the full text via
+ *   the native `title` attribute.
+ */
+function NonProposedBody({
+  title,
+  why,
+  strikeTitle,
+}: {
+  title: string;
+  why: string | null;
+  strikeTitle: boolean;
+}) {
+  const emptyTitle = title.trim().length === 0;
+  const visibleWhy = (why ?? '').trim();
+  // `shrink-0` on both lines: the running-state card packs header +
+  // title + why + LogBlock(54px) + chip into a fixed 140px. Without
+  // shrink-0, the `truncate` class's `overflow: hidden` lets flex
+  // squeeze the `<p>` to zero height and the text disappears —
+  // matching the proposed-state bug the title of this component's
+  // twin has. Title and why are both single-line truncated, so keeping
+  // them at natural height is always cheap.
+  return (
+    <div className="flex min-h-0 flex-col gap-0.5">
+      <p
+        className={`shrink-0 truncate text-body ${emptyTitle ? 'italic text-fg-tertiary' : 'text-fg-primary'}`}
+        style={strikeTitle ? { textDecoration: 'line-through' } : undefined}
+        title={title || 'Untitled subtask'}
+      >
+        {emptyTitle ? '(Untitled subtask)' : title}
+      </p>
+      {visibleWhy.length > 0 ? (
+        <p
+          className="shrink-0 truncate text-meta italic text-fg-tertiary"
+          title={visibleWhy}
+          data-testid="worker-why"
+        >
+          {visibleWhy}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReplacesBadge({ ids }: { ids: readonly string[] }) {
+  // Resolve each original id to its 1-indexed position in the current
+  // subtask list so the badge reads "replaces #N" instead of exposing
+  // opaque ulids — same pattern as DependsOn. Unknown ids (possible
+  // transiently during a replan re-emit) are silently dropped; the
+  // badge is display-only and would lie if it referenced a dead row.
+  const subtasks = useGraphStore((s) => s.subtasks);
+  const labels = useMemo(() => {
+    const out: string[] = [];
+    for (const dep of ids) {
+      const idx = subtasks.findIndex((s) => s.id === dep);
+      if (idx >= 0) out.push(`#${idx + 1}`);
+    }
+    return out;
+  }, [ids, subtasks]);
+  if (labels.length === 0) return null;
+  return (
+    <Badge
+      variant="neutral"
+      tooltip="Master replanned — this subtask replaces the originals listed."
+    >
+      replaces {labels.join(', ')}
+    </Badge>
+  );
+}
+
+function DependsOn({ ids }: { ids: readonly string[] }) {
+  // Resolve each id to its 1-indexed position in the current subtask list
+  // so the footer reads "Depends on: #1, #3" rather than exposing opaque
+  // ulids. Unknown ids (possible during a re-plan while the store is
+  // briefly out of sync) are silently dropped — this is display-only.
+  const subtasks = useGraphStore((s) => s.subtasks);
+  // useReactFlow lives behind ReactFlowProvider, which GraphCanvas already
+  // wraps every rendered WorkerNode with. Pulling the helpers here keeps
+  // the pan logic colocated with the render site.
+  const { getNode, setCenter, getViewport } = useReactFlow();
+
+  const labels = useMemo(() => {
+    const out: { id: string; label: string }[] = [];
+    for (const dep of ids) {
+      const idx = subtasks.findIndex((s) => s.id === dep);
+      if (idx >= 0) out.push({ id: dep, label: `#${idx + 1}` });
+    }
+    return out;
+  }, [ids, subtasks]);
+
+  const panToSubtask = (depId: string) => {
+    const node = getNode(depId);
+    // Node may be absent if a re-plan ran between render and click. Graceful
+    // no-op — no crash, no toast; the footer will re-render without the
+    // stale row on the next frame once the store settles.
+    if (!node) return;
+    // Match React Flow's own autoPanOnNodeFocus pattern (see `@xyflow/react`
+    // internals): center = node origin + half-dimensions, preserve current
+    // zoom explicitly. Fall back to the layout dimensions we use at render
+    // time so the calculation is correct even before measured dimensions
+    // land on the node.
+    const w = node.width ?? NODE_DIMENSIONS.worker.width;
+    const h = node.height ?? NODE_DIMENSIONS.worker.height;
+    const cx = node.position.x + w / 2;
+    const cy = node.position.y + h / 2;
+    const { zoom } = getViewport();
+    void setCenter(cx, cy, { zoom, duration: 300 });
+  };
+
+  if (labels.length === 0) return null;
+  return (
+    <div className="text-hint text-fg-tertiary">
+      Depends on:{' '}
+      {labels.map((l, i) => (
+        <span key={l.id}>
+          {i > 0 ? ', ' : null}
+          <button
+            type="button"
+            // nodrag/nopan defeat React Flow's pan-on-drag inside the node;
+            // stopPropagation prevents the card-click-to-select affordance
+            // from firing when the user actually meant to pan.
+            className="nodrag nopan font-mono text-fg-tertiary hover:underline focus-visible:underline focus-visible:outline-none"
+            onClick={(e) => {
+              e.stopPropagation();
+              panToSubtask(l.id);
+            }}
+            aria-label={`Pan to subtask ${l.label}`}
+            data-testid={`depends-on-link-${l.id}`}
+          >
+            {l.label}
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function WorkerDropdown({ id, value }: { id: string; value: BackendAgentKind }) {
+  const detection = useAgentStore((s) => s.detection);
+  const updateSubtask = useGraphStore((s) => s.updateSubtask);
+
+  // Only offer CLIs the detector flagged `available`. An agent that's
+  // broken / not-installed would be rejected by the backend, so not
+  // exposing it keeps the dropdown honest.
+  const options: DropdownOption<BackendAgentKind>[] = AGENT_ORDER.filter((agent) =>
+    isSelectable(detection?.[agent]),
+  ).map((agent) => ({
+    value: agent,
+    label: AGENT_LABEL[agent],
+  }));
+
+  // If the current value isn't in the available list (detection hasn't
+  // finished, or the user's environment changed mid-run) surface it as
+  // a disabled single-option trigger rather than flipping to something
+  // else unbidden.
+  const color = AGENT_COLOR_VAR[value];
+
+  return (
+    <Dropdown<BackendAgentKind>
+      value={value}
+      options={options.length > 0 ? options : [{ value, label: AGENT_LABEL[value] }]}
+      onChange={(next) => {
+        if (next === value) return;
+        void updateSubtask(id, { assignedWorker: next });
+      }}
+      ariaLabel={`Worker for ${id}`}
+      renderTrigger={({ toggle, open, triggerRef }) => (
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle();
+          }}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-label={`Worker for ${id}`}
+          className="nodrag nopan inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-hint hover:bg-bg-subtle/40"
+          style={{ borderColor: color, color }}
+        >
+          {AGENT_LABEL[value]}
+          <span aria-hidden style={{ fontSize: 8, opacity: 0.8 }}>
+            ▼
+          </span>
+        </button>
+      )}
+    />
+  );
+}
+
+function RemoveButton({ id, title }: { id: string; title: string }) {
+  const removeSubtask = useGraphStore((s) => s.removeSubtask);
+  const [confirming, setConfirming] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  const arm = () => {
+    setConfirming(true);
+    // Auto-dismiss after 4s so the user can't be nagged into confirming
+    // if they mis-clicked and walked away.
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => setConfirming(false), 4000);
+  };
+
+  // Clear the pending dismiss timer if the button unmounts (e.g. subtask
+  // transitioned out of `proposed` while the confirm prompt was open).
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  const confirm = () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setConfirming(false);
+    void removeSubtask(id);
+  };
+
+  if (confirming) {
+    return (
+      <span
+        className="nodrag nopan flex items-center gap-1 text-hint"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <span style={{ color: 'var(--color-status-failed)' }}>Remove?</span>
+        <button
+          type="button"
+          onClick={confirm}
+          className="rounded-sm border px-1 py-0.5"
+          style={{
+            borderColor: 'var(--color-status-failed)',
+            color: 'var(--color-status-failed)',
+          }}
+          aria-label={`Confirm remove ${title || id}`}
+        >
+          Yes
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="rounded-sm border px-1 py-0.5 text-fg-tertiary"
+          style={{ borderColor: 'var(--color-border-default)' }}
+          aria-label={`Cancel remove ${title || id}`}
+        >
+          No
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        arm();
+      }}
+      aria-label={`Remove ${title || id}`}
+      className="nodrag nopan flex size-4 items-center justify-center rounded-sm text-fg-tertiary opacity-0 transition-opacity duration-150 ease-out hover:bg-bg-subtle/40 focus-visible:opacity-100 group-hover:opacity-100"
+      data-testid="worker-remove-button"
+    >
+      <span aria-hidden style={{ fontSize: 11, lineHeight: 1 }}>
+        ×
+      </span>
+    </button>
+  );
+}
+
+// Backend emits this reserved-prefix marker on the log channel right
+// before the second (retry) attempt begins — see
+// `execute_subtask_with_retry` in dispatcher.rs. We render it as a
+// thin horizontal rule with the previous error inline rather than a
+// normal log line so the user can see where attempt 1 ended and
+// attempt 2 began.
+const RETRY_LOG_MARKER = '[whalecode] retry';
+
+function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateCursor: boolean }) {
+  const tail = lines.slice(-3);
+  // Done / failed with no logs emitted: don't render the block at all —
+  // a placeholder would mislead the user into thinking output is still
+  // coming. The card's terminal-state border already communicates the
+  // outcome, and our per-state height (180px) stays reserved so the
+  // layout doesn't shift.
+  if (tail.length === 0 && !animateCursor) return null;
+  return (
+    <div
+      // Background intentionally transparent — inherits bg-elevated from
+      // the card. The older darker `bg-primary` fill created a stark
+      // black rectangle during the brief window before the first log
+      // line arrived; with the placeholder row below, the terminal
+      // identity comes from font-mono + italic waiting hint + cursor,
+      // not from a darker fill.
+      className="font-mono text-fg-tertiary"
+      style={{
+        padding: '6px 8px',
+        fontSize: 10,
+        lineHeight: 1.5,
+        height: 54,
+        overflow: 'hidden',
+      }}
+      data-testid="worker-log-block"
+    >
+      {tail.length === 0 ? (
+        <div className="truncate italic" data-testid="worker-log-waiting">
+          Waiting for output…
+          <BlinkingCursor />
+        </div>
+      ) : (
+        tail.map((line, i) => {
+          const isLast = i === tail.length - 1;
+          if (line.startsWith(RETRY_LOG_MARKER)) {
+            return (
+              <RetrySeparator
+                key={`${i}-retry`}
+                prevError={extractRetryError(line)}
+              />
+            );
+          }
+          return (
+            <div key={`${i}-${line}`} className="truncate">
+              <LogLine line={line} />
+              {isLast && animateCursor ? <BlinkingCursor /> : null}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+/** Strip the `[whalecode] retry: ` prefix, leaving the failure message. */
+function extractRetryError(line: string): string {
+  const rest = line.slice(RETRY_LOG_MARKER.length);
+  return rest.startsWith(':') ? rest.slice(1).trim() : rest.trim();
+}
+
+function RetrySeparator({ prevError }: { prevError: string }) {
+  return (
+    <div
+      className="flex items-center gap-2 truncate"
+      style={{
+        color: 'var(--color-status-retry)',
+        borderTop: '1px dashed var(--color-status-retry)',
+        paddingTop: 2,
+        marginTop: 2,
+      }}
+      data-testid="worker-log-retry-separator"
+      title={prevError}
+    >
+      <span>── retrying after failure</span>
+      {prevError ? (
+        <span className="truncate text-fg-tertiary" style={{ fontStyle: 'italic' }}>
+          {prevError}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function LogLine({ line }: { line: string }) {
+  const first = line.charAt(0);
+  const color = PREFIX_COLOR[first];
+  if (!color) return <>{line}</>;
+  return (
+    <>
+      <span style={{ color }}>{first}</span>
+      {line.slice(1)}
+    </>
+  );
+}
+
+function BlinkingCursor() {
+  return (
+    <span
+      aria-hidden
+      style={{
+        display: 'inline-block',
+        marginLeft: 2,
+        width: 6,
+        height: '1em',
+        verticalAlign: '-0.15em',
+        background: 'currentColor',
+        animation: 'log-cursor-blink 1s step-end infinite',
+      }}
+    />
+  );
+}
+
+const PREFIX_COLOR: Record<string, string> = {
+  '✓': 'var(--color-status-success)',
+  '→': 'var(--color-fg-tertiary)',
+  '⚠': 'var(--color-status-retry)',
+  '✗': 'var(--color-status-failed)',
+};
+
+function isStreaming(state: NodeState): boolean {
+  return state === 'running' || state === 'retrying';
+}
+
+function statusColor(state: NodeState, agent: string): string {
+  if (state === 'done') return 'var(--color-status-success)';
+  if (state === 'failed' || state === 'human_escalation') return 'var(--color-status-failed)';
+  if (state === 'retrying' || state === 'escalating') return 'var(--color-status-retry)';
+  if (state === 'waiting' || state === 'skipped') return 'var(--color-fg-tertiary)';
+  return agent;
+}

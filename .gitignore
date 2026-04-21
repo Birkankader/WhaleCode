@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# Environment files — must never be committed (may contain API keys)
+.env
+.env.*
+!.env.example
+
+# Build / tooling scratch
+output/
+.bg-shell/
+.whalecode-worktrees/
+.claude/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,29 +33,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.bg-shell/
-
-# ── GSD baseline (auto-generated) ──
-Thumbs.db
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-*.code-workspace
-.env
-.env.*
-!.env.example
-node_modules/
-.next/
-dist/
-build/
-__pycache__/
-*.pyc
-.venv/
-venv/
-target/
-vendor/
-coverage/
-.cache/
-tmp/
