@@ -101,16 +101,23 @@ describe('GraphCanvas — zoom and pan wiring', () => {
     expect(props.maxZoom).toBe(2.5);
   });
 
-  it('scroll-wheel and pinch zoom default on; trackpad pans via drag, not scroll', () => {
+  it('scroll = pan, pinch = zoom, drag = pan — matches every map/design tool', () => {
     render(<GraphCanvas />);
     const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
-    // panOnScroll must be explicitly false so scroll is zoom, not pan.
-    expect(props.panOnScroll).toBe(false);
-    // panOnDrag stays on so middle-click / space-drag still pans.
+    // panOnScroll true so scroll-wheel and two-finger trackpad pan
+    // the canvas. Commit 4's scroll-to-zoom flip broke drag-pan on
+    // dense graphs (no empty space to grab), so we're back on RF's
+    // natural default. Cmd/Ctrl + scroll still zooms via RF's
+    // built-in zoomActivationKeyCode (default = Meta).
+    expect(props.panOnScroll).toBe(true);
+    // zoomOnScroll must be explicitly false — otherwise scroll both
+    // pans AND zooms, which is chaos.
+    expect(props.zoomOnScroll).toBe(false);
+    // panOnDrag stays on for middle-click / space-drag / empty-area
+    // drag pans; nodesDraggable is false so node drags fall through
+    // to canvas drag when they start inside a node's footprint.
     expect(props.panOnDrag).toBe(true);
-    // zoomOnScroll / zoomOnPinch must NOT be explicitly false; RF's
-    // defaults (true) are what we want here.
-    expect(props.zoomOnScroll).toBeUndefined();
+    // zoomOnPinch left as RF default (true) so trackpad pinch zooms.
     expect(props.zoomOnPinch).toBeUndefined();
   });
 
