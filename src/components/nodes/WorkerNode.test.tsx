@@ -947,3 +947,161 @@ describe('WorkerNode — auto-enter edit for newly-added subtask', () => {
     expect(screen.queryByLabelText('Subtask title')).toBeNull();
   });
 });
+
+describe('WorkerNode — file-count chip + diff popover', () => {
+  // Phase 3.5 Item 6: once the backend emits `run:subtask_diff` the
+  // store populates `subtaskDiffs` by subtask id. Done/failed/etc.
+  // workers render a chip reading "N files" that opens a popover
+  // listing each path with +/- counts. The chip is hidden until the
+  // diff lands (no chip during `running`/`proposed`) and hidden on
+  // proposed cards entirely (they haven't run yet).
+  function seedDiff(id: string, files: Array<{ path: string; additions: number; deletions: number }>) {
+    useGraphStore.setState({
+      subtaskDiffs: new Map([[id, Object.freeze(files.slice())]]),
+    });
+  }
+
+  it('renders the "N files" chip on a done worker once a diff is recorded', () => {
+    seedDiff('auth', [
+      { path: 'src/auth.ts', additions: 10, deletions: 2 },
+      { path: 'tests/auth.test.ts', additions: 40, deletions: 0 },
+    ]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 'Add login',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/2 files/);
+  });
+
+  it('singular "1 file" when exactly one path changed', () => {
+    seedDiff('auth', [{ path: 'src/auth.ts', additions: 5, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 'Tweak',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/1 file\b/);
+  });
+
+  it('chip is absent while the subtask is still running (no diff yet)', () => {
+    // No entry in `subtaskDiffs` — the store map is empty.
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Running',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.queryByTestId('worker-file-count-chip')).toBeNull();
+  });
+
+  it('chip is absent on proposed cards even if a diff is somehow present', () => {
+    // Defensive: a diff for a proposed subtask shouldn't happen (the
+    // backend emits diffs during Apply, long after the subtask left
+    // proposed). Chip must still hide because the proposed state has
+    // the checkbox + approval UI in the same region.
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Pending',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.queryByTestId('worker-file-count-chip')).toBeNull();
+  });
+
+  it('clicking the chip opens the popover with path + +/- counts', () => {
+    seedDiff('auth', [
+      { path: 'src/auth.ts', additions: 10, deletions: 2 },
+      { path: 'tests/auth.test.ts', additions: 40, deletions: 0 },
+    ]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 'Add login',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    // Closed on mount.
+    expect(screen.queryByTestId('diff-popover')).toBeNull();
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'));
+    const popover = screen.getByTestId('diff-popover');
+    expect(popover).toBeDefined();
+    expect(popover.textContent).toMatch(/src\/auth\.ts/);
+    expect(popover.textContent).toMatch(/\+10/);
+    expect(popover.textContent).toMatch(/−2/);
+    expect(popover.textContent).toMatch(/tests\/auth\.test\.ts/);
+  });
+
+  it('clicking the chip again closes the popover (toggle)', () => {
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const chip = screen.getByTestId('worker-file-count-chip');
+    fireEvent.click(chip);
+    expect(screen.getByTestId('diff-popover')).toBeDefined();
+    fireEvent.click(chip);
+    expect(screen.queryByTestId('diff-popover')).toBeNull();
+  });
+
+  it('pressing Escape dismisses the popover', () => {
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'));
+    expect(screen.getByTestId('diff-popover')).toBeDefined();
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('diff-popover')).toBeNull();
+  });
+
+  it('"0 files" popover renders the "touched no files" empty state', () => {
+    seedDiff('auth', []);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/0 files/);
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'));
+    const popover = screen.getByTestId('diff-popover');
+    expect(popover.textContent).toMatch(/touched no files/i);
+    // Empty state replaces the list — assert no list rendered.
+    expect(screen.queryByTestId('diff-popover-list')).toBeNull();
+  });
+});

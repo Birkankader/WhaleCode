@@ -70,6 +70,14 @@ const REPLAN_LOG_TAIL_LINES: usize = 50;
 /// third. Matches spec Decision 3 ("max 2 master replans").
 pub(crate) const REPLAN_LINEAGE_CAP: u32 = 2;
 
+/// Phase 3.5 Item 2: how often to emit "still planning… (Ns elapsed)"
+/// heartbeats on the master log while waiting on `AgentImpl::plan`.
+/// 10s was picked over the 5s that matches the worker log tail
+/// because (a) claude typically plans in 3-5s so a single heartbeat
+/// is rare on the happy path, and (b) gemini can sit silent for
+/// ~230s and the user needs ~23 heartbeats, not 46.
+const PLAN_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Outcome of a Layer-2 replan attempt. Distinct from [`DispatchOutcome`]
 /// so the lifecycle can decide whether to loop back into approval
 /// (`NewPlan`), park on human escalation (`Escalated`), or finalize the
@@ -261,9 +269,35 @@ pub async fn run_lifecycle(
     let available_workers = deps.registry.available().await;
     let ctx = build_planning_context(&repo_root, available_workers).await;
 
-    let plan_result = tokio::select! {
-        p = master.plan(&task_text, ctx, cancel.clone()) => p,
-        _ = cancel.cancelled() => Err(AgentError::Cancelled),
+    // Phase 3.5 Item 2: the master CLI is opaque while it plans — claude
+    // uses `--print --output-format json` which emits the envelope only
+    // at completion, and gemini can sit silent for ~230s (see the
+    // benchmark in `docs/KNOWN_ISSUES.md`). Without a heartbeat the user
+    // stares at a spinning chip with no sense of progress. Emit a
+    // `MasterLog` every `PLAN_HEARTBEAT_INTERVAL` with elapsed seconds so
+    // the master-log surface shows motion. The ticker stops naturally
+    // when `plan()` resolves and the select arm drops the future.
+    let plan_started = std::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(PLAN_HEARTBEAT_INTERVAL);
+    // First tick fires immediately — skip it; the "planning with …"
+    // line emitted above already establishes the T=0 signal.
+    heartbeat.tick().await;
+    let plan_fut = master.plan(&task_text, ctx, cancel.clone());
+    tokio::pin!(plan_fut);
+    let plan_result = loop {
+        tokio::select! {
+            p = &mut plan_fut => break p,
+            _ = cancel.cancelled() => break Err(AgentError::Cancelled),
+            _ = heartbeat.tick() => {
+                let elapsed = plan_started.elapsed().as_secs();
+                deps.event_sink
+                    .emit(RunEvent::MasterLog {
+                        run_id: run_id.clone(),
+                        line: format!("still planning… ({elapsed}s elapsed)"),
+                    })
+                    .await;
+            }
+        }
     };
 
     let plan = match plan_result {
@@ -599,6 +633,22 @@ async fn merge_phase(
                 continue;
             }
         };
+        // Phase 3.5 Item 6: emit a per-subtask diff *before* folding
+        // into the aggregate. The UI uses this for the per-worker
+        // "N files" chip + click-to-inspect popover; the aggregate
+        // `DiffReady` still drives the final node. Always emit — an
+        // empty `files` vec is a valid signal ("this worker ran but
+        // touched nothing"), and keeps the frontend map in sync with
+        // the set of done subtasks rather than silently skipping.
+        let per_subtask_wire: Vec<IpcFileDiff> =
+            diffs.iter().map(worktree_to_ipc_diff).collect();
+        deps.event_sink
+            .emit(RunEvent::SubtaskDiff {
+                run_id: run_id.clone(),
+                subtask_id: sub_id.clone(),
+                files: per_subtask_wire,
+            })
+            .await;
         for fd in diffs {
             if !by_path.contains_key(&fd.path) {
                 order.push(fd.path.clone());

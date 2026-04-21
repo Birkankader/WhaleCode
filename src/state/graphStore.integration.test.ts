@@ -51,6 +51,7 @@ import {
   EVENT_MERGE_CONFLICT,
   EVENT_REPLAN_STARTED,
   EVENT_STATUS_CHANGED,
+  EVENT_SUBTASK_DIFF,
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
   EVENT_SUBTASKS_PROPOSED,
@@ -705,6 +706,44 @@ describe('graphStore — apply / conflict / completed', () => {
     expect(s.status).toBe('applied');
     expect(s.finalNode?.conflictFiles).toBeNull();
     expect(s.activeSubscription).toBeNull();
+  });
+
+  it('SubtaskDiff populates subtaskDiffs map keyed by subtask id', async () => {
+    // Phase 3.5 Item 6: per-subtask diff arrives incrementally during
+    // the Apply pre-merge pass. Each event fills in one map entry;
+    // siblings coexist; empty-file vecs are preserved (the UI uses
+    // them to render "0 files" rather than hide the chip).
+    await state().submitTask('x');
+    emit(EVENT_SUBTASK_DIFF, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'sub-a',
+      files: [
+        { path: 'src/a.ts', additions: 5, deletions: 1 },
+        { path: 'src/b.ts', additions: 2, deletions: 0 },
+      ],
+    });
+    emit(EVENT_SUBTASK_DIFF, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'sub-b',
+      files: [],
+    });
+
+    const diffs = state().subtaskDiffs;
+    expect(diffs.get('sub-a')).toEqual([
+      { path: 'src/a.ts', additions: 5, deletions: 1 },
+      { path: 'src/b.ts', additions: 2, deletions: 0 },
+    ]);
+    expect(diffs.get('sub-b')).toEqual([]);
+  });
+
+  it('SubtaskDiff scoped to another run is ignored', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASK_DIFF, {
+      runId: 'some-other-run',
+      subtaskId: 'sub-a',
+      files: [{ path: 'ignored.ts', additions: 1, deletions: 0 }],
+    });
+    expect(state().subtaskDiffs.has('sub-a')).toBe(false);
   });
 
   it('DiffReady populates finalNode.files, spawns the node, and activates its actor', async () => {

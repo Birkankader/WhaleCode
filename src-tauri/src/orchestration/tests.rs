@@ -1547,6 +1547,86 @@ async fn apply_happy_path_reaches_done_with_summary() {
 }
 
 #[tokio::test]
+async fn apply_emits_subtask_diff_per_done_subtask_before_aggregate() {
+    // Phase 3.5 Item 6: each done subtask gets its own `SubtaskDiff`
+    // event during the Apply pre-merge pass, emitted in plan order and
+    // *before* the aggregate `DiffReady`. The UI uses these to light up
+    // per-worker "N files" chips + popover before the final node's
+    // combined diff lands.
+    let agent = agent_writing(&[
+        ("t0", vec![("a.txt", "hello\n")]),
+        ("t1", vec![("b.txt", "world\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("two writes".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+
+    // Wait for DiffReady (the aggregate) — at that point both per-
+    // subtask diffs must already be in the event log.
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Pull the full event snapshot and filter to this run.
+    let events = h.sink.snapshot().await;
+    let mut per_subtask: Vec<(String, Vec<String>)> = Vec::new();
+    let mut aggregate_index: Option<usize> = None;
+    for (i, ev) in events.iter().enumerate() {
+        match ev {
+            RunEvent::SubtaskDiff {
+                run_id: r,
+                subtask_id,
+                files,
+            } if *r == run_id => {
+                per_subtask.push((
+                    subtask_id.clone(),
+                    files.iter().map(|f| f.path.clone()).collect(),
+                ));
+            }
+            RunEvent::DiffReady { run_id: r, .. } if *r == run_id => {
+                aggregate_index = Some(i);
+            }
+            _ => {}
+        }
+    }
+
+    // Order invariant: every SubtaskDiff for this run must precede the
+    // aggregate DiffReady.
+    let aggregate_i = aggregate_index.expect("DiffReady observed above");
+    for (i, ev) in events.iter().enumerate() {
+        if matches!(ev, RunEvent::SubtaskDiff { run_id: r, .. } if *r == run_id) {
+            assert!(
+                i < aggregate_i,
+                "SubtaskDiff at {i} should precede DiffReady at {aggregate_i}"
+            );
+        }
+    }
+
+    // One event per done subtask, each carrying the file that worker
+    // wrote. Plan order → the fake writer uses t0 and t1 as subtask
+    // titles; the ids in the store are the ulids assigned at plan time.
+    assert_eq!(
+        per_subtask.len(),
+        2,
+        "expected one SubtaskDiff per done subtask, got {per_subtask:?}"
+    );
+    let all_files: Vec<&String> = per_subtask
+        .iter()
+        .flat_map(|(_, files)| files.iter())
+        .collect();
+    assert!(all_files.iter().any(|p| p.ends_with("a.txt")));
+    assert!(all_files.iter().any(|p| p.ends_with("b.txt")));
+}
+
+#[tokio::test]
 async fn apply_conflict_keeps_run_in_merging_and_emits_merge_conflict() {
     // Two subtasks write the SAME file with DIFFERENT content →
     // merge of the second branch conflicts.
