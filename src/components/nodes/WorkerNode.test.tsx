@@ -114,6 +114,85 @@ describe('WorkerNode — card-click selection in proposed state', () => {
   });
 });
 
+describe('WorkerNode — proposed-state dim on deselection', () => {
+  // Commit 5 (Phase 3.5 Item 5): unticked proposed subtasks dim to 50%
+  // opacity with a neutral gray border so the surviving selection reads
+  // as the focus. Only applies while proposed — running/done/failed
+  // cards never belong to the approval set and must ignore selection.
+
+  /** Find the outermost NodeContainer div rendered by WorkerNode. */
+  function rootContainer(container: HTMLElement): HTMLElement {
+    const el = container.querySelector('[style*="width"]');
+    if (!el) throw new Error('NodeContainer root not found');
+    return el as HTMLElement;
+  }
+
+  it('proposed + unselected renders at 50% opacity with a neutral gray border', () => {
+    // Reset is enough: selectedSubtaskIds defaults to an empty Set so
+    // any id is treated as unticked.
+    const { container } = renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Unticked',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    expect(root.style.opacity).toBe('0.5');
+    expect(root.style.border).toContain('dashed');
+    expect(root.style.border).toContain('var(--color-border-default)');
+  });
+
+  it('proposed + selected renders at full opacity with the pending-yellow border', () => {
+    useGraphStore.setState({ selectedSubtaskIds: new Set(['auth']) });
+    const { container } = renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Ticked',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    // Empty string means the dim's inline opacity override didn't fire.
+    expect(root.style.opacity).toBe('');
+    expect(root.style.border).toContain('var(--color-status-pending)');
+  });
+
+  it('non-proposed states never dim even when absent from selection', () => {
+    // Running subtask with an empty selection set: must not dim.
+    useGraphStore.setState({ selectedSubtaskIds: new Set() });
+    const { container } = renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Running subtask',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    expect(root.style.opacity).toBe('');
+  });
+
+  it('declares the 100ms opacity transition so tick/untick feels like a fade, not a jump', () => {
+    const { container } = renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Unticked',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    expect(root.style.transition).toContain('opacity 100ms');
+  });
+});
+
 describe('WorkerNode — inline edit surfaces (proposed only)', () => {
   it('proposed renders editable title + why triggers', () => {
     renderNode('auth', {

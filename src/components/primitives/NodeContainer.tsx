@@ -23,6 +23,15 @@ type Props = {
    * (the remove button fades in via `group-hover:opacity-100`).
    */
   className?: string;
+  /**
+   * Marks the card as "not in the current approval selection" — only set
+   * by WorkerNode when a proposed subtask has been unticked. Visually
+   * pushes the card to 50% opacity and drops the pending-yellow border
+   * to the neutral gray, so the surviving selection reads as the focus
+   * at a glance. Ignored when the state is anything other than
+   * `proposed` (caller's responsibility).
+   */
+  dimmed?: boolean;
 };
 
 /**
@@ -38,14 +47,34 @@ export function NodeContainer({
   height,
   onClick,
   className,
+  dimmed,
   children,
 }: PropsWithChildren<Props>) {
   const style = styleForState(variant, state, agentColor);
+  // Dimmed takes precedence over the state's own border+opacity so
+  // unselected proposed cards all read the same regardless of whether
+  // the underlying state style set opacity. 100ms matches the tight
+  // feedback loop we want when the user ticks/unticks a subtask —
+  // faster than a noticeable animation, slow enough to feel like a
+  // transition rather than a jump.
+  const dimmedStyle = dimmed
+    ? {
+        border: '1px dashed var(--color-border-default)',
+        opacity: 0.5,
+      }
+    : undefined;
   const base = 'flex h-full w-full flex-col gap-1 rounded-md bg-bg-elevated px-3 py-2';
   return (
     <div
       className={className ? `${base} ${className}` : base}
-      style={{ width, height, cursor: onClick ? 'pointer' : undefined, ...style }}
+      style={{
+        width,
+        height,
+        cursor: onClick ? 'pointer' : undefined,
+        transition: 'opacity 100ms ease-out, border-color 100ms ease-out',
+        ...style,
+        ...dimmedStyle,
+      }}
       onClick={onClick}
     >
       {children}

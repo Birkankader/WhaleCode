@@ -148,6 +148,11 @@ export function WorkerNode({ id, data }: NodeProps) {
       // relevant while proposed — in other states RemoveButton isn't
       // rendered and the class is a no-op.
       className={isProposed ? 'group' : undefined}
+      // Dim proposed subtasks the user has unticked so the surviving
+      // selection reads as the focus. Gated on `isProposed` because
+      // `isSelected` is stale noise once execution starts (running /
+      // done / failed cards never belong to the approval set).
+      dimmed={isProposed && !isSelected}
     >
       <Handle type="target" position={Position.Top} className="!border-0 !bg-transparent" />
       <header className="flex items-center justify-between">
