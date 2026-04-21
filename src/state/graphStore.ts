@@ -277,6 +277,22 @@ export type GraphState = {
    */
   applySummary: ApplySummary | null;
   /**
+   * Phase 4 Step 3: subtask ids whose worker card is expanded to show
+   * the full scrollable log. Per-node, in-session only — cleared on
+   * `reset` / new submit. Lives in the store (not in local component
+   * state) so it survives node re-renders triggered by graph-wide
+   * recomputes, is observable for tests, and so the layout pass in
+   * `GraphCanvas` can promote these ids to the tall (~560px) height
+   * tier without prop-drilling through WorkerNode.
+   *
+   * Only promoted for non-proposed states: the proposed-state card is
+   * already a click target (selection toggle), and there's no log
+   * content to expand into. `toggleWorkerExpanded` enforces this at
+   * the caller (WorkerNode gates on state); the store itself is
+   * permissive so tests can set arbitrary ids.
+   */
+  workerExpanded: ReadonlySet<string>;
+  /**
    * Bug #5 follow-up: the window between `submitTask`'s optimistic local
    * runId (`pending_*`) and the real backend runId landing is roughly an
    * IPC round-trip, but if the user clicks Cancel in that window the
@@ -363,6 +379,15 @@ export type GraphState = {
    * worth preserving since a fresh submit would `reset()` anyway.
    */
   dismissApplySummary: () => void;
+  /**
+   * Phase 4 Step 3: toggle worker card expand/collapse. WorkerNode
+   * gates this on state (disabled in `proposed`); the store itself
+   * is permissive. `GraphCanvas.buildGraph` promotes expanded ids
+   * to the ~560px height tier, and `layoutGraph` runs as usual —
+   * row-max alignment means a whole row expands when any one worker
+   * does, which keeps the visual grid honest.
+   */
+  toggleWorkerExpanded: (subtaskId: SubtaskId) => void;
   reset: () => void;
 };
 
@@ -474,6 +499,7 @@ const initial: Pick<
   | 'autoApproved'
   | 'autoApproveSuspended'
   | 'applySummary'
+  | 'workerExpanded'
   | 'pendingCancel'
   | 'cancelInFlight'
 > = {
@@ -500,6 +526,7 @@ const initial: Pick<
   autoApproved: null,
   autoApproveSuspended: null,
   applySummary: null,
+  workerExpanded: new Set(),
   pendingCancel: false,
   cancelInFlight: false,
 };
@@ -838,12 +865,22 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const nextLogs = new Map(state.nodeLogs);
         const nextRetries = new Map(state.subtaskRetryCounts);
         const nextDiffs = new Map(state.subtaskDiffs);
+        // Step 3: same scrub pattern for the expand set — an expanded
+        // subtask dropped by a replan shouldn't leave a dangling id
+        // that would silently promote the next reused ulid to expand
+        // state. Only allocate a new Set when something would actually
+        // be removed, so identity stays stable on the common path.
+        let nextExpanded: Set<string> | null = null;
         for (const id of removedIds) {
           nextActors.delete(id);
           nextSnaps.delete(id);
           nextLogs.delete(id);
           nextRetries.delete(id);
           nextDiffs.delete(id);
+          if (state.workerExpanded.has(id)) {
+            if (!nextExpanded) nextExpanded = new Set(state.workerExpanded);
+            nextExpanded.delete(id);
+          }
         }
         return {
           nodeActors: nextActors,
@@ -851,6 +888,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
           nodeLogs: nextLogs,
           subtaskRetryCounts: nextRetries,
           subtaskDiffs: nextDiffs,
+          ...(nextExpanded ? { workerExpanded: nextExpanded } : {}),
         };
       });
     }
@@ -1575,6 +1613,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
       get().reset();
     },
 
+    toggleWorkerExpanded(subtaskId) {
+      set((state) => {
+        const next = new Set(state.workerExpanded);
+        if (next.has(subtaskId)) next.delete(subtaskId);
+        else next.add(subtaskId);
+        return { workerExpanded: next };
+      });
+    },
+
     reset() {
       detachActiveSubscription();
       for (const actor of get().nodeActors.values()) actor.stop();
@@ -1590,6 +1637,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         lastAddedSubtaskId: null,
         replanningSubtaskId: null,
         humanEscalation: null,
+        workerExpanded: new Set(),
       });
     },
   };

@@ -1687,6 +1687,80 @@ describe('graphStore — discard / cancel / reset', () => {
     expect(s.nodeActors.size).toBe(0);
     for (const a of actors) expect(a.getSnapshot().status).toBe('stopped');
   });
+
+  // Phase 4 Step 3 — workerExpanded lifecycle.
+  it('reset clears workerExpanded', () => {
+    useGraphStore.setState({
+      workerExpanded: new Set(['sub-a', 'sub-b']),
+    });
+    state().reset();
+    expect(state().workerExpanded.size).toBe(0);
+  });
+
+  it('toggleWorkerExpanded adds and removes ids', () => {
+    const { toggleWorkerExpanded } = state();
+    toggleWorkerExpanded('sub-a');
+    expect(state().workerExpanded.has('sub-a')).toBe(true);
+    toggleWorkerExpanded('sub-b');
+    expect(state().workerExpanded.has('sub-b')).toBe(true);
+    expect(state().workerExpanded.size).toBe(2);
+    toggleWorkerExpanded('sub-a');
+    expect(state().workerExpanded.has('sub-a')).toBe(false);
+    expect(state().workerExpanded.has('sub-b')).toBe(true);
+  });
+
+  it('scrubs workerExpanded for ids dropped by a replan', async () => {
+    // Seed a plan, expand one subtask, then replay a replan that
+    // drops that id. The expand set should lose the dangling id
+    // alongside nodeLogs / retries / diffs.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'keep',
+          title: 'Keep',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+        {
+          id: 'drop',
+          title: 'Drop',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    useGraphStore.setState({
+      workerExpanded: new Set(['keep', 'drop']),
+    });
+    // Replan: `drop` disappears, `keep` stays, `replacement` arrives.
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'keep',
+          title: 'Keep',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+        {
+          id: 'replacement',
+          title: 'New',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+          replaces: ['drop'],
+        },
+      ],
+    });
+    const exp = state().workerExpanded;
+    expect(exp.has('drop')).toBe(false);
+    expect(exp.has('keep')).toBe(true);
+  });
 });
 
 // Phase 3 Step 2 — provenance tracking for the "edited" / "added" badges.

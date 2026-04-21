@@ -241,19 +241,23 @@ Today the LogBlock shows the last ~3-5 lines of the worker's output. Phase 3 exp
 - Screen reader announces expanded state via `aria-expanded` on the worker card container.
 - Existing Phase 3 state transitions (proposed / running / done / failed / escalated) all respect expand — expanding a running worker continues to stream new log lines into the expanded container.
 
-**Open questions:**
+**Open questions (resolved before implementation):**
 
-- **Tap targets:** the Phase 3 proposed-state card is already a click target (checkbox toggle). Does clicking it to toggle select also expand it, or do the interactions fight? **Recommend: expand is disabled in `proposed` state** — the click target there is already spoken-for. Expand enables on `running` and all terminal states.
-- **How much log to render when expanded?** Rendering a 10k-line log inside a DOM container janks. Recommend cap at 2000 lines (tail) in the expanded view, with a "load more above" affordance — matches the same problem we'll solve for Step 6 (large diffs).
-- **Height ceiling:** 500-600px is the spec range. Should it auto-fit to viewport (up to 80vh) on very tall screens, or stay capped? Recommend stay capped — avoids the "one expanded worker eats the whole canvas" failure.
+- **Tap targets:** expand is disabled in `proposed` state (checkbox toggle owns the whole-card click there). Enabled on `running` / `retrying` / `done` / `failed` / `human_escalation` / `cancelled` — the `EXPANDABLE_STATES` set is duplicated in `WorkerNode` (UI gate) and `GraphCanvas` (layout height gate) on purpose, so each reads independently authoritative.
+- **Height ceiling:** fixed at 560px. Does NOT scale to viewport. Deliberately avoids the "one expanded worker eats the canvas" failure on tall monitors.
+- **Log tail cap:** 2000 lines rendered by default with a "Load 2000 more above" button that bumps the window up to a 10,000-line hard cap. Virtual scroll NOT introduced — scope stays small; Phase 5 can refactor to reuse Step 6's `@tanstack/virtual` for diffs if we bring it in.
 
-**Risk flags:**
+**Risk flags (resolved):**
 
-- **Dagre reflow performance:** Phase 2 learnings showed dagre runs in ~80ms on a 6-node graph. Reflowing on every expand/collapse is fine. But: expanding 5 nodes quickly in succession could stack layouts on each other. Debounce the reflow to ~50ms if it jitters.
-- **Hit-test collision with the Phase 3.5 click-handler on `proposed`-state cards.** The proposed-state card is itself a click target (checkbox proxy). Expand must not fire on that state or the click handlers collide. Gate in code.
-- **Animation coherence:** height change + dagre position change simultaneously. Framer Motion should handle both, but worth verifying that no node "snaps" in a way that loses visual continuity with its edges.
+- **Animation approach:** CSS `height 150ms ease-out` on the NodeContainer, NOT framer-motion. Dagre reflow is handled by React Flow's own position animation. Framer-motion is overkill for a linear height change and carries the dev-mode freeze risk flagged in Phase 3.5 KNOWN_ISSUES.
+- **Hit-test collision with proposed-state:** `onCardClick` routes to `toggleSubtaskSelection` while `proposed` and `toggleWorkerExpanded` otherwise. Interactive children (chip, dropdown, inputs, remove button) already wear `stopPropagation` so the card-level handler only fires from empty padding / title / log regions.
+- **Stuck-open defense:** the ExpandedLogBlock and the NodeContainer's a11y attrs are double-gated on `canExpand`. If a subtask's state transitions out of `EXPANDABLE_STATES` (e.g. to `skipped` / `escalating`) while its id remains in the set, the card reverts to its state-tier height and the tail LogBlock, and re-expands naturally if the state returns to an expandable one.
+- **Replan drop:** `handleSubtasksProposed`'s scrub path drops `workerExpanded` entries for ids removed by a replan, alongside the existing `nodeLogs` / `subtaskRetryCounts` / `subtaskDiffs` cleanup.
+- **Memory:** the render window caps at 10k lines per card. Store growth is unbounded today (same as pre-Step-3); Phase 5 will cap storage.
 
-**Estimated complexity:** medium (3 days: 1 day expand/collapse state + height, 1 day dagre reflow integration + animation polish, 1 day keyboard + aria + tests).
+**Estimated complexity:** medium (3 days).
+
+**Status:** shipped in `feat(phase-4): step 3 — worker log expand`.
 
 ---
 

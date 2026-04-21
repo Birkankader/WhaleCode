@@ -76,6 +76,34 @@ const LOGS_STATES: ReadonlySet<NodeState> = new Set([
   'done',
   'failed',
 ]);
+/**
+ * Phase 4 Step 3: worker card expanded height. Promoted when the user
+ * clicks the card body (non-chip, non-button) on a non-proposed worker.
+ * Fixed size — deliberately NOT viewport-relative so one enthusiastic
+ * expand can't eat the whole canvas on a tall monitor. Wins over the
+ * state-tier heights (logs/escalation) via the expand-override path
+ * in `buildGraph`; row-max alignment in `layoutGraph` means row-mates
+ * grow in sympathy, which keeps the grid readable.
+ */
+const EXPANDED_WORKER_HEIGHT = 560;
+/**
+ * States where the expand toggle is legal. Proposed is excluded
+ * because the whole-card click is already the selection-toggle
+ * affordance. The rest are the states that have log content worth
+ * inspecting (running/retrying stream live; done/failed are the
+ * final transcript; cancelled preserves the tombstone log;
+ * human_escalation needs the full log for the "what went wrong"
+ * moment). `escalating` / `skipped` are transient/uninteresting —
+ * left out on purpose.
+ */
+const EXPANDABLE_STATES: ReadonlySet<NodeState> = new Set([
+  'running',
+  'retrying',
+  'done',
+  'failed',
+  'human_escalation',
+  'cancelled',
+]);
 
 /** See `onNodeClick` comment below — this noop unblocks pointer-events. */
 const noopNodeClick = () => undefined;
@@ -115,6 +143,11 @@ function GraphCanvasInner() {
   // bit straight from the store; `buildGraph` needs the set here so it
   // can tag edges whose source or target is a dim-worthy subtask.
   const selectedSubtaskIds = useGraphStore((s) => s.selectedSubtaskIds);
+  // Phase 4 Step 3: expanded-worker ids drive the ~560px height
+  // override in buildGraph. Subscribing here keeps the layout pass
+  // reactive to toggle clicks from any WorkerNode — the Set identity
+  // flips on each toggle so the memo below re-runs exactly once.
+  const workerExpanded = useGraphStore((s) => s.workerExpanded);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -145,9 +178,17 @@ function GraphCanvasInner() {
       nodeSnapshots,
       retryCounts,
       selectedSubtaskIds,
+      workerExpanded,
       compact ? 2 : undefined,
     );
-  }, [structure, nodeSnapshots, retryCounts, selectedSubtaskIds, compact]);
+  }, [
+    structure,
+    nodeSnapshots,
+    retryCounts,
+    selectedSubtaskIds,
+    workerExpanded,
+    compact,
+  ]);
 
   const { setViewport } = useReactFlow();
 
@@ -294,6 +335,7 @@ function buildGraph(
   snapshots: Map<string, NodeSnapshot>,
   retryCounts: Map<string, number>,
   selectedSubtaskIds: ReadonlySet<string>,
+  workerExpanded: ReadonlySet<string>,
   maxPerRow: number | undefined,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
@@ -314,20 +356,24 @@ function buildGraph(
   // Y math accounts for the larger row. Empty map = pre-refactor
   // footprint.
   //
-  // Two tiers above the 140px default:
-  //   - `human_escalation`: 280px, fits EscalationActions surface
+  // Three tiers above the 140px default (highest wins):
+  //   - expanded (Step 3): 560px, scrollable full-log surface.
+  //     Only promoted for non-proposed states — the store is
+  //     permissive but WorkerNode gates toggle-on-click, and the
+  //     `EXPANDABLE_STATES` guard here is defense-in-depth against
+  //     a stale id surviving a state transition.
+  //   - `human_escalation`: 280px, fits EscalationActions surface.
   //   - states with a LogBlock (running/retrying/done/failed): 180px,
-  //     fits header + title + why + LogBlock(54px) + chip
-  // `human_escalation` wins when both apply — the state machine
-  // can only land in one at a time, but the guard is explicit for
-  // future-proofing.
+  //     fits header + title + why + LogBlock(54px) + chip.
   const workerHeights = new Map<string, number>();
   for (const st of subtasks) {
     const snap = snapshots.get(st.id);
     const state = snap?.value;
-    if (state === 'human_escalation') {
+    if (workerExpanded.has(st.id) && state && EXPANDABLE_STATES.has(state)) {
+      workerHeights.set(st.id, EXPANDED_WORKER_HEIGHT);
+    } else if (state === 'human_escalation') {
       workerHeights.set(st.id, ESCALATION_WORKER_HEIGHT);
-    } else if (state && LOGS_STATES.has(state as NodeState)) {
+    } else if (state && LOGS_STATES.has(state)) {
       workerHeights.set(st.id, LOGS_WORKER_HEIGHT);
     }
   }

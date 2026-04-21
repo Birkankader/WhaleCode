@@ -1,5 +1,14 @@
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 
 import { NODE_DIMENSIONS } from '../../lib/layout';
 import {
@@ -82,6 +91,42 @@ const LOG_VISIBLE_STATES: ReadonlySet<NodeState> = new Set([
   'failed',
 ]);
 
+/**
+ * Phase 4 Step 3: states where the card's whole-body click toggles
+ * expand/collapse. Proposed is excluded — that state owns the
+ * whole-card click as the selection-toggle affordance already.
+ * `human_escalation` is included so the user can expand the failing
+ * worker's log before deciding how to intervene; `cancelled` is
+ * included so post-cancel inspection still works. Mirrors
+ * `EXPANDABLE_STATES` in GraphCanvas (duplicated on purpose — the
+ * UI gate and the layout-height gate are both authoritative and
+ * should read obviously independent).
+ */
+const EXPANDABLE_STATES: ReadonlySet<NodeState> = new Set([
+  'running',
+  'retrying',
+  'done',
+  'failed',
+  'human_escalation',
+  'cancelled',
+]);
+
+/**
+ * Phase 4 Step 3: render-window cap for the expanded LogBlock. The
+ * store keeps every line it receives; the expanded view shows only
+ * the most recent `LOG_RENDER_WINDOW` by default, with a "Load N
+ * more above" affordance that bumps the window by the same amount.
+ * 2000 lines × ~80 chars is ~160KB of text per card — well under
+ * any jank threshold we've measured but large enough that a chatty
+ * 10-minute worker rarely hits it. Upper bound: if the log grows
+ * past `LOG_HARD_CAP` we stop allowing "load more" (the DOM cost
+ * of a single card holding 10k log rows isn't worth the inspection
+ * value — the user should fall back to Layer-3 manual fix for that
+ * far back in time). Phase 5 will revisit with virtualization.
+ */
+const LOG_RENDER_WINDOW = 2000;
+const LOG_HARD_CAP = 10_000;
+
 // 100-char soft limit with a counter after 80 (pre-confirmed with user).
 // Backend enforces a 500-char hard floor; nothing user-visible caps that.
 const TITLE_SOFT_LIMIT = 100;
@@ -114,6 +159,13 @@ export function WorkerNode({ id, data }: NodeProps) {
   // Subscribe only to this node's logs — identity-stable when other nodes
   // append so this worker doesn't rerender on every graph-wide log write.
   const logs = useGraphStore((s) => s.nodeLogs.get(id));
+  // Phase 4 Step 3: expand state — subscribe to this id's membership
+  // only. The Set identity flips on every toggle, but the `.has`
+  // projection gives us a stable boolean selector so unrelated
+  // expands/collapses don't rerender this card.
+  const isExpanded = useGraphStore((s) => s.workerExpanded.has(id));
+  const toggleExpanded = useGraphStore((s) => s.toggleWorkerExpanded);
+  const canExpand = EXPANDABLE_STATES.has(d.state);
   // Phase 3.5 Item 6: per-subtask diff — available once the backend has
   // collected diffs for this worker during the Apply pre-merge pass. We
   // subscribe to this id's entry only; a sibling worker's diff arriving
@@ -137,6 +189,39 @@ export function WorkerNode({ id, data }: NodeProps) {
     if (autoEnter) clearLastAdded();
   }, [autoEnter, clearLastAdded]);
 
+  // Phase 4 Step 3: card-body click / keyboard toggle for expand.
+  // Interactive children (chips, buttons, inputs, dropdowns) already
+  // stopPropagation on their own handlers, so the card-level handler
+  // here only fires on empty-padding regions, the title text, and the
+  // LogBlock surface — exactly the "card body" the spec calls out.
+  // useCallback so the function identity is stable across renders —
+  // otherwise the eslint exhaustive-deps check on onCardKeyDown below
+  // flags the ternary as a per-render closure.
+  const onCardClick = useCallback(() => {
+    if (isProposed) {
+      toggle(id);
+    } else if (canExpand) {
+      toggleExpanded(id);
+    }
+  }, [isProposed, canExpand, toggle, toggleExpanded, id]);
+  const hasCardAction = isProposed || canExpand;
+  // Space/Enter mirror onClick while the card has focus. A11y-standard
+  // `role="button"` affordance — we intentionally don't use a real
+  // <button> because the card's flex layout and rich child content
+  // don't fit inside one, and React Flow nodes are semantically
+  // container-like. preventDefault on Space stops the page from
+  // scrolling on activation.
+  const onCardKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (!hasCardAction) return;
+      if (e.target !== e.currentTarget) return;
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      onCardClick();
+    },
+    [hasCardAction, onCardClick],
+  );
+
   return (
     <NodeContainer
       variant="worker"
@@ -144,13 +229,22 @@ export function WorkerNode({ id, data }: NodeProps) {
       agentColor={color}
       width={width}
       height={height}
-      // Whole-card click is a mouse affordance for toggling selection in
-      // the proposed state. The checkbox is the accessible truth — it
-      // stops propagation below so a direct click doesn't double-toggle.
-      // In proposed state the inner inputs/dropdown all wear `nodrag
-      // nopan` + `stopPropagation` so card-click only fires from empty
-      // padding regions, which is the intended affordance.
-      onClick={isProposed ? () => toggle(id) : undefined}
+      // Whole-card click is a mouse affordance with two meanings:
+      //   - proposed  → selection toggle (checkbox proxy)
+      //   - expandable → expand/collapse the log surface
+      // The checkbox is the accessible truth for proposed (it
+      // stops propagation below so a direct click doesn't double-
+      // toggle). Expand is keyboard-reachable via the role+tabIndex
+      // pair we set below. Interactive children (inputs, dropdowns,
+      // chips, buttons) already wear `nodrag nopan` + stopPropagation
+      // so card-click only fires from empty padding / title / log
+      // regions — the intended hit-test.
+      onClick={hasCardAction ? onCardClick : undefined}
+      onKeyDown={canExpand ? onCardKeyDown : undefined}
+      role={canExpand ? 'button' : undefined}
+      tabIndex={canExpand ? 0 : undefined}
+      ariaExpanded={canExpand ? isExpanded : undefined}
+      dataTestId={`worker-node-${id}`}
       // `group` opts the whole card into Tailwind's group-hover pattern
       // so the remove button fades in on hover without JS state. Only
       // relevant while proposed — in other states RemoveButton isn't
@@ -197,6 +291,7 @@ export function WorkerNode({ id, data }: NodeProps) {
             <span className="text-hint text-fg-tertiary">retry {d.retries}</span>
           ) : null}
           {isProposed ? <RemoveButton id={id} title={d.title} /> : null}
+          {canExpand ? <ExpandChevron isExpanded={isExpanded} /> : null}
         </div>
       </header>
 
@@ -210,7 +305,29 @@ export function WorkerNode({ id, data }: NodeProps) {
         <EscalationActions subtaskId={id} replanCount={d.replanCount ?? 0} />
       ) : null}
 
-      {showLogs ? <LogBlock lines={logs ?? []} animateCursor={isStreaming(d.state)} /> : null}
+      {showLogs ? (
+        isExpanded && canExpand ? (
+          <ExpandedLogBlock
+            lines={logs ?? []}
+            animateCursor={isStreaming(d.state)}
+          />
+        ) : (
+          <LogBlock lines={logs ?? []} animateCursor={isStreaming(d.state)} />
+        )
+      ) : null}
+      {/*
+        Expanded + non-streaming expandable states without a LogBlock
+        (cancelled, human_escalation) still get the expanded surface
+        — the tail LogBlock itself is gated on `showLogs`, but the
+        expand toggle is legal on those states per the spec. Render
+        a placeholder so the card fills its ~560px container rather
+        than leaving blank space. Double-gated on `canExpand` to
+        defend against a stale set entry on a transient non-
+        expandable state (skipped / escalating).
+      */}
+      {isExpanded && canExpand && !showLogs ? (
+        <ExpandedLogBlock lines={logs ?? []} animateCursor={false} />
+      ) : null}
 
       <footer className="mt-auto flex items-center justify-end gap-1">
         {/* File-count chip sits left of the agent chip on done workers.
@@ -684,6 +801,153 @@ function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateC
           }
           return (
             <div key={`${i}-${line}`} className="truncate">
+              <LogLine line={line} />
+              {isLast && animateCursor ? <BlinkingCursor /> : null}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 4 Step 3: "pinned open" chevron that rotates 90° when the
+ * card is expanded. Purely visual — click/keyboard toggling happens
+ * at the NodeContainer level. stopPropagation on the span so a
+ * direct click on the chevron doesn't fire the card's onClick twice
+ * (it bubbles up to the card anyway if the user clicks the chevron,
+ * which is fine — but stopping it here is a belt-and-braces gate
+ * against future handler changes).
+ */
+function ExpandChevron({ isExpanded }: { isExpanded: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className="text-hint text-fg-tertiary"
+      style={{
+        display: 'inline-block',
+        transition: 'transform 150ms ease-out',
+        transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+      }}
+      data-testid="worker-expand-chevron"
+      data-expanded={isExpanded ? 'true' : 'false'}
+    >
+      ▸
+    </span>
+  );
+}
+
+/**
+ * Phase 4 Step 3: full-log surface shown when the card is expanded.
+ * Renders a scrollable tail of `LOG_RENDER_WINDOW` lines with a
+ * "load more above" button that bumps the window by the same amount
+ * until the hard cap. Auto-scrolls to the bottom when new lines
+ * arrive while the user hasn't deliberately scrolled up — same
+ * pattern as terminal emulators.
+ */
+function ExpandedLogBlock({
+  lines,
+  animateCursor,
+}: {
+  lines: readonly string[];
+  animateCursor: boolean;
+}) {
+  const total = lines.length;
+  const [windowSize, setWindowSize] = useState(LOG_RENDER_WINDOW);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pinnedToBottomRef = useRef(true);
+
+  // Clamp window to the available cap — avoids asking to render more
+  // lines than `LOG_HARD_CAP` even if the caller keeps clicking.
+  const effectiveWindow = Math.min(windowSize, total, LOG_HARD_CAP);
+  const start = Math.max(0, total - effectiveWindow);
+  const visible = useMemo(
+    () => lines.slice(start, total),
+    [lines, start, total],
+  );
+  const hasMoreAbove = start > 0 && windowSize < LOG_HARD_CAP;
+
+  // Detect manual scroll-up so the auto-follow behaviour respects
+  // the user parking at an older line. Once they scroll back to the
+  // bottom we re-pin. 4px slop covers rounding noise on retina.
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+    pinnedToBottomRef.current = nearBottom;
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (!pinnedToBottomRef.current) return;
+    // Jump, not scroll — running workers may emit many lines per
+    // frame; a smooth scroll would queue and visibly lag behind.
+    el.scrollTop = el.scrollHeight;
+  }, [visible.length, animateCursor]);
+
+  const onLoadMore = useCallback(
+    (e: ReactMouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation();
+      setWindowSize((w) => Math.min(w + LOG_RENDER_WINDOW, LOG_HARD_CAP));
+      // Stay where the user was — don't snap to bottom when older
+      // lines get prepended.
+      pinnedToBottomRef.current = false;
+    },
+    [],
+  );
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={onScroll}
+      // Stop click bubbling so the user can select log text or tap
+      // the load-more button without collapsing the card.
+      onClick={(e) => e.stopPropagation()}
+      className="font-mono text-fg-tertiary"
+      style={{
+        flex: 1,
+        minHeight: 0,
+        padding: '6px 8px',
+        fontSize: 10,
+        lineHeight: 1.5,
+        overflowY: 'auto',
+        background: 'var(--color-bg-primary)',
+      }}
+      data-testid="worker-log-expanded"
+    >
+      {hasMoreAbove ? (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          className="nodrag nopan mb-1 w-full rounded-sm border border-dashed py-0.5 text-hint text-fg-tertiary hover:bg-bg-subtle/40"
+          style={{ borderColor: 'var(--color-border-default)' }}
+          data-testid="worker-log-load-more"
+        >
+          Load {Math.min(LOG_RENDER_WINDOW, start)} more above ·{' '}
+          {start.toLocaleString()} hidden
+        </button>
+      ) : null}
+      {visible.length === 0 ? (
+        <div className="italic" data-testid="worker-log-expanded-empty">
+          Waiting for output…
+          {animateCursor ? <BlinkingCursor /> : null}
+        </div>
+      ) : (
+        visible.map((line, i) => {
+          const isLast = i === visible.length - 1;
+          if (line.startsWith(RETRY_LOG_MARKER)) {
+            return (
+              <RetrySeparator
+                key={`${start + i}-retry`}
+                prevError={extractRetryError(line)}
+              />
+            );
+          }
+          return (
+            <div key={`${start + i}`} className="whitespace-pre-wrap break-all">
               <LogLine line={line} />
               {isLast && animateCursor ? <BlinkingCursor /> : null}
             </div>

@@ -1,4 +1,9 @@
-import type { CSSProperties, MouseEventHandler, PropsWithChildren } from 'react';
+import type {
+  CSSProperties,
+  KeyboardEventHandler,
+  MouseEventHandler,
+  PropsWithChildren,
+} from 'react';
 
 import type { NodeState } from '../../state/nodeMachine';
 
@@ -32,6 +37,25 @@ type Props = {
    * `proposed` (caller's responsibility).
    */
   dimmed?: boolean;
+  /**
+   * Phase 4 Step 3 a11y pass-through. Set by WorkerNode when the card
+   * is in an expandable state so the whole-card toggle is keyboard-
+   * reachable and screen-reader-introspectable. Shape mirrors ARIA so
+   * the container stays dumb — WorkerNode owns the semantics and the
+   * container just forwards. When `role="button"` is supplied we also
+   * smooth over browser defaults: `tabIndex={0}` and Enter/Space
+   * activation are the caller's responsibility.
+   */
+  role?: 'button';
+  tabIndex?: number;
+  ariaExpanded?: boolean;
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
+  /**
+   * Forwarded to the outermost `div` for component-level test queries.
+   * WorkerNode sets this so tests can find the expandable card without
+   * relying on role — NodeContainer never sets it on its own.
+   */
+  dataTestId?: string;
 };
 
 /**
@@ -48,6 +72,11 @@ export function NodeContainer({
   onClick,
   className,
   dimmed,
+  role,
+  tabIndex,
+  ariaExpanded,
+  onKeyDown,
+  dataTestId,
   children,
 }: PropsWithChildren<Props>) {
   const style = styleForState(variant, state, agentColor);
@@ -78,13 +107,26 @@ export function NodeContainer({
       className={className ? `${base} ${className}` : base}
       style={{
         width,
+        // Smooth the height change so expand/collapse doesn't snap —
+        // 150ms ease-out matches the "fast but visible" tier we use
+        // for border/opacity and sits under dagre's own position
+        // animation so the two reads as one motion. Height always
+        // animates; state-tier height flips (e.g. idle→running
+        // bumping to 180px) benefit from the same smoothing without
+        // adding a per-call gate.
         height,
         cursor: onClick ? 'pointer' : undefined,
-        transition: 'opacity 100ms ease-out, border-color 100ms ease-out',
+        transition:
+          'opacity 100ms ease-out, border-color 100ms ease-out, height 150ms ease-out',
         ...style,
         ...dimmedStyle,
       }}
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      role={role}
+      tabIndex={tabIndex}
+      aria-expanded={ariaExpanded}
+      data-testid={dataTestId}
     >
       {children}
     </div>

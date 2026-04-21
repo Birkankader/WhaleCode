@@ -1112,3 +1112,159 @@ describe('WorkerNode — file-count chip + diff popover', () => {
     expect(screen.queryByTestId('diff-popover-list')).toBeNull();
   });
 });
+
+describe('WorkerNode — expand toggle (Phase 4 Step 3)', () => {
+  // The card body toggles expand on non-proposed states. Interactive
+  // children (chips, buttons, dropdowns) keep their own handlers; the
+  // whole-card onClick gates on `e.target === e.currentTarget` via the
+  // browser's natural bubbling + `stopPropagation` on children.
+
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'running',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  function cardRoot(id: string): HTMLElement {
+    const el = screen.getByTestId(`worker-node-${id}`);
+    return el as HTMLElement;
+  }
+
+  it('clicking the card body on a running worker toggles expand', () => {
+    renderNode('sub-a', baseData());
+    const card = cardRoot('sub-a');
+    expect(card.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(card);
+    expect(useGraphStore.getState().workerExpanded.has('sub-a')).toBe(true);
+  });
+
+  it('clicking the card body again collapses', () => {
+    useGraphStore.setState({ workerExpanded: new Set(['sub-a']) });
+    renderNode('sub-a', baseData({ state: 'done' }));
+    const card = cardRoot('sub-a');
+    expect(card.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(card);
+    expect(useGraphStore.getState().workerExpanded.has('sub-a')).toBe(false);
+  });
+
+  it('does not expand while the subtask is in proposed state', () => {
+    const toggleSel = vi.fn();
+    useGraphStore.setState({ toggleSubtaskSelection: toggleSel });
+    renderNode('sub-a', baseData({ state: 'proposed' }));
+    // Proposed state: card's aria-expanded is undefined (not an
+    // expandable surface) and clicking routes to the selection
+    // toggle, not the expand set.
+    const card = cardRoot('sub-a');
+    expect(card.hasAttribute('aria-expanded')).toBe(false);
+    fireEvent.click(card);
+    expect(toggleSel).toHaveBeenCalledWith('sub-a');
+    expect(useGraphStore.getState().workerExpanded.size).toBe(0);
+  });
+
+  it('keyboard Enter toggles expand when the card has focus', () => {
+    renderNode('sub-a', baseData({ state: 'done' }));
+    const card = cardRoot('sub-a');
+    card.focus();
+    fireEvent.keyDown(card, { key: 'Enter', target: card });
+    expect(useGraphStore.getState().workerExpanded.has('sub-a')).toBe(true);
+  });
+
+  it('keyboard Space toggles expand when the card has focus', () => {
+    renderNode('sub-a', baseData({ state: 'done' }));
+    const card = cardRoot('sub-a');
+    card.focus();
+    fireEvent.keyDown(card, { key: ' ', target: card });
+    expect(useGraphStore.getState().workerExpanded.has('sub-a')).toBe(true);
+  });
+
+  it('aria-expanded reflects the store value', () => {
+    useGraphStore.setState({ workerExpanded: new Set(['sub-a']) });
+    renderNode('sub-a', baseData({ state: 'failed' }));
+    expect(cardRoot('sub-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('clicking the file-count chip does not expand (stopPropagation)', () => {
+    // A done worker with one diff entry gives us a clickable chip.
+    useGraphStore.setState({
+      subtaskDiffs: new Map([
+        [
+          'sub-a',
+          [
+            {
+              path: 'a.ts',
+              status: 'modified',
+              additions: 1,
+              deletions: 0,
+              binary: false,
+            },
+          ],
+        ],
+      ]),
+    });
+    renderNode('sub-a', baseData({ state: 'done' }));
+    const chip = screen.getByTestId('worker-file-count-chip');
+    fireEvent.click(chip);
+    // Expand was NOT toggled.
+    expect(useGraphStore.getState().workerExpanded.has('sub-a')).toBe(false);
+  });
+
+  it('two workers can be expanded simultaneously', () => {
+    renderNode('sub-a', baseData());
+    fireEvent.click(cardRoot('sub-a'));
+    // Second render re-uses the same store — render a fresh node with
+    // a different id.
+    renderNode('sub-b', baseData());
+    fireEvent.click(cardRoot('sub-b'));
+    const exp = useGraphStore.getState().workerExpanded;
+    expect(exp.has('sub-a')).toBe(true);
+    expect(exp.has('sub-b')).toBe(true);
+    expect(exp.size).toBe(2);
+  });
+
+  it('renders the expanded log block when expanded on a log-visible state', () => {
+    useGraphStore.setState({
+      workerExpanded: new Set(['sub-a']),
+      nodeLogs: new Map([['sub-a', ['line 1', 'line 2', 'line 3']]]),
+    });
+    renderNode('sub-a', baseData({ state: 'running' }));
+    const expanded = screen.getByTestId('worker-log-expanded');
+    expect(expanded).toBeInTheDocument();
+    expect(expanded.textContent).toContain('line 1');
+    expect(expanded.textContent).toContain('line 3');
+    // Collapsed LogBlock should not be rendered concurrently.
+    expect(screen.queryByTestId('worker-log-block')).toBeNull();
+  });
+
+  it('chevron rotates to 90deg when expanded', () => {
+    useGraphStore.setState({ workerExpanded: new Set(['sub-a']) });
+    renderNode('sub-a', baseData({ state: 'done' }));
+    const chev = screen.getByTestId('worker-expand-chevron');
+    expect(chev.getAttribute('data-expanded')).toBe('true');
+    expect(chev.getAttribute('style')).toContain('rotate(90deg)');
+  });
+
+  it('shows "load more above" when the log exceeds the render window', () => {
+    // 2500 lines → initial window is the last 2000, 500 hidden above.
+    const lines = Array.from({ length: 2500 }, (_, i) => `line ${i}`);
+    useGraphStore.setState({
+      workerExpanded: new Set(['sub-a']),
+      nodeLogs: new Map([['sub-a', lines]]),
+    });
+    renderNode('sub-a', baseData({ state: 'done' }));
+    const loadMore = screen.getByTestId('worker-log-load-more');
+    expect(loadMore.textContent).toMatch(/500 hidden/);
+    fireEvent.click(loadMore);
+    // After clicking, all 2500 lines fit in the 4000-cap window, so
+    // the button disappears.
+    expect(screen.queryByTestId('worker-log-load-more')).toBeNull();
+  });
+});
