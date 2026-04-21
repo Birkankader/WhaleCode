@@ -1,9 +1,13 @@
 import '@xyflow/react/dist/base.css';
 
 import {
+  Background,
+  BackgroundVariant,
+  Controls,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStore,
   type CoordinateExtent,
   type Edge,
   type EdgeTypes,
@@ -14,6 +18,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import { useRecenterShortcut } from '../../hooks/useRecenterShortcut';
+import { useZoomShortcuts } from '../../hooks/useZoomShortcuts';
 import {
   NODE_DIMENSIONS,
   layoutGraph,
@@ -126,15 +131,6 @@ function GraphCanvasInner() {
 
   const { setViewport } = useReactFlow();
 
-  const structureSignature = useMemo(() => {
-    const ids = [
-      structure.masterNode?.id ?? '',
-      ...structure.subtasks.map((s) => s.id),
-      structure.finalNode?.id ?? '',
-    ];
-    return ids.join('|');
-  }, [structure]);
-
   // Ref the latest nodes so the recenter callback identity doesn't churn on
   // every snapshot update. Effects that depend on recenter would otherwise
   // cancel their pending rAFs before the structural frame got a chance to fit.
@@ -178,16 +174,21 @@ function GraphCanvasInner() {
     ];
   }, [nodes]);
 
-  // Recenter when the *layout* changes (structure, compact mode, or container
-  // size). No animation — stomping animations during rapid layout updates
-  // (resize drag, orchestration ramp-up) produced a stale viewport; snap is
-  // instant and visually fine at these cadences.
+  // One-shot fit on the first frame that has nodes to show. After that,
+  // the viewport is the user's territory — layout churn (replan adds a
+  // row, window resize flips compact mode, a subtask finishes) no longer
+  // re-centers, so their current zoom and pan survive the transition.
+  // Cmd+0 or the Controls fit-view button are the only way back to auto.
+  const didInitialFitRef = useRef(false);
   useLayoutEffect(() => {
+    if (didInitialFitRef.current) return;
     if (nodes.length === 0) return;
+    didInitialFitRef.current = true;
     recenter(0);
-  }, [structureSignature, compact, recenter, nodes.length]);
+  }, [recenter, nodes.length]);
 
   useRecenterShortcut(useCallback(() => recenter(300), [recenter]));
+  useZoomShortcuts();
 
   return (
     <div ref={containerRef} className="h-full w-full bg-bg-primary">
@@ -197,12 +198,10 @@ function GraphCanvasInner() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         minZoom={0.4}
-        maxZoom={1}
+        maxZoom={2.5}
         translateExtent={translateExtent}
         panOnDrag
-        panOnScroll
-        zoomOnScroll={false}
-        zoomOnPinch={false}
+        panOnScroll={false}
         zoomOnDoubleClick={false}
         nodesDraggable={false}
         nodesConnectable={false}
@@ -222,8 +221,37 @@ function GraphCanvasInner() {
         // effect no matter what future config changes we make.
         deleteKeyCode={null}
         proOptions={{ hideAttribution: true }}
-      />
+      >
+        <GraphBackground />
+        <Controls
+          showInteractive={false}
+          position="bottom-right"
+          className="whalecode-controls"
+        />
+      </ReactFlow>
     </div>
+  );
+}
+
+/**
+ * Subtle dot grid. Visible at regular zoom levels; fades out above 1.5
+ * because the dots turn into a loud, pulsing pattern when scaled up —
+ * at that point the graph content is large enough to orient on its own
+ * and the grid becomes distracting chrome.
+ */
+function GraphBackground() {
+  // `useStore` here is RF's own store, scoped to the provider. The
+  // transform tuple is `[x, y, zoom]`; reading zoom only avoids
+  // re-rendering on pan.
+  const zoom = useStore((s) => s.transform[2]);
+  if (zoom > 1.5) return null;
+  return (
+    <Background
+      variant={BackgroundVariant.Dots}
+      gap={24}
+      size={1}
+      color="#1f1f1f"
+    />
   );
 }
 

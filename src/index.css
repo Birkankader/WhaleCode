@@ -144,6 +144,41 @@ body {
   }
 }
 
+/* React Flow Controls — dark theme. The default stylesheet ships a
+   white panel with light-grey icons that hard-coded colors fight with
+   our tokens. Override the vars it exposes plus the container so the
+   panel reads as a minimal chrome element on our near-black canvas.
+   Docked bottom-right by default via `position="bottom-right"`; we
+   lift it a hair off the edge so it doesn't crowd the approval bar. */
+.react-flow__controls.whalecode-controls {
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  box-shadow: none;
+  margin: 16px;
+  overflow: hidden;
+}
+.react-flow__controls.whalecode-controls .react-flow__controls-button {
+  background-color: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-fg-tertiary);
+  fill: currentColor;
+  width: 28px;
+  height: 28px;
+}
+.react-flow__controls.whalecode-controls .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.react-flow__controls.whalecode-controls .react-flow__controls-button:hover {
+  background-color: var(--color-bg-subtle);
+  color: var(--color-fg-primary);
+}
+.react-flow__controls.whalecode-controls .react-flow__controls-button svg {
+  max-width: 14px;
+  max-height: 14px;
+}
+
 /* Validation shake — 4 oscillations at ±3px over 300ms per design-system.md.
    Triggered when a save attempt fails validation (empty title, etc.) so the
    error is felt, not just read. */

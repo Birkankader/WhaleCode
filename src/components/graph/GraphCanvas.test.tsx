@@ -11,11 +11,27 @@ vi.mock('@xyflow/react', () => ({
     return null;
   },
   ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useReactFlow: () => ({ setViewport: () => undefined }),
+  useReactFlow: () => ({
+    setViewport: () => undefined,
+    zoomIn: () => undefined,
+    zoomOut: () => undefined,
+  }),
+  // Background / Controls are rendered as ReactFlow's children in v12. The
+  // canvas test only cares about props on <ReactFlow> — stub both to
+  // render-nothing so the import chain resolves without pulling in the
+  // real DOM/canvas stack.
+  Background: () => null,
+  BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
+  Controls: () => null,
+  useStore: () => 1,
 }));
 
 vi.mock('../../hooks/useRecenterShortcut', () => ({
   useRecenterShortcut: () => undefined,
+}));
+
+vi.mock('../../hooks/useZoomShortcuts', () => ({
+  useZoomShortcuts: () => undefined,
 }));
 
 import { useGraphStore } from '../../state/graphStore';
@@ -69,6 +85,39 @@ describe('GraphCanvas — pointer-events unblock', () => {
     render(<GraphCanvas />);
     const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
     expect(props.deleteKeyCode).toBeNull();
+  });
+});
+
+describe('GraphCanvas — zoom and pan wiring', () => {
+  // Phase 3.5 Item 4: zoom out to fit large plans and zoom in to read
+  // streaming logs on a small laptop screen. The previous config had
+  // scroll/pinch zoom turned off and a 1.0 max — the graph could only
+  // shrink, never grow. These asserts lock in the new bounds so a future
+  // "simplify the ReactFlow props" refactor can't silently regress.
+  it('allows zoom up to 2.5 (reading logs) and down to 0.4 (wide plans)', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(props.minZoom).toBe(0.4);
+    expect(props.maxZoom).toBe(2.5);
+  });
+
+  it('scroll-wheel and pinch zoom default on; trackpad pans via drag, not scroll', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    // panOnScroll must be explicitly false so scroll is zoom, not pan.
+    expect(props.panOnScroll).toBe(false);
+    // panOnDrag stays on so middle-click / space-drag still pans.
+    expect(props.panOnDrag).toBe(true);
+    // zoomOnScroll / zoomOnPinch must NOT be explicitly false; RF's
+    // defaults (true) are what we want here.
+    expect(props.zoomOnScroll).toBeUndefined();
+    expect(props.zoomOnPinch).toBeUndefined();
+  });
+
+  it('keeps double-click zoom disabled (reserved for future node actions)', () => {
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    expect(props.zoomOnDoubleClick).toBe(false);
   });
 });
 
