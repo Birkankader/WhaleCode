@@ -28,6 +28,7 @@ Each entry is one line of what, a link to where it was last discussed, a target 
 - **Multi-repo workspaces.** v2 is single-repo; mono-repo awareness lands in Phase 4 but true multi-repo remains deferred. Context: `docs/architecture.md` decision 4; `CLAUDE.md` "7 architectural decisions." **Target:** v3. **Severity:** architectural.
 - **Cost tracking tables unused.** Schema is in place (`src-tauri/src/storage/`), no readers or writers wired. Context: `docs/phase-2-spec.md` Step 9. **Target:** Phase 6. **Severity:** architectural (no behavioral impact until Phase 6).
 - **Safety gate is a stub.** `is_action_safe` returns `true`. Destructive-command gating is Phase 7. Context: `docs/phase-3-spec.md` Step 7. **Target:** Phase 7. **Severity:** architectural.
+- **Windows cancel cleanup.** Phase 3.5's cancellation fix uses `setsid` + `killpg` on Unix to kill grandchildren spawned by agent CLIs (MCP servers, tool runners). On Windows the equivalent is a Job Object assigned at spawn time (`kernel32::CreateJobObject` + `AssignProcessToJobObject`), which requires the `windows-rs` crate plus the correct flags for kill-on-close. Not wired yet — Windows cancel will still work for the direct child via `child.kill()` but grandchildren will orphan. Context: `src-tauri/src/agents/process.rs` (`install_new_process_group` / `kill_process_group`). **Target:** v2.5 (before headless mode — a server can't orphan processes). **Severity:** architectural (platform-specific, Unix shipping unaffected).
 
 ### Testing
 

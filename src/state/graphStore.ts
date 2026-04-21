@@ -256,6 +256,20 @@ export type GraphState = {
    * id lands in `submitTask`; the tail of `submitTask` consumes it.
    */
   pendingCancel: boolean;
+  /**
+   * Phase 3.5 Item 1: true between the moment the user confirms cancel
+   * and the moment the backend emits `StatusChanged(Cancelled)`. The
+   * TopBar reads this to show a disabled "Cancelling…" affordance in
+   * place of the normal cancel button so the user has a continuous
+   * visual signal that their click is being honoured — the backend's
+   * drain phase is bounded at ~2s but still long enough to look
+   * unresponsive without an indicator.
+   *
+   * Cleared in `handleStatusChanged` whenever the run transitions out
+   * of a cancellable state (cancelled / done / failed / rejected /
+   * applied). Also cleared on `reset` so a subsequent run starts clean.
+   */
+  cancelInFlight: boolean;
 
   setMasterAgent: (agent: BackendAgentKind) => void;
   submitTask: (input: string, masterAgent?: BackendAgentKind) => Promise<void>;
@@ -421,6 +435,7 @@ const initial: Pick<
   | 'autoApproved'
   | 'autoApproveSuspended'
   | 'pendingCancel'
+  | 'cancelInFlight'
 > = {
   runId: null,
   taskInput: '',
@@ -444,6 +459,7 @@ const initial: Pick<
   autoApproved: null,
   autoApproveSuspended: null,
   pendingCancel: false,
+  cancelInFlight: false,
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -714,6 +730,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
       mapped === 'cancelled'
     ) {
       detachActiveSubscription();
+      // Terminal → clear the transient "Cancelling…" indicator so the
+      // next run starts clean. `cancelled` is the happy path here;
+      // done/failed/rejected also clear it because the user's intent
+      // was honoured (the cancel lost the race with natural
+      // completion, but the result is the same: run is over).
+      if (get().cancelInFlight) {
+        set({ cancelInFlight: false });
+      }
     }
   }
 
@@ -1167,7 +1191,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
       if (get().pendingCancel) {
         set({ pendingCancel: false });
         void cancelRunIpc(realRunId).catch((err: unknown) => {
-          set({ currentError: `Cancel failed: ${String(err)}` });
+          // Deferred cancel failed at IPC. `cancelInFlight` was set
+          // back when the user first clicked (mirroring the
+          // non-deferred path); roll it back so the TopBar doesn't
+          // lie about a pending cancel that will never arrive.
+          set({
+            currentError: `Cancel failed: ${String(err)}`,
+            cancelInFlight: false,
+          });
         });
       }
     },
@@ -1261,15 +1292,24 @@ export const useGraphStore = create<GraphState>((set, get) => {
       // `cancelRunIpc('pending_xxx')` would just return Ok(()) with no
       // effect (see `Orchestrator::cancel_run`'s "run not found → Ok"
       // branch). Defer to `pendingCancel`: the tail of `submitTask`
-      // fires the cancel as soon as the real run id lands.
+      // fires the cancel as soon as the real run id lands. We still
+      // flip `cancelInFlight` so the TopBar shows "Cancelling…"
+      // continuously across the deferred-then-fired transition.
       if (runId.startsWith('pending_')) {
-        set({ pendingCancel: true });
+        set({ pendingCancel: true, cancelInFlight: true });
         return;
       }
+      // Flip the transient indicator *before* the IPC call so the UI
+      // updates during the ~2s backend drain window. Cleared in
+      // `handleStatusChanged` when the run reaches any terminal state.
+      set({ cancelInFlight: true });
       try {
         await cancelRunIpc(runId);
       } catch (err) {
-        set({ currentError: `Cancel failed: ${String(err)}` });
+        // IPC failed outright — the run didn't receive the cancel
+        // signal, so the indicator would otherwise stick. Roll it
+        // back and surface the error.
+        set({ currentError: `Cancel failed: ${String(err)}`, cancelInFlight: false });
         throw err;
       }
     },

@@ -35,6 +35,14 @@ async-trait = "0.1"
 which = "7"
 regex = "1"
 
+# Unix-only: needed for process-group kill on cancellation. We set the
+# child's session/pgid in a `pre_exec` hook and, on cancel, send SIGKILL
+# to the whole group so grandchildren (MCP servers, agent tool runners)
+# don't orphan and keep their stdout pipes open past cancellation.
+# Windows cancel cleanup is tracked separately in docs/KNOWN_ISSUES.md.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "process", "time"] }

@@ -196,8 +196,31 @@ export function TopBar() {
  */
 function CancelRunButton() {
   const status = useGraphStore((s) => s.status);
+  const cancelInFlight = useGraphStore((s) => s.cancelInFlight);
+  // Cancel already dispatched — show a disabled chip for the short
+  // window between the user's confirm click and the backend's
+  // `StatusChanged(Cancelled)`. Without this the two-step prompt
+  // collapses back to the plain "Cancel run" button the instant the
+  // IPC returns, which reads as "nothing happened". See Phase 3.5
+  // Item 1 investigation.
+  if (cancelInFlight) return <CancelInFlightChip />;
   if (!CANCELLABLE_STATUSES.has(status)) return null;
   return <CancelRunPrompt />;
+}
+
+function CancelInFlightChip() {
+  return (
+    <span
+      className="rounded-sm border border-border-default bg-bg-elevated px-2 py-0.5 text-hint text-fg-tertiary"
+      style={{ color: 'var(--color-status-failed)', borderColor: 'var(--color-status-failed)' }}
+      role="status"
+      aria-live="polite"
+      data-testid="topbar-cancel-in-flight"
+      title="Cancellation requested; cleaning up workers."
+    >
+      Cancelling…
+    </span>
+  );
 }
 
 /**

@@ -34,11 +34,21 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+
+/// Overall budget for `drain_as_skipped` to finish awaiting in-flight
+/// workers after a fail-fast / cancel. Workers that honour the cancel
+/// token finish in milliseconds once `run_streaming` sees the kill;
+/// the deadline is a backstop for the case where a worker wedges on
+/// post-kill I/O despite the group kill in `agents/process.rs`. Hitting
+/// the deadline triggers `join_set.abort_all()` so the run can still
+/// reach its terminal status.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 
 use crate::agents::{AgentError, AgentImpl, ExecutionResult};
 use crate::ipc::{AgentKind, RunId, SubtaskId, SubtaskState};
@@ -1007,11 +1017,37 @@ async fn drain_as_skipped(
     join_set: &mut JoinSet<(SubtaskId, WorkerOutcome)>,
     in_flight: &mut HashSet<SubtaskId>,
 ) {
-    while let Some(joined) = join_set.join_next().await {
-        if let Ok((sub_id, _)) = joined {
-            in_flight.remove(&sub_id);
+    // Wait up to `DRAIN_DEADLINE` for every in-flight worker to resolve.
+    // Workers that honour the cancel token finish in milliseconds once
+    // `run_streaming` sees the process-group kill; the deadline is the
+    // backstop. Phase 3's closeout bug was a deadlock here — a worker
+    // whose grandchildren held the stdout pipe open parked `join_next`
+    // forever, stranding the run in `Running`. The bounded wait plus
+    // `abort_all()` on timeout guarantees `finalize_cancelled` reaches
+    // the user every time.
+    let drain = async {
+        while let Some(joined) = join_set.join_next().await {
+            if let Ok((sub_id, _)) = joined {
+                in_flight.remove(&sub_id);
+                mark_skipped(deps, run, run_id, &sub_id).await;
+            }
+        }
+    };
+    if tokio::time::timeout(DRAIN_DEADLINE, drain).await.is_err() {
+        eprintln!(
+            "[dispatcher] drain_as_skipped exceeded {:?}; aborting {} wedged worker task(s)",
+            DRAIN_DEADLINE,
+            join_set.len()
+        );
+        join_set.abort_all();
+        // Mark any still-in-flight ids as skipped — their join handles
+        // were aborted, no further outcome will arrive.
+        for sub_id in in_flight.drain().collect::<Vec<_>>() {
             mark_skipped(deps, run, run_id, &sub_id).await;
         }
+        // Drop whatever's left on the JoinSet without awaiting; the
+        // runtime reaps aborted tasks once their futures are dropped.
+        join_set.detach_all();
     }
     // Mark every still-waiting subtask as skipped so the persisted
     // state reflects "did not run". Without this they'd stay as

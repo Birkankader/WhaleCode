@@ -10,12 +10,21 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use super::AgentError;
+
+/// Upper bound on how long we wait for the stdout/stderr drain tasks to
+/// finish after a cancel / timeout. If the child's grandchildren keep a
+/// pipe fd open past a kill (common with agent CLIs that spawn MCP
+/// servers or tool runners), `BufReader::next_line()` blocks on EOF
+/// forever — we abort the drain task at this deadline so the outer run
+/// returns promptly. The lines the drain would have captured are
+/// post-kill noise; losing them is the point.
+const DRAIN_DEADLINE: Duration = Duration::from_millis(500);
 
 /// Default deadline for a master's `plan()` call.
 pub const DEFAULT_PLAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -78,6 +87,7 @@ pub async fn run_streaming(spec: RunSpec<'_>) -> Result<ChildOutput, AgentError>
     if let Some(cwd) = spec.cwd {
         cmd.current_dir(cwd);
     }
+    install_new_process_group(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| AgentError::SpawnFailed {
         cause: format!("{e}"),
@@ -115,12 +125,28 @@ pub async fn run_streaming(spec: RunSpec<'_>) -> Result<ChildOutput, AgentError>
         _ = spec.cancel.cancelled() => Outcome::Cancelled,
     };
 
-    // No matter how we got here, drain the line-collector tasks so we
-    // capture everything the child wrote before we killed it.
-    let stdout_lines = stdout_task.await.unwrap_or_default();
-    let stderr_lines = stderr_task.await.unwrap_or_default();
-    let stdout = stdout_lines.join("\n");
-    let stderr = stderr_lines.join("\n");
+    // On non-natural exits (timeout or cancel) we kill the whole process
+    // group, not just the direct child: agent CLIs routinely spawn
+    // grandchildren (MCP servers, tool runners) that inherit the stdout
+    // fd. A plain `child.kill()` reaches only the direct PID; the
+    // grandchildren keep running, the pipe stays open, and the drain
+    // tasks below park on `next_line` forever. See the commit message
+    // for the investigation that uncovered this. Natural exit path
+    // leaves the group alone — the child already reaped it.
+    let natural_exit = matches!(outcome, Outcome::NaturalOrTimeout(Ok(Ok(_))));
+    if !natural_exit {
+        kill_process_group(&mut child).await;
+    }
+
+    // Drain with a deadline. If the pipes are still open after the
+    // group kill (possible if a grandchild escaped the group, e.g. a
+    // daemonized subprocess on another session), abort the drain tasks
+    // rather than hang the orchestrator. The captured lines we lose are
+    // post-kill output.
+    let stdout = drain_lines(stdout_task).await;
+    let stderr = drain_lines(stderr_task).await;
+    let stdout = stdout.join("\n");
+    let stderr = stderr.join("\n");
 
     match outcome {
         Outcome::NaturalOrTimeout(Ok(Ok(status))) => Ok(ChildOutput {
@@ -132,17 +158,86 @@ pub async fn run_streaming(spec: RunSpec<'_>) -> Result<ChildOutput, AgentError>
         Outcome::NaturalOrTimeout(Ok(Err(e))) => Err(AgentError::SpawnFailed {
             cause: format!("waiting on child failed: {e}"),
         }),
-        Outcome::NaturalOrTimeout(Err(_elapsed)) => {
-            let _ = child.kill().await;
-            Err(AgentError::Timeout {
-                after_secs: spec.timeout.as_secs(),
-            })
-        }
-        Outcome::Cancelled => {
-            let _ = child.kill().await;
-            Err(AgentError::Cancelled)
+        Outcome::NaturalOrTimeout(Err(_elapsed)) => Err(AgentError::Timeout {
+            after_secs: spec.timeout.as_secs(),
+        }),
+        Outcome::Cancelled => Err(AgentError::Cancelled),
+    }
+}
+
+/// Drain a line-collector task within [`DRAIN_DEADLINE`]. Returns
+/// whatever lines the task produced by the deadline; on timeout the
+/// task is aborted so its `BufReader` on the (possibly still-open) pipe
+/// is released and any post-deadline lines are discarded.
+async fn drain_lines(mut handle: tokio::task::JoinHandle<Vec<String>>) -> Vec<String> {
+    tokio::select! {
+        res = &mut handle => res.unwrap_or_default(),
+        _ = tokio::time::sleep(DRAIN_DEADLINE) => {
+            handle.abort();
+            Vec::new()
         }
     }
+}
+
+/// On Unix, put the child in its own process group/session so we can
+/// signal every descendant (including grandchildren spawned by agent
+/// tool runners) in one call via `killpg`. No-op on Windows —
+/// equivalent functionality requires Job Objects which are tracked as a
+/// separate follow-up in `docs/KNOWN_ISSUES.md`.
+#[cfg(unix)]
+fn install_new_process_group(cmd: &mut Command) {
+    // `tokio::process::Command` exposes `pre_exec` as an inherent unix
+    // method (not through `std::os::unix::process::CommandExt`), so no
+    // trait import is needed.
+    //
+    // SAFETY: `pre_exec` runs between fork and exec in the child. The
+    // closure must be async-signal-safe — `setsid` is on the
+    // POSIX-listed safe set, and we don't allocate, lock, or call into
+    // any non-reentrant code here. `setsid` failure is possible only if
+    // the child is already a session leader (it isn't, post-fork).
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn install_new_process_group(_cmd: &mut Command) {
+    // Windows path: see docs/KNOWN_ISSUES.md (`Windows cancel cleanup`)
+    // — Job Objects dep not yet pulled in.
+}
+
+/// Kill the child *and every descendant* it spawned. On Unix we send
+/// `SIGKILL` to `-pgid` (negative pid in `kill(2)` targets the whole
+/// process group we created in [`install_new_process_group`]); on
+/// Windows we fall back to the direct child kill pending Job Object
+/// support.
+#[cfg(unix)]
+async fn kill_process_group(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        // SAFETY: `kill(2)` with a negative pid targets the process
+        // group whose leader is `pid` (because we called `setsid` in
+        // the child). We ignore the return value: ESRCH means the
+        // group already exited, EPERM means another session owns it
+        // (never should happen for our own children). Both are
+        // no-progress outcomes for cleanup purposes.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    // Belt-and-suspenders: reap the direct child so the OS releases
+    // its zombie entry and `wait` on the JoinHandle completes promptly.
+    // Errors are ignored — the group kill already did the work.
+    let _ = child.kill().await;
+}
+
+#[cfg(not(unix))]
+async fn kill_process_group(child: &mut Child) {
+    let _ = child.kill().await;
 }
 
 enum Outcome<T> {
@@ -326,5 +421,92 @@ mod tests {
             }
             e => panic!("expected TaskFailed, got {e:?}"),
         }
+    }
+
+    // ---- Cancellation regression tests (Phase 3.5 cancel fix) --------
+    //
+    // Both tests run real subprocesses, so they live under `#[cfg(unix)]`
+    // — the grandchild-pipe-leak fix is Unix-specific (Windows tracked
+    // as follow-up in docs/KNOWN_ISSUES.md). They guard two things:
+    //
+    // 1. `cancel_returns_promptly_for_simple_child` — the base contract:
+    //    cancel → Err(Cancelled) within ~2s.
+    // 2. `cancel_kills_grandchildren_holding_stdout_open` — the
+    //    regression that produced the Phase 3 closeout bug: without a
+    //    process-group kill, the grandchild (`sleep`) keeps the stdout
+    //    pipe open after `sh` dies, `BufReader::next_line` never sees
+    //    EOF, and `run_streaming` hangs past the 2s budget. With the
+    //    fix (pre_exec setsid + killpg on cancel + drain deadline) it
+    //    completes in well under a second.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancel_returns_promptly_for_simple_child() {
+        let cancel = CancellationToken::new();
+        let spec = RunSpec {
+            binary: std::path::Path::new("/bin/sh"),
+            args: vec!["-c".into(), "sleep 30".into()],
+            cwd: None,
+            stdin: None,
+            timeout: Duration::from_secs(60),
+            log_tx: None,
+            cancel: cancel.clone(),
+        };
+
+        let cancel_fire = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_fire.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        let result = run_streaming(spec).await;
+        let elapsed = started.elapsed();
+
+        assert!(matches!(result, Err(AgentError::Cancelled)));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cancel took {elapsed:?}; expected < 2s"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancel_kills_grandchildren_holding_stdout_open() {
+        // `sh` spawns `sleep` as a same-process-group child that
+        // inherits stdout. Without our setsid+killpg fix, killing the
+        // direct `sh` leaves `sleep` alive holding the pipe writer,
+        // `BufReader::next_line()` blocks forever, and `run_streaming`
+        // deadlocks — which is exactly the "Cancel does nothing" bug
+        // observed in real agent usage.
+        let cancel = CancellationToken::new();
+        let spec = RunSpec {
+            binary: std::path::Path::new("/bin/sh"),
+            args: vec!["-c".into(), "echo warmup; sleep 30".into()],
+            cwd: None,
+            stdin: None,
+            timeout: Duration::from_secs(60),
+            log_tx: None,
+            cancel: cancel.clone(),
+        };
+
+        let cancel_fire = cancel.clone();
+        tokio::spawn(async move {
+            // Give `sh` enough slack to actually fork `sleep` before we
+            // cancel; otherwise the test only exercises the simpler
+            // "kill before grandchild spawn" path.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            cancel_fire.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        let result = run_streaming(spec).await;
+        let elapsed = started.elapsed();
+
+        assert!(matches!(result, Err(AgentError::Cancelled)));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cancel with grandchild took {elapsed:?}; expected < 2s \
+             (pre-fix this hung indefinitely)"
+        );
     }
 }
