@@ -101,6 +101,11 @@ function GraphCanvasInner() {
   // nodes whose state didn't change — the buildGraph memo re-runs
   // only when one of its own inputs changes.
   const retryCounts = useGraphStore((s) => s.subtaskRetryCounts);
+  // Selection drives the proposed-state dim: unticked proposed subtasks
+  // and their incident edges go to 50% opacity. WorkerNode reads its own
+  // bit straight from the store; `buildGraph` needs the set here so it
+  // can tag edges whose source or target is a dim-worthy subtask.
+  const selectedSubtaskIds = useGraphStore((s) => s.selectedSubtaskIds);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -126,8 +131,14 @@ function GraphCanvasInner() {
   }, []);
 
   const { nodes, edges } = useMemo(() => {
-    return buildGraph(structure, nodeSnapshots, retryCounts, compact ? 2 : undefined);
-  }, [structure, nodeSnapshots, retryCounts, compact]);
+    return buildGraph(
+      structure,
+      nodeSnapshots,
+      retryCounts,
+      selectedSubtaskIds,
+      compact ? 2 : undefined,
+    );
+  }, [structure, nodeSnapshots, retryCounts, selectedSubtaskIds, compact]);
 
   const { setViewport } = useReactFlow();
 
@@ -265,6 +276,7 @@ function buildGraph(
   structure: Structure,
   snapshots: Map<string, NodeSnapshot>,
   retryCounts: Map<string, number>,
+  selectedSubtaskIds: ReadonlySet<string>,
   maxPerRow: number | undefined,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
@@ -324,12 +336,25 @@ function buildGraph(
     };
   });
 
+  // An edge is dim-worthy when either endpoint is a proposed subtask
+  // the user has unticked. Master / final ids are never in the subtask
+  // set and will never match, so this cleanly handles both the
+  // master→subtask and subtask→final edges without per-direction
+  // special-casing.
+  const isDimmedEndpoint = (id: string): boolean => {
+    const snap = snapshots.get(id);
+    return snap?.value === 'proposed' && !selectedSubtaskIds.has(id);
+  };
+
   const edges: Edge[] = layoutEdges.map((e) => ({
     id: `${e.source}->${e.target}`,
     source: e.source,
     target: e.target,
     type: 'flow',
-    data: { animated: isRunning(snapshots, e.target) },
+    data: {
+      animated: isRunning(snapshots, e.target),
+      dimmed: isDimmedEndpoint(e.source) || isDimmedEndpoint(e.target),
+    },
   }));
 
   return { nodes, edges };

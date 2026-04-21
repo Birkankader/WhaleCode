@@ -121,6 +121,81 @@ describe('GraphCanvas — zoom and pan wiring', () => {
   });
 });
 
+describe('GraphCanvas — proposed-state edge dimming', () => {
+  // Commit 5 (Phase 3.5 Item 5): edges incident on an unticked proposed
+  // subtask dim to opacity 0.5 to match the node dim. Lock both sides:
+  //   - master→subtask AND subtask→final dim when subtask is unticked
+  //   - edges whose endpoints are all-selected / non-proposed stay full
+  //   - selecting the subtask (while still proposed) lifts the dim
+  function seedTwoWorkerDagWithFinal(selected: ReadonlySet<string>) {
+    useGraphStore.setState({
+      masterNode: { id: 'master', label: 'Master', agent: 'claude' },
+      finalNode: { id: 'final', label: 'Final', files: [], conflictFiles: [] },
+      subtasks: [
+        { id: 'a', title: 'A', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+        { id: 'b', title: 'B', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+      ],
+      nodeSnapshots: new Map([
+        ['a', { value: 'proposed' as never }],
+        ['b', { value: 'proposed' as never }],
+      ]),
+      selectedSubtaskIds: new Set(selected),
+    });
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    return (props.edges as Array<{ id: string; data: { dimmed?: boolean } }>) ?? [];
+  }
+
+  it('edges touching an unticked proposed subtask carry dimmed=true (both directions)', () => {
+    const edges = seedTwoWorkerDagWithFinal(new Set(['b'])); // a is unticked
+    const masterToA = edges.find((e) => e.id === 'master->a');
+    const aToFinal = edges.find((e) => e.id === 'a->final');
+    expect(masterToA?.data.dimmed).toBe(true);
+    expect(aToFinal?.data.dimmed).toBe(true);
+  });
+
+  it('edges whose endpoints are all ticked stay full opacity (dimmed=false)', () => {
+    const edges = seedTwoWorkerDagWithFinal(new Set(['a', 'b']));
+    const masterToB = edges.find((e) => e.id === 'master->b');
+    const bToFinal = edges.find((e) => e.id === 'b->final');
+    expect(masterToB?.data.dimmed).toBe(false);
+    expect(bToFinal?.data.dimmed).toBe(false);
+  });
+
+  it('ticking an unticked proposed subtask lifts the edge dim', () => {
+    // First render: a unticked → dimmed
+    seedTwoWorkerDagWithFinal(new Set(['b']));
+    reactFlowProps.mockClear();
+    // Now select `a` too; edge data.dimmed should flip back to false.
+    useGraphStore.setState({ selectedSubtaskIds: new Set(['a', 'b']) });
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    const edges = (props.edges as Array<{ id: string; data: { dimmed?: boolean } }>) ?? [];
+    const masterToA = edges.find((e) => e.id === 'master->a');
+    expect(masterToA?.data.dimmed).toBe(false);
+  });
+
+  it('non-proposed states are never dim-worthy even when "unselected"', () => {
+    // Running subtask with an empty selection set: selection is only
+    // meaningful while proposed, so a running subtask must not dim
+    // just because its id is absent from selectedSubtaskIds.
+    useGraphStore.setState({
+      masterNode: { id: 'master', label: 'Master', agent: 'claude' },
+      finalNode: { id: 'final', label: 'Final', files: [], conflictFiles: [] },
+      subtasks: [
+        { id: 'a', title: 'A', why: null, agent: 'claude', dependsOn: [], replaces: [] },
+      ],
+      nodeSnapshots: new Map([['a', { value: 'running' as never }]]),
+      selectedSubtaskIds: new Set(),
+    });
+    render(<GraphCanvas />);
+    const props = reactFlowProps.mock.calls[0]?.[0] ?? {};
+    const edges = (props.edges as Array<{ id: string; data: { dimmed?: boolean } }>) ?? [];
+    const masterToA = edges.find((e) => e.id === 'master->a');
+    expect(masterToA?.data.dimmed).toBe(false);
+  });
+});
+
 describe('GraphCanvas — per-state worker height', () => {
   // States that render a LogBlock grow the worker card to 180px so the
   // title + why + LogBlock stack doesn't overflow the default 140px —

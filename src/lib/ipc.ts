@@ -171,6 +171,9 @@ export const EVENT_SUBTASKS_PROPOSED = 'run:subtasks_proposed' as const;
 export const EVENT_SUBTASK_STATE_CHANGED = 'run:subtask_state_changed' as const;
 export const EVENT_SUBTASK_LOG = 'run:subtask_log' as const;
 export const EVENT_DIFF_READY = 'run:diff_ready' as const;
+// Phase 3.5 Item 6: per-subtask file diff. Additive — the aggregate
+// `run:diff_ready` still fires at the end of the Apply pre-merge pass.
+export const EVENT_SUBTASK_DIFF = 'run:subtask_diff' as const;
 export const EVENT_COMPLETED = 'run:completed' as const;
 export const EVENT_FAILED = 'run:failed' as const;
 export const EVENT_MERGE_CONFLICT = 'run:merge_conflict' as const;
@@ -224,6 +227,13 @@ export const diffReadySchema = z.object({
   files: z.array(fileDiffSchema),
 });
 export type DiffReady = z.infer<typeof diffReadySchema>;
+
+export const subtaskDiffSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  files: z.array(fileDiffSchema),
+});
+export type SubtaskDiff = z.infer<typeof subtaskDiffSchema>;
 
 export const completedSchema = z.object({
   runId: runIdSchema,

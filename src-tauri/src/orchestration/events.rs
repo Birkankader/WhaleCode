@@ -57,6 +57,15 @@ pub enum RunEvent {
         run_id: RunId,
         files: Vec<FileDiff>,
     },
+    /// Phase 3.5 Item 6: per-subtask file diff emitted during the
+    /// Apply pre-merge pass, once per done subtask. The aggregate
+    /// `DiffReady` still follows; this event is the per-worker
+    /// breakdown the UI needs for the file-count chip and popover.
+    SubtaskDiff {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        files: Vec<FileDiff>,
+    },
     Completed {
         run_id: RunId,
         summary: RunSummary,
@@ -132,6 +141,7 @@ impl RunEvent {
             | RunEvent::SubtaskStateChanged { run_id, .. }
             | RunEvent::SubtaskLog { run_id, .. }
             | RunEvent::DiffReady { run_id, .. }
+            | RunEvent::SubtaskDiff { run_id, .. }
             | RunEvent::Completed { run_id, .. }
             | RunEvent::Failed { run_id, .. }
             | RunEvent::MergeConflict { run_id, .. }
@@ -210,6 +220,18 @@ impl EventSink for TauriEventSink {
             RunEvent::DiffReady { run_id, files } => {
                 wire::emit_diff_ready(&self.app, &wire::DiffReady { run_id, files })
             }
+            RunEvent::SubtaskDiff {
+                run_id,
+                subtask_id,
+                files,
+            } => wire::emit_subtask_diff(
+                &self.app,
+                &wire::SubtaskDiff {
+                    run_id,
+                    subtask_id,
+                    files,
+                },
+            ),
             RunEvent::Completed { run_id, summary } => {
                 wire::emit_completed(&self.app, &wire::Completed { run_id, summary })
             }

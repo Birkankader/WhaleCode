@@ -53,6 +53,7 @@ import {
   type DiffReady,
   type EditorResult,
   type Failed,
+  type FileDiff,
   type HumanEscalation,
   type MasterLog,
   type MergeConflict,
@@ -60,6 +61,7 @@ import {
   type RunStatus,
   type SkipResult,
   type StatusChanged,
+  type SubtaskDiff,
   type SubtaskDraft,
   type SubtaskId,
   type SubtaskLog,
@@ -181,6 +183,18 @@ export type GraphState = {
    * Cleared on run reset and when a subtask is removed from the plan.
    */
   subtaskRetryCounts: Map<string, number>;
+  /**
+   * Phase 3.5 Item 6: per-subtask file diffs surfaced by the backend's
+   * `run:subtask_diff` event during the Apply pre-merge pass. One entry
+   * per done subtask (including empty-vec entries for subtasks that ran
+   * but touched no files). The WorkerNode's "N files" chip reads this;
+   * a click opens the popover that lists each file with +/- counts.
+   *
+   * Cleared on run reset. A subtask removed from the plan (replan drop,
+   * user remove) also has its entry scrubbed alongside logs / retries /
+   * provenance — same pattern as every other per-subtask map.
+   */
+  subtaskDiffs: Map<string, readonly FileDiff[]>;
   /**
    * Phase 3 Step 2 — "edited" / "added" badge provenance. Edited state is
    * derived by comparing the current subtask row to its captured original
@@ -425,6 +439,7 @@ const initial: Pick<
   | 'nodeSnapshots'
   | 'nodeLogs'
   | 'subtaskRetryCounts'
+  | 'subtaskDiffs'
   | 'originalSubtasks'
   | 'userAddedSubtaskIds'
   | 'lastAddedSubtaskId'
@@ -449,6 +464,7 @@ const initial: Pick<
   nodeSnapshots: new Map(),
   nodeLogs: new Map(),
   subtaskRetryCounts: new Map(),
+  subtaskDiffs: new Map(),
   originalSubtasks: new Map(),
   userAddedSubtaskIds: new Set(),
   lastAddedSubtaskId: null,
@@ -783,17 +799,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const nextSnaps = new Map(state.nodeSnapshots);
         const nextLogs = new Map(state.nodeLogs);
         const nextRetries = new Map(state.subtaskRetryCounts);
+        const nextDiffs = new Map(state.subtaskDiffs);
         for (const id of removedIds) {
           nextActors.delete(id);
           nextSnaps.delete(id);
           nextLogs.delete(id);
           nextRetries.delete(id);
+          nextDiffs.delete(id);
         }
         return {
           nodeActors: nextActors,
           nodeSnapshots: nextSnaps,
           nodeLogs: nextLogs,
           subtaskRetryCounts: nextRetries,
+          subtaskDiffs: nextDiffs,
         };
       });
     }
@@ -933,6 +952,22 @@ export const useGraphStore = create<GraphState>((set, get) => {
   function handleSubtaskLog(e: SubtaskLog) {
     if (e.runId !== get().runId) return;
     appendLog(e.subtaskId, e.line);
+  }
+
+  function handleSubtaskDiff(e: SubtaskDiff) {
+    if (e.runId !== get().runId) return;
+    // Snapshot the backend's FileDiff list verbatim. Empty `files` is
+    // a valid signal ("this worker ran but touched nothing") and still
+    // gets a map entry so the WorkerNode can render "0 files" rather
+    // than stay blank. The stored array is frozen so downstream
+    // selectors can rely on reference equality for memoisation without
+    // defensive copies at the read site.
+    const frozen = Object.freeze(e.files.slice());
+    set((state) => {
+      const next = new Map(state.subtaskDiffs);
+      next.set(e.subtaskId, frozen);
+      return { subtaskDiffs: next };
+    });
   }
 
   function handleDiffReady(e: DiffReady) {
@@ -1090,6 +1125,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskStateChanged: handleSubtaskStateChanged,
       onSubtaskLog: handleSubtaskLog,
       onDiffReady: handleDiffReady,
+      onSubtaskDiff: handleSubtaskDiff,
       onMergeConflict: handleMergeConflict,
       onBaseBranchDirty: handleBaseBranchDirty,
       onCompleted: handleCompleted,
@@ -1484,6 +1520,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeSnapshots: new Map(),
         nodeLogs: new Map(),
         subtaskRetryCounts: new Map(),
+        subtaskDiffs: new Map(),
         originalSubtasks: new Map(),
         userAddedSubtaskIds: new Set(),
         lastAddedSubtaskId: null,

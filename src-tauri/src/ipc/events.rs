@@ -24,6 +24,12 @@ pub const EVENT_SUBTASKS_PROPOSED: &str = "run:subtasks_proposed";
 pub const EVENT_SUBTASK_STATE_CHANGED: &str = "run:subtask_state_changed";
 pub const EVENT_SUBTASK_LOG: &str = "run:subtask_log";
 pub const EVENT_DIFF_READY: &str = "run:diff_ready";
+/// Phase 3.5 Item 6: emitted once per done subtask during the Apply
+/// pre-merge diff collection pass. Gives the UI per-worker file-count
+/// chips + a click-to-inspect popover *before* the aggregate
+/// `DiffReady` flattens everything to the final node. Payload is the
+/// same `FileDiff` shape the aggregate uses, scoped to one subtask.
+pub const EVENT_SUBTASK_DIFF: &str = "run:subtask_diff";
 pub const EVENT_COMPLETED: &str = "run:completed";
 pub const EVENT_FAILED: &str = "run:failed";
 pub const EVENT_MERGE_CONFLICT: &str = "run:merge_conflict";
@@ -93,6 +99,18 @@ pub struct SubtaskLog {
 #[serde(rename_all = "camelCase")]
 pub struct DiffReady {
     pub run_id: RunId,
+    pub files: Vec<FileDiff>,
+}
+
+/// Per-subtask file diff, emitted once per done subtask during the Apply
+/// pre-merge diff pass. The aggregate [`DiffReady`] still fires after;
+/// this event is *additive* so the UI can light up per-worker chips
+/// incrementally while the lifecycle iterates done subtasks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskDiff {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
     pub files: Vec<FileDiff>,
 }
 
@@ -209,6 +227,10 @@ pub fn emit_diff_ready(app: &AppHandle, payload: &DiffReady) -> tauri::Result<()
     app.emit(EVENT_DIFF_READY, payload)
 }
 
+pub fn emit_subtask_diff(app: &AppHandle, payload: &SubtaskDiff) -> tauri::Result<()> {
+    app.emit(EVENT_SUBTASK_DIFF, payload)
+}
+
 pub fn emit_completed(app: &AppHandle, payload: &Completed) -> tauri::Result<()> {
     app.emit(EVENT_COMPLETED, payload)
 }
@@ -312,5 +334,24 @@ mod tests {
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["files"][0]["path"], "src/foo.ts");
         assert_eq!(json["files"][0]["additions"], 3);
+    }
+
+    #[test]
+    fn subtask_diff_serializes_camel_case() {
+        let payload = SubtaskDiff {
+            run_id: "r1".into(),
+            subtask_id: "s1".into(),
+            files: vec![FileDiff {
+                path: "src/foo.ts".into(),
+                additions: 5,
+                deletions: 2,
+            }],
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["runId"], "r1");
+        assert_eq!(json["subtaskId"], "s1");
+        assert_eq!(json["files"][0]["path"], "src/foo.ts");
+        assert_eq!(json["files"][0]["additions"], 5);
+        assert_eq!(json["files"][0]["deletions"], 2);
     }
 }

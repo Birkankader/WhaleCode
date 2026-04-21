@@ -114,6 +114,92 @@ describe('WorkerNode — card-click selection in proposed state', () => {
   });
 });
 
+describe('WorkerNode — proposed-state dim on deselection', () => {
+  // Commit 5 (Phase 3.5 Item 5): unticked proposed subtasks dim to 50%
+  // opacity with a neutral gray border so the surviving selection reads
+  // as the focus. Only applies while proposed — running/done/failed
+  // cards never belong to the approval set and must ignore selection.
+
+  /** Find the outermost NodeContainer div rendered by WorkerNode. */
+  function rootContainer(container: HTMLElement): HTMLElement {
+    const el = container.querySelector('[style*="width"]');
+    if (!el) throw new Error('NodeContainer root not found');
+    return el as HTMLElement;
+  }
+
+  it('proposed + unselected renders at 50% opacity with a neutral gray border', () => {
+    // Reset is enough: selectedSubtaskIds defaults to an empty Set so
+    // any id is treated as unticked.
+    const { container } = renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Unticked',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    expect(root.style.opacity).toBe('0.5');
+    // Dim preserves the 1px dashed width/style from the `proposed`
+    // state (via the `border` shorthand) and swaps only the color
+    // via the `borderColor` longhand so the 100ms transition can
+    // interpolate it. JSDOM drops the style tag from the shorthand
+    // roundtrip when a longhand override is present, so assert on
+    // the longhands directly.
+    expect(root.style.borderStyle).toBe('dashed');
+    expect(root.style.borderWidth).toBe('1px');
+    expect(root.style.borderColor).toBe('var(--color-border-default)');
+  });
+
+  it('proposed + selected renders at full opacity with the pending-yellow border', () => {
+    useGraphStore.setState({ selectedSubtaskIds: new Set(['auth']) });
+    const { container } = renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Ticked',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    // Empty string means the dim's inline opacity override didn't fire.
+    expect(root.style.opacity).toBe('');
+    expect(root.style.border).toContain('var(--color-status-pending)');
+  });
+
+  it('non-proposed states never dim even when absent from selection', () => {
+    // Running subtask with an empty selection set: must not dim.
+    useGraphStore.setState({ selectedSubtaskIds: new Set() });
+    const { container } = renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Running subtask',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    expect(root.style.opacity).toBe('');
+  });
+
+  it('declares the 100ms opacity transition so tick/untick feels like a fade, not a jump', () => {
+    const { container } = renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Unticked',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const root = rootContainer(container);
+    expect(root.style.transition).toContain('opacity 100ms');
+  });
+});
+
 describe('WorkerNode — inline edit surfaces (proposed only)', () => {
   it('proposed renders editable title + why triggers', () => {
     renderNode('auth', {
@@ -866,5 +952,163 @@ describe('WorkerNode — auto-enter edit for newly-added subtask', () => {
     // Display mode renders a button, not the input.
     expect(screen.getByRole('button', { name: /Edit Subtask title/i })).toBeDefined();
     expect(screen.queryByLabelText('Subtask title')).toBeNull();
+  });
+});
+
+describe('WorkerNode — file-count chip + diff popover', () => {
+  // Phase 3.5 Item 6: once the backend emits `run:subtask_diff` the
+  // store populates `subtaskDiffs` by subtask id. Done/failed/etc.
+  // workers render a chip reading "N files" that opens a popover
+  // listing each path with +/- counts. The chip is hidden until the
+  // diff lands (no chip during `running`/`proposed`) and hidden on
+  // proposed cards entirely (they haven't run yet).
+  function seedDiff(id: string, files: Array<{ path: string; additions: number; deletions: number }>) {
+    useGraphStore.setState({
+      subtaskDiffs: new Map([[id, Object.freeze(files.slice())]]),
+    });
+  }
+
+  it('renders the "N files" chip on a done worker once a diff is recorded', () => {
+    seedDiff('auth', [
+      { path: 'src/auth.ts', additions: 10, deletions: 2 },
+      { path: 'tests/auth.test.ts', additions: 40, deletions: 0 },
+    ]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 'Add login',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/2 files/);
+  });
+
+  it('singular "1 file" when exactly one path changed', () => {
+    seedDiff('auth', [{ path: 'src/auth.ts', additions: 5, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 'Tweak',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/1 file\b/);
+  });
+
+  it('chip is absent while the subtask is still running (no diff yet)', () => {
+    // No entry in `subtaskDiffs` — the store map is empty.
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Running',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.queryByTestId('worker-file-count-chip')).toBeNull();
+  });
+
+  it('chip is absent on proposed cards even if a diff is somehow present', () => {
+    // Defensive: a diff for a proposed subtask shouldn't happen (the
+    // backend emits diffs during Apply, long after the subtask left
+    // proposed). Chip must still hide because the proposed state has
+    // the checkbox + approval UI in the same region.
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'proposed',
+      agent: 'claude',
+      title: 'Pending',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.queryByTestId('worker-file-count-chip')).toBeNull();
+  });
+
+  it('clicking the chip opens the popover with path + +/- counts', () => {
+    seedDiff('auth', [
+      { path: 'src/auth.ts', additions: 10, deletions: 2 },
+      { path: 'tests/auth.test.ts', additions: 40, deletions: 0 },
+    ]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 'Add login',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    // Closed on mount.
+    expect(screen.queryByTestId('diff-popover')).toBeNull();
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'));
+    const popover = screen.getByTestId('diff-popover');
+    expect(popover).toBeDefined();
+    expect(popover.textContent).toMatch(/src\/auth\.ts/);
+    expect(popover.textContent).toMatch(/\+10/);
+    expect(popover.textContent).toMatch(/−2/);
+    expect(popover.textContent).toMatch(/tests\/auth\.test\.ts/);
+  });
+
+  it('clicking the chip again closes the popover (toggle)', () => {
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const chip = screen.getByTestId('worker-file-count-chip');
+    fireEvent.click(chip);
+    expect(screen.getByTestId('diff-popover')).toBeDefined();
+    fireEvent.click(chip);
+    expect(screen.queryByTestId('diff-popover')).toBeNull();
+  });
+
+  it('pressing Escape dismisses the popover', () => {
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'));
+    expect(screen.getByTestId('diff-popover')).toBeDefined();
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('diff-popover')).toBeNull();
+  });
+
+  it('"0 files" popover renders the "touched no files" empty state', () => {
+    seedDiff('auth', []);
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/0 files/);
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'));
+    const popover = screen.getByTestId('diff-popover');
+    expect(popover.textContent).toMatch(/touched no files/i);
+    // Empty state replaces the list — assert no list rendered.
+    expect(screen.queryByTestId('diff-popover-list')).toBeNull();
   });
 });

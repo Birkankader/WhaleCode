@@ -17,6 +17,7 @@ import { InlineTextEdit } from '../primitives/InlineTextEdit';
 import { NodeContainer } from '../primitives/NodeContainer';
 import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
+import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
 
 export type WorkerNodeData = {
@@ -113,6 +114,13 @@ export function WorkerNode({ id, data }: NodeProps) {
   // Subscribe only to this node's logs — identity-stable when other nodes
   // append so this worker doesn't rerender on every graph-wide log write.
   const logs = useGraphStore((s) => s.nodeLogs.get(id));
+  // Phase 3.5 Item 6: per-subtask diff — available once the backend has
+  // collected diffs for this worker during the Apply pre-merge pass. We
+  // subscribe to this id's entry only; a sibling worker's diff arriving
+  // won't rerender this card. `undefined` = no diff yet (still running
+  // or not a done subtask); a vec (possibly empty) means the chip should
+  // render with the file count.
+  const diff = useGraphStore((s) => s.subtaskDiffs.get(id));
 
   // Derived provenance badges. Both selectors are cheap (map/set lookups
   // plus a three-field comparison), and subscribing to the whole state
@@ -148,6 +156,11 @@ export function WorkerNode({ id, data }: NodeProps) {
       // relevant while proposed — in other states RemoveButton isn't
       // rendered and the class is a no-op.
       className={isProposed ? 'group' : undefined}
+      // Dim proposed subtasks the user has unticked so the surviving
+      // selection reads as the focus. Gated on `isProposed` because
+      // `isSelected` is stale noise once execution starts (running /
+      // done / failed cards never belong to the approval set).
+      dimmed={isProposed && !isSelected}
     >
       <Handle type="target" position={Position.Top} className="!border-0 !bg-transparent" />
       <header className="flex items-center justify-between">
@@ -199,7 +212,15 @@ export function WorkerNode({ id, data }: NodeProps) {
 
       {showLogs ? <LogBlock lines={logs ?? []} animateCursor={isStreaming(d.state)} /> : null}
 
-      <footer className="mt-auto flex items-center justify-end">
+      <footer className="mt-auto flex items-center justify-end gap-1">
+        {/* File-count chip sits left of the agent chip on done workers.
+            Hidden while proposed (no work yet) and while running (diff
+            hasn't been collected). `undefined` diff = no chip; empty
+            diff = "0 files" (user-visible signal the worker touched
+            nothing). */}
+        {!isProposed && diff !== undefined ? (
+          <FileCountChip files={diff} />
+        ) : null}
         {isProposed ? (
           <WorkerDropdown id={id} value={d.agent} />
         ) : (
@@ -568,6 +589,46 @@ function RemoveButton({ id, title }: { id: string; title: string }) {
         ×
       </span>
     </button>
+  );
+}
+
+/**
+ * Phase 3.5 Item 6: clickable "N files" chip + diff popover. Shown on
+ * done/failed workers once the backend has emitted `run:subtask_diff`
+ * for this id. Keyed on a local `open` flag so reparenting the card
+ * (e.g. a layout recompute) doesn't leak an open popover to another
+ * worker. Stops click propagation so the card-click-to-select
+ * affordance doesn't fire and so a click on the chip while the popover
+ * is open doesn't race the outside-click dismiss in the popover.
+ */
+function FileCountChip({ files }: { files: readonly import('../../lib/ipc').FileDiff[] }) {
+  const [open, setOpen] = useState(false);
+  const count = files.length;
+  return (
+    <span className="relative">
+      <button
+        type="button"
+        // nodrag/nopan so React Flow doesn't hijack the click for a pan
+        // gesture. aria-expanded drives screen-reader state; click toggles
+        // the popover and doubles as the dismiss affordance when open.
+        className="nodrag nopan inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-hint hover:bg-bg-subtle/40"
+        style={{
+          borderColor: 'var(--color-border-default)',
+          color: 'var(--color-fg-secondary)',
+        }}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={`Show ${count} changed file${count === 1 ? '' : 's'}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        data-testid="worker-file-count-chip"
+      >
+        {count} file{count === 1 ? '' : 's'}
+      </button>
+      {open ? <DiffPopover files={files} onClose={() => setOpen(false)} /> : null}
+    </span>
   );
 }
 

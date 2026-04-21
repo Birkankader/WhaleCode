@@ -37,6 +37,7 @@ import {
   EVENT_MERGE_CONFLICT,
   EVENT_REPLAN_STARTED,
   EVENT_STATUS_CHANGED,
+  EVENT_SUBTASK_DIFF,
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
   EVENT_SUBTASKS_PROPOSED,
@@ -51,6 +52,7 @@ import {
   mergeConflictSchema,
   replanStartedSchema,
   statusChangedSchema,
+  subtaskDiffSchema,
   subtaskLogSchema,
   subtaskStateChangedSchema,
   subtasksProposedSchema,
@@ -66,6 +68,7 @@ import {
   type ReplanStarted,
   type RunId,
   type StatusChanged,
+  type SubtaskDiff,
   type SubtaskLog,
   type SubtaskStateChanged,
   type SubtasksProposed,
@@ -78,6 +81,7 @@ export type RunEventHandlers = {
   onSubtaskStateChanged?: (event: SubtaskStateChanged) => void;
   onSubtaskLog?: (event: SubtaskLog) => void;
   onDiffReady?: (event: DiffReady) => void;
+  onSubtaskDiff?: (event: SubtaskDiff) => void;
   onCompleted?: (event: Completed) => void;
   onFailed?: (event: Failed) => void;
   onMergeConflict?: (event: MergeConflict) => void;
@@ -189,6 +193,11 @@ export class RunSubscription {
         event: EVENT_DIFF_READY,
         schema: diffReadySchema,
         handler: this.handlers.onDiffReady as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_SUBTASK_DIFF,
+        schema: subtaskDiffSchema,
+        handler: this.handlers.onSubtaskDiff as ((e: unknown) => void) | undefined,
       },
       {
         event: EVENT_COMPLETED,
