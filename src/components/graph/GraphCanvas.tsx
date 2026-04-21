@@ -212,7 +212,15 @@ function GraphCanvasInner() {
         maxZoom={2.5}
         translateExtent={translateExtent}
         panOnDrag
-        panOnScroll={false}
+        // Scroll = pan (matches every map/design tool). Commit 4
+        // originally flipped this to scroll-to-zoom, but real usage
+        // with 6+ subtask plans made canvas drag-pan unreliable —
+        // empty space became rare so every drag started on a node.
+        // Falling back to RF's natural defaults: scroll pans;
+        // Cmd/Ctrl + scroll zooms (via zoomActivationKeyCode); pinch
+        // zooms; keyboard +/- zooms (see useZoomShortcuts); 0 fits.
+        panOnScroll
+        zoomOnScroll={false}
         zoomOnDoubleClick={false}
         nodesDraggable={false}
         nodesConnectable={false}
