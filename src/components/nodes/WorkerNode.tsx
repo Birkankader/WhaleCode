@@ -581,12 +581,22 @@ const RETRY_LOG_MARKER = '[whalecode] retry';
 
 function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateCursor: boolean }) {
   const tail = lines.slice(-3);
+  // Done / failed with no logs emitted: don't render the block at all —
+  // a placeholder would mislead the user into thinking output is still
+  // coming. The card's terminal-state border already communicates the
+  // outcome, and our per-state height (180px) stays reserved so the
+  // layout doesn't shift.
+  if (tail.length === 0 && !animateCursor) return null;
   return (
     <div
+      // Background intentionally transparent — inherits bg-elevated from
+      // the card. The older darker `bg-primary` fill created a stark
+      // black rectangle during the brief window before the first log
+      // line arrived; with the placeholder row below, the terminal
+      // identity comes from font-mono + italic waiting hint + cursor,
+      // not from a darker fill.
       className="font-mono text-fg-tertiary"
       style={{
-        background: 'var(--color-bg-primary)',
-        borderRadius: 4,
         padding: '6px 8px',
         fontSize: 10,
         lineHeight: 1.5,
@@ -595,23 +605,30 @@ function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateC
       }}
       data-testid="worker-log-block"
     >
-      {tail.map((line, i) => {
-        const isLast = i === tail.length - 1;
-        if (line.startsWith(RETRY_LOG_MARKER)) {
+      {tail.length === 0 ? (
+        <div className="truncate italic" data-testid="worker-log-waiting">
+          Waiting for output…
+          <BlinkingCursor />
+        </div>
+      ) : (
+        tail.map((line, i) => {
+          const isLast = i === tail.length - 1;
+          if (line.startsWith(RETRY_LOG_MARKER)) {
+            return (
+              <RetrySeparator
+                key={`${i}-retry`}
+                prevError={extractRetryError(line)}
+              />
+            );
+          }
           return (
-            <RetrySeparator
-              key={`${i}-retry`}
-              prevError={extractRetryError(line)}
-            />
+            <div key={`${i}-${line}`} className="truncate">
+              <LogLine line={line} />
+              {isLast && animateCursor ? <BlinkingCursor /> : null}
+            </div>
           );
-        }
-        return (
-          <div key={`${i}-${line}`} className="truncate">
-            <LogLine line={line} />
-            {isLast && animateCursor ? <BlinkingCursor /> : null}
-          </div>
-        );
-      })}
+        })
+      )}
     </div>
   );
 }

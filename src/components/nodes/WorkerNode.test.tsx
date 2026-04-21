@@ -324,6 +324,66 @@ describe('WorkerNode — non-proposed body', () => {
     expect(title.getAttribute('style')).toMatch(/line-through/);
   });
 
+  // Regression: the empty LogBlock used to render a pitch-black
+  // rectangle (`background: var(--color-bg-primary)`) between when
+  // the subtask entered running and the first log line landed —
+  // the "black hole" the user flagged during Phase 3 Step 9
+  // verification. The fix swaps that for a muted placeholder row
+  // with a blinking cursor, kept only while the actor is actively
+  // streaming (running/retrying).
+  it('empty logs in running state show the "Waiting for output…" placeholder', () => {
+    useGraphStore.setState({ nodeLogs: new Map([['auth', []]]) });
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Apply theme tokens',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    const waiting = screen.getByTestId('worker-log-waiting');
+    expect(waiting.textContent).toMatch(/Waiting for output/);
+    // The wrapper LogBlock renders regardless — the placeholder sits
+    // inside it so the card's 180px height stays reserved and the
+    // eventual first log line arrives without a layout shift.
+    expect(screen.getByTestId('worker-log-block')).toBeDefined();
+  });
+
+  it('empty logs in done/failed states do NOT render the LogBlock (no misleading "waiting" hint)', () => {
+    for (const state of ['done', 'failed'] as const) {
+      useGraphStore.setState({ nodeLogs: new Map([['auth', []]]) });
+      const { unmount } = renderNode('auth', {
+        state,
+        agent: 'claude',
+        title: 'Apply theme tokens',
+        why: null,
+        dependsOn: [],
+        replaces: [],
+        retries: 0,
+      });
+      expect(screen.queryByTestId('worker-log-block'), `state=${state}`).toBeNull();
+      expect(screen.queryByTestId('worker-log-waiting'), `state=${state}`).toBeNull();
+      unmount();
+    }
+  });
+
+  it('non-empty logs render normal tail and no "Waiting…" placeholder', () => {
+    useGraphStore.setState({ nodeLogs: new Map([['auth', ['✓ done step 1', '→ starting step 2']]]) });
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Apply theme tokens',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-log-block')).toBeDefined();
+    expect(screen.queryByTestId('worker-log-waiting')).toBeNull();
+    expect(screen.getByText(/starting step 2/i)).toBeDefined();
+  });
+
   // Regression: the running-state card packs header + title + why +
   // LogBlock(54px) + chip into a fixed 140px. If the title or why loses
   // `shrink-0`, flex's default shrink + the `truncate` class's
