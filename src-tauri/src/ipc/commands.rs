@@ -31,8 +31,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    AgentDetectionResult, AgentKind, RecoveryEntry, RunId, SkipResult, SubtaskDraft, SubtaskId,
-    SubtaskPatch,
+    AgentDetectionResult, AgentKind, MigrationNotice, RecoveryEntry, RunId, SkipResult,
+    SubtaskDraft, SubtaskId, SubtaskPatch,
 };
 use crate::detection::Detector;
 use crate::editor::EditorResult;
@@ -171,6 +171,18 @@ pub async fn consume_recovery_report(
     orch: State<'_, Arc<Orchestrator>>,
 ) -> Result<Vec<RecoveryEntry>, String> {
     Ok(orch.consume_recovery_report().await)
+}
+
+/// Drain the boot-time migration notices. One-shot sibling of
+/// `consume_recovery_report`: the settings store stashes any
+/// migration that ran during `SettingsStore::load_at` (see
+/// `settings::migrate`), and the frontend surfaces them once per
+/// launch. Subsequent calls return `[]`.
+#[tauri::command]
+pub fn consume_migration_notices(
+    settings: State<'_, Arc<SettingsStore>>,
+) -> Result<Vec<MigrationNotice>, String> {
+    settings.consume_migration_notices()
 }
 
 // -- Phase 3 Step 5 Layer-3 escalation commands -----------------------

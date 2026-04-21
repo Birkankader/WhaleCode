@@ -7,6 +7,9 @@ import {
   diffReadySchema,
   editorMethodSchema,
   editorResultSchema,
+  isMasterCapable,
+  MASTER_CAPABLE_AGENTS,
+  migrationNoticeSchema,
   repoInfoSchema,
   repoValidationSchema,
   runStatusSchema,
@@ -30,6 +33,40 @@ describe('agentKindSchema', () => {
 
   it('rejects unknown variants', () => {
     expect(agentKindSchema.safeParse('gpt4').success).toBe(false);
+  });
+});
+
+describe('master capability helpers', () => {
+  // Phase 4 Step 1: Gemini is worker-only. The const list and the
+  // helper are the frontend's mirror of `AgentKind::supports_master`;
+  // both sides must agree, so these tests pin the surface.
+  it('lists Claude and Codex as master-capable', () => {
+    expect(MASTER_CAPABLE_AGENTS).toEqual(['claude', 'codex']);
+  });
+
+  it('isMasterCapable returns true for masters and false for Gemini', () => {
+    expect(isMasterCapable('claude')).toBe(true);
+    expect(isMasterCapable('codex')).toBe(true);
+    expect(isMasterCapable('gemini')).toBe(false);
+  });
+});
+
+describe('migrationNoticeSchema', () => {
+  it('parses the gemini-demotion notice shape', () => {
+    const parsed = migrationNoticeSchema.parse({
+      kind: 'gemini-master-demoted',
+      message: 'Gemini is now worker-only — master agent switched to Claude Code.',
+    });
+    expect(parsed.kind).toBe('gemini-master-demoted');
+    expect(parsed.message).toMatch(/worker-only/);
+  });
+
+  it('rejects unknown migration kinds so future additions surface loudly', () => {
+    const bad = migrationNoticeSchema.safeParse({
+      kind: 'some-future-thing',
+      message: 'hi',
+    });
+    expect(bad.success).toBe(false);
   });
 });
 

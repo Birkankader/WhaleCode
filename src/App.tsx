@@ -11,7 +11,7 @@ import { RepoPicker } from './components/shell/RepoPicker';
 import { TopBar } from './components/shell/TopBar';
 import { WindowTooSmall } from './components/shell/WindowTooSmall';
 import { useRepoPickerShortcut } from './hooks/useRepoPickerShortcut';
-import { consumeRecoveryReport } from './lib/ipc';
+import { consumeMigrationNotices, consumeRecoveryReport } from './lib/ipc';
 import { useAgentStore } from './state/agentStore';
 import { useGraphStore } from './state/graphStore';
 import { useRepoStore } from './state/repoStore';
@@ -65,6 +65,26 @@ export default function App() {
         // requirement. Log and move on — the user still has a
         // working app, just no recovery notice.
         console.error('[App] consumeRecoveryReport failed', err);
+      });
+  }, []);
+
+  useEffect(() => {
+    // Boot-time heads-up for settings migrations. Today the only
+    // producer is Phase 4 Step 1 (Gemini worker-only: stored
+    // `masterAgent: "gemini"` is flipped to the default master).
+    // Read-once — StrictMode's double-fire is harmless here too.
+    // Uses the same `currentError` slot as the recovery banner so
+    // we reuse the ErrorBanner surface rather than inventing a
+    // second one; the two never collide in practice (recovery is
+    // rare, migrations are once-per-upgrade).
+    void consumeMigrationNotices()
+      .then((notices) => {
+        if (notices.length === 0) return;
+        const label = notices.map((n) => n.message).join(' ');
+        useGraphStore.setState({ currentError: label });
+      })
+      .catch((err) => {
+        console.error('[App] consumeMigrationNotices failed', err);
       });
   }, []);
 

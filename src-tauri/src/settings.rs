@@ -26,7 +26,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ipc::AgentKind;
+use crate::ipc::{AgentKind, MigrationKind, MigrationNotice};
 
 /// User-editable settings. Stored as camelCase JSON so the file is readable
 /// and matches the IPC wire format.
@@ -115,6 +115,51 @@ pub fn load_from(path: &Path) -> Settings {
     }
 }
 
+/// Apply schema migrations to a freshly-loaded [`Settings`]. Returns
+/// the list of notices the frontend should surface once at boot;
+/// today that's just the Phase 4 Step 1 Gemini demotion.
+///
+/// Mutation policy: migrations MUST be idempotent — calling `migrate`
+/// on an already-migrated settings struct is a no-op. The caller is
+/// responsible for persisting the mutated struct back to disk; see
+/// [`SettingsStore::load_at`].
+///
+/// The split from `load_from` keeps the on-disk parsing pure and
+/// testable without reaching for `SettingsStore` plumbing.
+pub fn migrate(settings: &mut Settings) -> Vec<MigrationNotice> {
+    let mut notices = Vec::new();
+
+    // Phase 4 Step 1: Gemini is worker-only. A user who picked it as
+    // master in Phase 3 (or earlier) gets flipped to Claude — the
+    // default master — and a one-shot notice explains why.
+    if !settings.master_agent.supports_master() {
+        let previous = settings.master_agent;
+        settings.master_agent = Settings::default().master_agent;
+        // Only the Gemini case is known today; future worker-only
+        // agents would produce the same migration variant.
+        if matches!(previous, AgentKind::Gemini) {
+            notices.push(MigrationNotice {
+                kind: MigrationKind::GeminiMasterDemoted,
+                message: format!(
+                    "Gemini is now worker-only — master agent switched to {}. \
+                     You can still assign Gemini to individual subtasks.",
+                    agent_display_name(settings.master_agent)
+                ),
+            });
+        }
+    }
+
+    notices
+}
+
+fn agent_display_name(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "Codex CLI",
+        AgentKind::Gemini => "Gemini CLI",
+    }
+}
+
 /// Persist settings atomically: write to `<path>.tmp` then rename. On the
 /// same filesystem this avoids a half-written file if the process dies mid
 /// write. The parent directory is created if missing.
@@ -140,8 +185,20 @@ pub fn apply_patch(settings: &mut Settings, patch: &serde_json::Value) -> Result
         match key.as_str() {
             "lastRepo" => settings.last_repo = from_nullable_string(key, value)?,
             "masterAgent" => {
-                settings.master_agent = serde_json::from_value(value.clone())
+                let parsed: AgentKind = serde_json::from_value(value.clone())
                     .map_err(|e| format!("masterAgent: {e}"))?;
+                // Defence in depth against a client that managed to
+                // send a worker-only agent (stale UI, hand-crafted IPC
+                // call). The TopBar filters these before submit; this
+                // check makes sure the backend can't be coaxed into
+                // accepting one.
+                if !parsed.supports_master() {
+                    return Err(format!(
+                        "masterAgent: {:?} is worker-only and cannot be master",
+                        parsed
+                    ));
+                }
+                settings.master_agent = parsed;
             }
             "claudeBinaryPath" => settings.claude_binary_path = from_nullable_string(key, value)?,
             "codexBinaryPath" => settings.codex_binary_path = from_nullable_string(key, value)?,
@@ -201,14 +258,32 @@ pub fn resolve_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 pub struct SettingsStore {
     pub settings: Mutex<Settings>,
     pub path: PathBuf,
+    /// Boot-time migration notices stashed here until the frontend
+    /// drains them via `consume_migration_notices`. Read-once: a
+    /// second call returns `[]`. Independent mutex from `settings`
+    /// so the two don't contend under IPC load.
+    migration_notices: Mutex<Vec<MigrationNotice>>,
 }
 
 impl SettingsStore {
     pub fn load_at(path: PathBuf) -> Self {
-        let settings = load_from(&path);
+        let mut settings = load_from(&path);
+        let notices = migrate(&mut settings);
+        // Persist the migrated struct so subsequent boots don't
+        // re-trigger the same migration. Best-effort: if the write
+        // fails, the notice still fires but the user will see the
+        // banner again next launch — no data loss.
+        if !notices.is_empty() {
+            if let Err(e) = save_to(&settings, &path) {
+                eprintln!(
+                    "[settings] persist after migration failed: {e} — notices still queued",
+                );
+            }
+        }
         Self {
             settings: Mutex::new(settings),
             path,
+            migration_notices: Mutex::new(notices),
         }
     }
 
@@ -227,6 +302,18 @@ impl SettingsStore {
         apply_patch(&mut guard, patch)?;
         save_to(&guard, &self.path)?;
         Ok(guard.clone())
+    }
+
+    /// Drain the boot-time migration notices. Read-once: subsequent
+    /// calls return an empty vec. Wired to the
+    /// `consume_migration_notices` IPC command so the frontend can
+    /// render a single heads-up banner per launch.
+    pub fn consume_migration_notices(&self) -> Result<Vec<MigrationNotice>, String> {
+        let mut guard = self
+            .migration_notices
+            .lock()
+            .map_err(|e| format!("migration notices lock poisoned: {e}"))?;
+        Ok(std::mem::take(&mut *guard))
     }
 }
 
@@ -312,12 +399,30 @@ mod tests {
         let mut s = Settings::default();
         let patch = serde_json::json!({
             "lastRepo": "/foo",
-            "masterAgent": "gemini",
+            "masterAgent": "codex",
             "garbage": "ignored"
         });
         apply_patch(&mut s, &patch).unwrap();
         assert_eq!(s.last_repo.as_deref(), Some("/foo"));
-        assert_eq!(s.master_agent, AgentKind::Gemini);
+        assert_eq!(s.master_agent, AgentKind::Codex);
+    }
+
+    #[test]
+    fn patch_rejects_worker_only_agent_as_master() {
+        // Phase 4 Step 1: Gemini is worker-only. The backend
+        // rejects `masterAgent: "gemini"` on the patch path even
+        // though the enum still accepts the variant for worker
+        // assignment purposes.
+        let mut s = Settings::default();
+        let err = apply_patch(&mut s, &serde_json::json!({ "masterAgent": "gemini" }))
+            .unwrap_err();
+        assert!(err.contains("masterAgent"));
+        assert!(
+            err.to_lowercase().contains("worker-only"),
+            "error should explain the rejection: {err}"
+        );
+        // And the field is left untouched on rejection.
+        assert_eq!(s.master_agent, AgentKind::Claude);
     }
 
     #[test]
@@ -334,12 +439,12 @@ mod tests {
     fn patch_leaves_unspecified_keys_untouched() {
         let mut s = Settings {
             last_repo: Some("/keep".into()),
-            master_agent: AgentKind::Codex,
+            master_agent: AgentKind::Claude,
             ..Settings::default()
         };
-        apply_patch(&mut s, &serde_json::json!({ "masterAgent": "gemini" })).unwrap();
+        apply_patch(&mut s, &serde_json::json!({ "masterAgent": "codex" })).unwrap();
         assert_eq!(s.last_repo.as_deref(), Some("/keep"));
-        assert_eq!(s.master_agent, AgentKind::Gemini);
+        assert_eq!(s.master_agent, AgentKind::Codex);
     }
 
     #[test]
@@ -454,6 +559,73 @@ mod tests {
         assert!(reloaded.auto_approve);
         assert!(reloaded.auto_approve_consent_given);
         assert_eq!(reloaded.max_subtasks_per_auto_approved_run, 7);
+    }
+
+    #[test]
+    fn migrate_demotes_gemini_master_and_emits_notice() {
+        // Phase 4 Step 1: a legacy settings file with `masterAgent:
+        // "gemini"` must be flipped to the default master on load,
+        // and a notice must be queued so the UI can explain why.
+        let mut s = Settings {
+            master_agent: AgentKind::Gemini,
+            ..Settings::default()
+        };
+        let notices = migrate(&mut s);
+        assert_eq!(s.master_agent, AgentKind::Claude);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, crate::ipc::MigrationKind::GeminiMasterDemoted);
+        assert!(
+            notices[0].message.to_lowercase().contains("gemini"),
+            "notice should mention the demoted agent: {}",
+            notices[0].message,
+        );
+    }
+
+    #[test]
+    fn migrate_is_idempotent_for_already_migrated_settings() {
+        let mut s = Settings::default();
+        let first = migrate(&mut s);
+        assert!(first.is_empty());
+        let second = migrate(&mut s);
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn migrate_leaves_codex_master_untouched() {
+        // Sanity: only worker-only agents get demoted. Codex is a
+        // supported master; migrate must not touch it.
+        let mut s = Settings {
+            master_agent: AgentKind::Codex,
+            ..Settings::default()
+        };
+        let notices = migrate(&mut s);
+        assert_eq!(s.master_agent, AgentKind::Codex);
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn settings_store_load_at_surfaces_gemini_demotion_once() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let legacy = Settings {
+            master_agent: AgentKind::Gemini,
+            ..Settings::default()
+        };
+        save_to(&legacy, &path).unwrap();
+
+        let store = SettingsStore::load_at(path.clone());
+        // First drain: one notice for the Gemini demotion.
+        let notices = store.consume_migration_notices().unwrap();
+        assert_eq!(notices.len(), 1);
+
+        // Read-once semantics: second drain is empty.
+        let again = store.consume_migration_notices().unwrap();
+        assert!(again.is_empty());
+
+        // The migration was persisted: reopening the file returns
+        // Claude, not Gemini, so the banner never fires twice.
+        let reloaded = load_from(&path);
+        assert_eq!(reloaded.master_agent, AgentKind::Claude);
     }
 
     #[test]

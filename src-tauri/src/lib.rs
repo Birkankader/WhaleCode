@@ -90,6 +90,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::consume_recovery_report,
+            commands::consume_migration_notices,
             commands::manual_fix_subtask,
             commands::mark_subtask_fixed,
             commands::skip_subtask,

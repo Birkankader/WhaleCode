@@ -1,6 +1,10 @@
 /**
- * Shown when no agent is Available — the user can't orchestrate anything
- * until at least one CLI is installed on PATH (or pointed at via settings).
+ * Shown when no master-capable agent is Available — the user can't
+ * orchestrate anything until at least one of the master-capable CLIs
+ * (Claude Code or Codex) is installed on PATH (or pointed at via
+ * settings). Gemini is rendered here too for completeness but tagged
+ * as "worker-only" — installing it alone does not dismiss this
+ * screen.
  *
  * Replaces the canvas body while keeping the TopBar/ApprovalBar chrome.
  * Each card is one agent: its current status, the install command copied
@@ -12,13 +16,13 @@
  * `checking` is true so the user gets immediate feedback.
  */
 
-import type { AgentKind, AgentStatus } from '../../lib/ipc';
+import { isMasterCapable, type AgentKind, type AgentStatus } from '../../lib/ipc';
 import { useAgentStore } from '../../state/agentStore';
 import { AGENT_FULL_LABEL } from '../primitives/agentColor';
 
-const TITLE = 'No agents available';
+const TITLE = 'No master agent available';
 const HINT =
-  'WhaleCode drives one of these CLIs as your master. Install any of them, then recheck.';
+  'WhaleCode needs Claude Code or Codex as your master. Install one of them, then recheck. Gemini is supported as a worker — you can assign it per subtask once a master is available.';
 
 const INSTALL_COMMANDS: Record<AgentKind, string> = {
   claude: 'npm install -g @anthropic-ai/claude-code',
@@ -29,7 +33,7 @@ const INSTALL_COMMANDS: Record<AgentKind, string> = {
 const DOCS_HINT: Record<AgentKind, string> = {
   claude: 'Requires a Claude Pro / Max / API account.',
   codex: 'Requires an OpenAI API key on first launch.',
-  gemini: 'Requires a Google AI Studio key.',
+  gemini: 'Requires a Google AI Studio key. Worker-only — not a master.',
 };
 
 const ORDER: AgentKind[] = ['claude', 'codex', 'gemini'];
@@ -87,6 +91,7 @@ function AgentCard({ kind, status }: { kind: AgentKind; status: AgentStatus | un
   const label = AGENT_FULL_LABEL[kind];
   const install = INSTALL_COMMANDS[kind];
   const hint = DOCS_HINT[kind];
+  const workerOnly = !isMasterCapable(kind);
 
   return (
     <article
@@ -94,7 +99,19 @@ function AgentCard({ kind, status }: { kind: AgentKind; status: AgentStatus | un
       data-testid={`agent-card-${kind}`}
     >
       <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-[14px] font-medium text-fg-primary">{label}</h3>
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-[14px] font-medium text-fg-primary">{label}</h3>
+          {workerOnly ? (
+            <span
+              className="rounded-sm border border-border-subtle px-1.5 py-0.5 text-hint text-fg-tertiary"
+              data-testid={`agent-card-${kind}-worker-only`}
+              title="Not supported as a master agent. Can still be assigned to individual subtasks."
+              aria-label="Worker-only agent"
+            >
+              Worker-only
+            </span>
+          ) : null}
+        </div>
         <StatusBadge status={status} />
       </div>
 

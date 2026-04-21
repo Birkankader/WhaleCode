@@ -30,7 +30,7 @@ These define the product. Do not deviate without discussion.
 
 | # | Decision | Choice |
 |---|----------|--------|
-| 1 | Master agent | User-selectable, smart default via fallback chain: Claude Code → Codex CLI → Gemini CLI |
+| 1 | Master agent | User-selectable, smart default via fallback chain: Claude Code → Codex CLI. (Gemini is worker-only — too slow to plan with, usable on subtasks.) |
 | 2 | Worker communication | Master-centric + shared notes (`.whalecode/notes.md`). No peer-to-peer. |
 | 3 | Fail handling | Progressive: worker retry (max 1) → master re-plan (max 2) → human |
 | 4 | Repo support | Single repo + mono-repo awareness. Multi-repo deferred to v3. |

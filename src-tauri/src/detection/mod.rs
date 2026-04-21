@@ -35,9 +35,11 @@ use crate::settings::SettingsStore;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Preference order when recommending a default master. Matches the product
-/// spec's "Claude → Codex → Gemini" rule.
-const RECOMMENDED_ORDER: [AgentKind; 3] =
-    [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini];
+/// spec's "Claude → Codex" fallback chain. Phase 4 Step 1 removed the
+/// Gemini tail — Gemini is worker-only (see `AgentKind::supports_master`).
+/// Keep the entries in this array `supports_master() == true`; a debug
+/// assertion in [`Detector::detect_all`] guards against a future regression.
+const RECOMMENDED_ORDER: [AgentKind; 2] = [AgentKind::Claude, AgentKind::Codex];
 
 #[derive(Clone)]
 pub struct Detector {
@@ -71,12 +73,26 @@ impl Detector {
             self.detect(AgentKind::Gemini),
         );
 
+        // Defence in depth: the `RECOMMENDED_ORDER` const doc says every
+        // entry must be master-capable. If a future edit adds a worker-
+        // only agent to the array, a debug build catches it before a
+        // release ships a silently-broken master picker.
+        debug_assert!(
+            RECOMMENDED_ORDER.iter().all(|k| k.supports_master()),
+            "RECOMMENDED_ORDER must contain only master-capable agents",
+        );
+
         let recommended_master = RECOMMENDED_ORDER
             .iter()
             .find(|kind| {
                 let status = match **kind {
                     AgentKind::Claude => &claude,
                     AgentKind::Codex => &codex,
+                    // Gemini is worker-only (Phase 4 Step 1). The const
+                    // excludes it, so this arm is unreachable under the
+                    // current invariant. Pattern-match exhaustively
+                    // anyway so adding a new variant forces a compile
+                    // error at this site.
                     AgentKind::Gemini => &gemini,
                 };
                 matches!(status, AgentStatus::Available { .. })
@@ -382,6 +398,39 @@ mod tests {
         assert!(matches!(res.claude, AgentStatus::NotInstalled));
         assert!(matches!(res.codex, AgentStatus::Available { .. }));
         assert_eq!(res.recommended_master, Some(AgentKind::Codex));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gemini_is_never_recommended_as_master_even_when_sole_available() {
+        // Phase 4 Step 1: Gemini is worker-only. Even when it's the
+        // only CLI installed, `recommended_master` stays `None` —
+        // the frontend then routes to AgentSetupState's "install a
+        // master-capable agent" prompt.
+        let dir = TempDir::new().unwrap();
+        fake_cli(dir.path(), "gemini", "Gemini CLI 2.0.1\n", "", 0);
+        let detector = Detector::with_path(
+            store_with(Settings::default()),
+            dir.path().to_string_lossy().into_owned(),
+        );
+        let res = detector.detect_all().await;
+        assert!(matches!(res.gemini, AgentStatus::Available { .. }));
+        assert!(matches!(res.claude, AgentStatus::NotInstalled));
+        assert!(matches!(res.codex, AgentStatus::NotInstalled));
+        assert_eq!(res.recommended_master, None);
+    }
+
+    #[test]
+    fn recommended_order_contains_only_master_capable_agents() {
+        // Mirror of the runtime `debug_assert!` in `detect_all`.
+        // Having it as a unit test gives us the invariant in release
+        // builds too.
+        for kind in RECOMMENDED_ORDER.iter() {
+            assert!(
+                kind.supports_master(),
+                "RECOMMENDED_ORDER leaked a worker-only agent: {kind:?}"
+            );
+        }
     }
 
     #[cfg(unix)]

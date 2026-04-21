@@ -62,7 +62,10 @@ describe('TopBar master dropdown', () => {
     resetStores();
   });
 
-  it('opens on click and lists all three agents', () => {
+  it('opens on click and lists only master-capable agents', () => {
+    // Phase 4 Step 1: Gemini is worker-only and is filtered out of
+    // this picker. The setup/AgentSetupState screen and the per-
+    // subtask worker override are the only places Gemini shows up.
     seedAvailable();
     render(<TopBar />);
     const chip = screen.getByRole('button', { name: /master agent:/i });
@@ -71,21 +74,32 @@ describe('TopBar master dropdown', () => {
     expect(menu).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /claude code/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /codex cli/i })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: /gemini cli/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /gemini cli/i })).toBeNull();
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2);
   });
 
   it('disables broken and not-installed entries with an explanatory tooltip', () => {
-    seedAvailable();
+    // Re-seed so Codex is broken (a state the master picker needs to
+    // surface); Gemini stays as the worker-only case which is
+    // filtered out of this menu entirely.
+    useAgentStore.setState({
+      detection: {
+        claude: { status: 'available', version: '1.0.0', binaryPath: '/bin/claude' },
+        codex: { status: 'broken', binaryPath: '/bad/codex', error: 'missing libfoo' },
+        gemini: { status: 'not-installed' },
+        recommendedMaster: 'claude',
+      },
+      checking: false,
+      error: null,
+    });
     render(<TopBar />);
     fireEvent.click(screen.getByRole('button', { name: /master agent:/i }));
 
     const codex = screen.getByRole('menuitem', { name: /codex cli/i });
     expect(codex).toBeDisabled();
-    expect(codex).toHaveAttribute('title', 'Not installed');
-
-    const gemini = screen.getByRole('menuitem', { name: /gemini cli/i });
-    expect(gemini).toBeDisabled();
-    expect(gemini).toHaveAttribute('title', expect.stringContaining('missing libfoo'));
+    expect(codex).toHaveAttribute('title', expect.stringContaining('missing libfoo'));
+    // Gemini is worker-only — never rendered in this menu.
+    expect(screen.queryByRole('menuitem', { name: /gemini cli/i })).toBeNull();
   });
 
   it('disables the chip when no agent is available', () => {

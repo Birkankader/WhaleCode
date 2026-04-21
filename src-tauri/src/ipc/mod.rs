@@ -25,6 +25,55 @@ pub enum AgentKind {
     Gemini,
 }
 
+impl AgentKind {
+    /// Whether this agent is eligible to act as the master (planner /
+    /// replanner). Gemini is worker-only until upstream latency
+    /// improves — see `docs/KNOWN_ISSUES.md` "Gemini CLI is too slow
+    /// to use as master" for the Phase 3.5 benchmark that led here
+    /// and Phase 4 Step 1 for the decision to restrict it.
+    pub fn supports_master(&self) -> bool {
+        match self {
+            AgentKind::Claude | AgentKind::Codex => true,
+            AgentKind::Gemini => false,
+        }
+    }
+
+    /// Whether this agent can be dispatched as a worker on a
+    /// subtask. Currently every supported CLI qualifies; this is
+    /// here as the symmetric counterpart to [`Self::supports_master`]
+    /// so call sites read intent-forward and future additions have a
+    /// single predicate to flip.
+    #[allow(dead_code)] // symmetric pair with supports_master; picks up callers in later phases
+    pub fn supports_worker(&self) -> bool {
+        matches!(self, AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini)
+    }
+}
+
+/// One-shot notice surfaced to the frontend at boot when a settings
+/// migration rewrote the user's stored preference. Today the only
+/// producer is the Phase 4 Step 1 "Gemini worker-only" migration
+/// (master agent was `gemini` → flipped to the default master);
+/// later phases can add variants by extending [`MigrationKind`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationNotice {
+    pub kind: MigrationKind,
+    /// Human-readable sentence for the banner. The Rust side owns
+    /// the copy so the frontend doesn't have to localise variant
+    /// keys — it just renders the string.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MigrationKind {
+    /// User had `masterAgent: "gemini"` in their settings. Phase 4
+    /// Step 1 made Gemini worker-only, so the stored value was
+    /// replaced with the built-in default (`AgentKind::Claude`) on
+    /// the next boot.
+    GeminiMasterDemoted,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum AgentStatus {

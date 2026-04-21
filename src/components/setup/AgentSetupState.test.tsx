@@ -42,6 +42,27 @@ describe('AgentSetupState', () => {
     expect(screen.getByText(/@google\/gemini-cli/)).toBeInTheDocument();
   });
 
+  it('tags Gemini as worker-only and leaves masters untagged', () => {
+    // Phase 4 Step 1: the setup screen lists all three agents so
+    // users with a Gemini-only install still see the card, but the
+    // Gemini card is explicitly labelled "Worker-only" to explain
+    // why installing it alone doesn't satisfy the gate.
+    seedDetection({
+      claude: { status: 'not-installed' },
+      codex: { status: 'not-installed' },
+      gemini: { status: 'not-installed' },
+      recommendedMaster: null,
+    });
+    render(<AgentSetupState />);
+    expect(screen.getByTestId('agent-card-gemini-worker-only')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('agent-card-claude-worker-only'),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId('agent-card-codex-worker-only'),
+    ).toBeNull();
+  });
+
   it('shows the error line for a broken agent', () => {
     seedDetection({
       claude: {

@@ -25,6 +25,19 @@ export type SubtaskId = z.infer<typeof subtaskIdSchema>;
 export const agentKindSchema = z.enum(['claude', 'codex', 'gemini']);
 export type AgentKind = z.infer<typeof agentKindSchema>;
 
+/**
+ * Agents eligible to act as the master (planner / replanner).
+ * Mirror of `AgentKind::supports_master` on the Rust side — Phase 4
+ * Step 1 restricts Gemini to worker-only. Update both sides in
+ * lockstep when the list changes.
+ */
+export const MASTER_CAPABLE_AGENTS: readonly AgentKind[] = ['claude', 'codex'] as const;
+
+/** See {@link MASTER_CAPABLE_AGENTS}. */
+export function isMasterCapable(kind: AgentKind): boolean {
+  return (MASTER_CAPABLE_AGENTS as readonly AgentKind[]).includes(kind);
+}
+
 export const agentStatusSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('available'),
@@ -345,6 +358,22 @@ export const recoveryEntrySchema = z.object({
 });
 export type RecoveryEntry = z.infer<typeof recoveryEntrySchema>;
 
+/**
+ * Boot-time migration notice produced by `settings::migrate`. Today
+ * the only producer is the Phase 4 Step 1 Gemini demotion; later
+ * phases can add new `kind` values. The backend owns the user-
+ * facing copy (`message`) so the frontend only has to render it.
+ * Read-once via `consumeMigrationNotices`.
+ */
+export const migrationKindSchema = z.enum(['gemini-master-demoted']);
+export type MigrationKind = z.infer<typeof migrationKindSchema>;
+
+export const migrationNoticeSchema = z.object({
+  kind: migrationKindSchema,
+  message: z.string(),
+});
+export type MigrationNotice = z.infer<typeof migrationNoticeSchema>;
+
 // ---------- Settings ----------
 
 export const settingsSchema = z.object({
@@ -557,6 +586,17 @@ export async function validateRepo(path: string): Promise<RepoValidation> {
 export async function consumeRecoveryReport(): Promise<RecoveryEntry[]> {
   const raw = await invoke<unknown>('consume_recovery_report');
   return z.array(recoveryEntrySchema).parse(raw);
+}
+
+/**
+ * Drain the boot-time migration notices stashed by
+ * `settings::migrate`. Sibling of {@link consumeRecoveryReport} —
+ * one-shot, returns `[]` after the first call. Surface each
+ * `message` once to the user (e.g. as a banner).
+ */
+export async function consumeMigrationNotices(): Promise<MigrationNotice[]> {
+  const raw = await invoke<unknown>('consume_migration_notices');
+  return z.array(migrationNoticeSchema).parse(raw);
 }
 
 // ---------- Phase 3 Step 5 Layer-3 escalation commands ----------

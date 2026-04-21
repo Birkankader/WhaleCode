@@ -3,17 +3,22 @@
  * currently-loaded repo (clickable to switch), and the master-agent
  * dropdown.
  *
- * The master dropdown is the only place (in Phase 2) where the user
- * changes their master agent. It lists all three kinds regardless of
- * availability: Available ones are selectable, Broken/NotInstalled are
- * disabled with a tooltip explaining why. Clicking outside or pressing
- * Escape closes the menu.
+ * The master dropdown lists only master-capable agents (see
+ * {@link MASTER_CAPABLE_AGENTS}). Phase 4 Step 1 filtered Gemini out
+ * of this list — it remains available for per-subtask worker
+ * assignment but is no longer a valid planner. Available entries are
+ * selectable, Broken/NotInstalled are disabled with a tooltip.
+ * Clicking outside or pressing Escape closes the menu.
  */
 
 import { Settings as SettingsIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
-import { type AgentKind, type AgentStatus } from '../../lib/ipc';
+import {
+  MASTER_CAPABLE_AGENTS,
+  type AgentKind,
+  type AgentStatus,
+} from '../../lib/ipc';
 import { useAgentStore } from '../../state/agentStore';
 import { useGraphStore, type GraphStatus } from '../../state/graphStore';
 import { useRepoStore } from '../../state/repoStore';
@@ -24,7 +29,9 @@ const APP_NAME = 'WhaleCode';
 const NO_REPO_LABEL = 'No repo loaded';
 const NO_AGENTS_LABEL = 'No agents available';
 
-const DROPDOWN_ORDER: AgentKind[] = ['claude', 'codex', 'gemini'];
+// Mirror of `detection::RECOMMENDED_ORDER`: master-capable agents only.
+// Gemini is deliberately excluded — see MASTER_CAPABLE_AGENTS.
+const DROPDOWN_ORDER: readonly AgentKind[] = MASTER_CAPABLE_AGENTS;
 
 /**
  * Statuses during which a top-level "Cancel run" affordance is offered.

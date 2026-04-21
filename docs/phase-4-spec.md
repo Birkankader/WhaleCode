@@ -304,57 +304,49 @@ Today: a failed or escalated worker's worktree path is visible only to the Layer
 
 ### Step 5: Agent crash detection and surface
 
-Informed by Step 0's diagnostic. The implementation shape depends on what the diagnostic finds — this step's spec is a conditional skeleton.
+Informed by Step 0's diagnostic (`docs/phase-4-crash-diagnostic.md`). **Decided: event-field branch.** Step 0 found the Rust-side `AgentError` enum already distinguishes every category we care about — the gap is the IPC event contract. `SubtaskStateChanged` carries only a flat `SubtaskState::Failed` plus a diagnostic string, collapsing the backend's five-way classification (`ProcessCrashed` / `TaskFailed` / `ParseFailed` / `Timeout` / `SpawnFailed`) into an opaque "it broke." We thread the needle by extending the existing failure event with a discriminant field — no new `SubtaskState` variant, no SQLite migration, no XState reshuffle.
 
-**If Step 0 finds categories collapse to an indistinguishable `Failed`:**
+**Scope (what it does):**
 
-- Add `SubtaskState::Crashed` to the Rust enum. Enum audit table:
+- Add an `ErrorCategory` enum on the wire mirroring the five Step-0 categories, serialized kebab-case:
+  - `process-crashed` (Rust: `AgentError::ProcessCrashed`)
+  - `task-failed` (Rust: `AgentError::TaskFailed`)
+  - `parse-failed` (Rust: `AgentError::ParseFailed`)
+  - `timeout` (Rust: `AgentError::Timeout`)
+  - `spawn-failed` (Rust: `AgentError::SpawnFailed`)
+  - `orchestrator-panic` (Rust: `DispatchOutcome::Failed` wrapping a worker-task panic — Step 0 Category F)
+- Extend the existing `subtask_state_changed` event payload with `errorCategory: Option<ErrorCategory>`. Non-Failed transitions send `None`; Failed transitions send `Some(category)` mapped from the `AgentError` / `EscalateToMaster` discriminant at the `TaskFailed`/`DispatchOutcome::Failed` boundary in `orchestration/dispatcher.rs` + `orchestration/lifecycle.rs`.
+- Mirror in `src/lib/ipc.ts`: `errorCategorySchema = z.enum([...]).optional()`, add to `subtaskStateChangedSchema`. Zod's `.optional()` keeps pre-Phase-4 payloads compatible (they'd arrive with the field absent).
+- ErrorBanner / worker-node caption gain copy variants keyed on `errorCategory` — distinct strings per category (e.g. "Agent crashed (segfault)" vs "Agent refused task" vs "Agent timed out after 10 min"). Unknown / absent category falls through to the current generic "Agent failed" copy so older runs keep rendering.
+- Retry routing (Layer 1 / Layer 2) **does not change in this step**. The current `EscalateToMaster::Deterministic` / `Exhausted` split already routes `SpawnFailed` / `ParseFailed` past Layer 1 as documented in Phase 3. Step 5 only reveals the distinction to the UI; if a future phase wants to change routing per category, the discriminant is now on the wire for the decision.
 
-| Call site | File | Handling |
-|---|---|---|
-| Rust enum + `From<SubtaskState>` impls | `src-tauri/src/orchestration/state.rs` | Add variant + serde rename |
-| Zod schema | `src/lib/ipc.ts` | Add to `SubtaskStateSchema` enum |
-| Status → visual mapper | `src/state/nodeMachine.ts` | Add `crashed` mapping (uses failed palette + distinct border pattern) |
-| XState bridge | `src/state/nodeMachine.ts` | Add transition from `running` / `retrying` → `crashed` |
-| SQLite persistence | `src-tauri/src/storage/subtasks.rs` | Add to text-serialization mapping; no migration needed (text column) |
+**Scope (what it does NOT):**
 
-- Add `run:agent_crashed` event, payload `{ runId, subtaskId, category, detail }` where `category` is one of the taxonomy values from Step 0.
-- ErrorBanner gains a crash variant with distinct copy: "Subprocess crashed (malformed output)" or "Subprocess hang (no output for 60s)" etc., keyed off `category`.
-- Routing through Layer 1: crashes with `category in {Transient, RateLimited}` route into Layer 1 retry; crashes with `category in {MalformedOutput, SpawnFailed}` skip Layer 1 and escalate directly to Layer 2 (matching Phase 3's `SpawnFailed → skip-Layer-1` pattern already documented in the architecture).
-
-**If Step 0 finds categories are already distinguishable:**
-
-- Scope shrinks to UI-only. No new state, no new event. ErrorBanner gains a crash variant that discriminates via existing `AgentError` payload. No enum audit needed.
-
-**Scope (what it does NOT — in either branch):**
-
-- Does not add timeout enforcement if none exists today. If Step 0 finds "subprocess hang" is a real category but the dispatcher has no timeout, timeout enforcement is its own Phase 5 work — Step 5 just surfaces the existing (possibly-degenerate) behavior clearly.
+- Does not add a `SubtaskState::Crashed` variant (the spec's original "full branch"). Step 0 confirmed state is not the right carrier — the distinction is per-instance, not per-lifecycle. No SQLite schema change, no node machine reshuffle.
+- Does not add a new `run:agent_crashed` event. One failure event with a discriminant is cheaper than two events the frontend has to correlate.
+- Does not add timeout enforcement where none exists. `run_streaming` already enforces a wall-clock timeout (Step 0 Category D); this step just names it distinctly on the wire.
 - Does not add telemetry / metrics for crash frequency. Phase 6 cost-tracking work can extend the same tables.
-- Does not differentiate Unix vs Windows in the crash surface. Same UI on both; Windows Job Object work (KNOWN_ISSUES, v2.5) will improve the *fidelity* of the underlying signal without changing the surface.
+- Does not differentiate Unix vs Windows. Same category mapping on both; Windows Job Object work (KNOWN_ISSUES, v2.5) improves signal fidelity without changing the surface.
 
-**Acceptance criteria (full-branch):**
+**Acceptance criteria:**
 
-- Reproduce each Step 0 category via the fake-agent fixture; UI shows distinct crash banner + state styling for each; retry routing behaves per taxonomy.
-- Enum audit verified by test that exercises all five call sites for `Crashed` (if added).
-- One integration test per category asserts event emission order (`run:subtask_state_changed { Crashed }` → `run:agent_crashed`).
-- KNOWN_ISSUES.md entry for the now-distinguishable categories moves to "Resolved in Phase 4."
+- Each of the six `ErrorCategory` values round-trips cleanly from backend classification to UI copy — verified by one integration test per category driving the fake-agent fixture to the failure state and asserting both the event payload and the rendered copy.
+- Legacy payloads without `errorCategory` render with the generic "Agent failed" fallback (`.optional()` Zod path). Verified by a parser test with the field omitted.
+- `classify_nonzero`'s heuristic is surfaced: a worker CLI exit with stderr matching `/cannot|refuse|unable|failed to/i` on a non-zero exit is reported as `task-failed`, not `process-crashed`. Documented in KNOWN_ISSUES.md alongside Phase 4 Step 1's rate-limit entry.
+- Snapshot test covering the new copy variants for every category (includes accessibility labels).
 
-**Acceptance criteria (UI-only branch):**
+**Open questions:**
 
-- Each category produces a distinct banner and status-line caption.
-- No new state, no new event; integration tests from Step 0 continue to pass unchanged and frontend tests assert the correct banner variant per `AgentError`.
-
-**Open questions (full-branch):**
-
-- **Where in the node machine does `Crashed` live relative to `Failed`?** It's terminal-like but Layer 1 retry should still handle the retryable categories. Recommend: `Crashed` transitions to `Retrying` on retryable categories (same as `Failed → Retrying`) and terminates otherwise. Both end-states rendered identically visually, just with different banner copy.
-- **Serialization forward-compat:** old runs in SQLite have `Failed` where Phase 4 would now record `Crashed`. Reading them back should fall through to `Failed` display — no rewrite. Verify in a test.
+- **Category F (orchestrator panic) source:** dispatcher wraps `JoinError` with a prefix `"worker task panicked: "`. Do we surface that string as detail, or do we synthesize fresh copy? **Recommend:** use the dispatcher string as-is — it's already shipped in the `DispatchOutcome::Failed` error field today, so the "detail" pipe is unchanged; only the category tag is new. UI copy: "Orchestrator worker panicked — please report this."
+- **Banner persistence:** should the crash category persist in the node caption after a successful retry, or vanish? **Recommend:** vanish. A successful Layer-1 retry clears the category on the next `state_changed` event (it transitions `Retrying → Running`, and a subsequent `Running → Done` sends no `errorCategory`). The run-level ErrorBanner still cleared when the run reaches a terminal state.
 
 **Risk flags:**
 
-- **Layer 2 replan loop interaction:** if a `Crashed` subtask escalates to Layer 2 and master re-plans, but the replacement subtask also crashes with the same category, Phase 3's replan cap (max 2 per chain) kicks in and escalates to Layer 3. This is correct behavior but worth verifying in an integration test — `crashed_triggers_layer_2_then_layer_3_after_chain_cap`.
-- **UI noise:** if crash banners are too loud (red border + red banner + red chip), the UI starts to feel angry even when one worker crashed once and succeeded on retry. Tone the persistent surface down; keep the moment-of-crash banner prominent.
+- **Wire drift between Rust `AgentError` and TS `errorCategory`:** easy to add a Rust variant and forget the Zod mirror. Mitigation: a single authoritative mapping function (`AgentError → ErrorCategory`) in `src-tauri/src/ipc/mod.rs` with an exhaustive match on `AgentError`, plus a unit test that iterates every `AgentError` variant and asserts a non-panicking mapping.
+- **Snapshot bloat:** adding copy for six categories × three surfaces (banner, node caption, accessibility label) is 18 strings — manageable, but lives in the component module rather than an i18n bundle (Phase 6 candidate).
+- **Error event emitted after terminal state:** already guarded by lifecycle state machine; the new field doesn't change dispatch, only the payload. Integration tests should still include a "dispatch rejected after terminal" assertion to guard against regressions.
 
-**Estimated complexity:** medium (full-branch: 3 days; UI-only branch: 1 day). Planner should pad for full-branch by default and revisit after Step 0.
+**Estimated complexity:** small-to-medium. Event shape extension + six copy variants + per-category tests ≈ **1.5 days** (half the original "full-branch" estimate, and a hair over the "UI-only" estimate because the backend still needs the mapping function + serde plumbing).
 
 ---
 
