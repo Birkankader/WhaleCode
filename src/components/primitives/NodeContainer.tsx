@@ -57,9 +57,18 @@ export function NodeContainer({
   // feedback loop we want when the user ticks/unticks a subtask —
   // faster than a noticeable animation, slow enough to feel like a
   // transition rather than a jump.
+  // Specify border as longhands so only the color actually changes
+  // between ticked and unticked — `transition: border-color` below
+  // then interpolates the shift instead of snapping. Writing the
+  // `border` shorthand here (or in state) lumps width/style/color
+  // into one declaration the browser can't animate granularly, and
+  // JSDOM drops the shorthand silently when it contains `var(...)`,
+  // so the longhand form is the only one that behaves consistently.
   const dimmedStyle = dimmed
     ? {
-        border: '1px dashed var(--color-border-default)',
+        borderStyle: 'dashed' as const,
+        borderWidth: '1px',
+        borderColor: 'var(--color-border-default)',
         opacity: 0.5,
       }
     : undefined;

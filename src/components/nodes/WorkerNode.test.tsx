@@ -141,8 +141,15 @@ describe('WorkerNode — proposed-state dim on deselection', () => {
     });
     const root = rootContainer(container);
     expect(root.style.opacity).toBe('0.5');
-    expect(root.style.border).toContain('dashed');
-    expect(root.style.border).toContain('var(--color-border-default)');
+    // Dim preserves the 1px dashed width/style from the `proposed`
+    // state (via the `border` shorthand) and swaps only the color
+    // via the `borderColor` longhand so the 100ms transition can
+    // interpolate it. JSDOM drops the style tag from the shorthand
+    // roundtrip when a longhand override is present, so assert on
+    // the longhands directly.
+    expect(root.style.borderStyle).toBe('dashed');
+    expect(root.style.borderWidth).toBe('1px');
+    expect(root.style.borderColor).toBe('var(--color-border-default)');
   });
 
   it('proposed + selected renders at full opacity with the pending-yellow border', () => {

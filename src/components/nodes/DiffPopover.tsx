@@ -1,12 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
 import type { FileDiff } from '../../lib/ipc';
 
 /**
- * Per-subtask diff popover — hangs off the "N files" chip on a
- * done/running WorkerNode and shows each file this worker changed
- * with +/- counts. Dismissed by clicking outside, pressing Escape,
- * or clicking the chip again.
+ * Per-subtask diff popover — hangs off the "N files" chip on a done
+ * WorkerNode (the chip itself only renders once the subtask's diff has
+ * landed, so we're always in a post-run state here) and shows each file
+ * this worker changed with +/- counts. Dismissed by clicking outside,
+ * pressing Escape, or clicking the chip again.
  *
  * Positioned as an absolute child of the chip so React Flow's node
  * transforms apply automatically. Uses `nodrag`/`nopan` so clicks
@@ -20,9 +21,10 @@ export function DiffPopover({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const headerId = useId();
 
-  // Escape closes; outside-click closes. Attach once, tear down on
-  // unmount — no deps so handlers always see the latest `onClose`.
+  // Escape closes; outside-click closes. Effect depends on `onClose`
+  // so a re-render with a fresh handler swaps the listeners atomically.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -37,19 +39,25 @@ export function DiffPopover({
       onClose();
     }
     window.addEventListener('keydown', onKey, true);
-    // `capture: true` so we fire before any nested stopPropagation on
-    // the WorkerNode's card-click handler — otherwise closing from an
-    // outside click on another worker card would race.
-    document.addEventListener('mousedown', onDocClick, true);
+    // Bubble-phase `click` — the chip's own onClick (which toggles the
+    // popover closed) runs first and we see the already-settled native
+    // event on the way up. A capture-phase `mousedown` would close the
+    // popover before the chip's click fires, and the chip's subsequent
+    // click would then re-open it, defeating chip-click-to-close in
+    // real interactions (`fireEvent.click` tests don't surface this
+    // because they never dispatch mousedown).
+    document.addEventListener('click', onDocClick);
     return () => {
       window.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('mousedown', onDocClick, true);
+      document.removeEventListener('click', onDocClick);
     };
   }, [onClose]);
 
   return (
     <div
       ref={ref}
+      role="dialog"
+      aria-labelledby={headerId}
       // Position: anchor above the chip (chip is footer-bottom-right).
       // Right-aligned so long paths don't overflow the card's right edge.
       // z-50 to sit above sibling cards. nodrag/nopan kills React Flow
@@ -61,6 +69,7 @@ export function DiffPopover({
       data-testid="diff-popover"
     >
       <header
+        id={headerId}
         className="flex items-center justify-between border-b px-3 py-2 text-hint uppercase tracking-wide text-fg-secondary"
         style={{ borderColor: 'var(--color-border-default)' }}
       >
