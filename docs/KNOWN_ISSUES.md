@@ -12,9 +12,9 @@ Each entry is one line of what, a link to where it was last discussed, a target 
 
 ### UI / UX
 
-- **framer-motion stuck animations in dev mode** — node cards occasionally freeze mid-transition under HMR; clears on refresh. Production builds unaffected. Context: `docs/retrospectives/phase-2.md` bug #3. **Target:** monitor — file upstream issue if it reproduces post-Phase-3. **Severity:** cosmetic (dev-only).
-- **Worker card expand affordance** — clicking a worker card selects it but there is no inline expansion for logs beyond the small stream. Worth a full UX pass in Phase 3 alongside the inline edit work. Context: commit `c0ea00f`. **Target:** Phase 3. **Severity:** functional.
-- **Worktree path not inspectable from UI** — when a worker fails, users have no way to open its worktree from WhaleCode. Flagged in `docs/phase-3-spec.md` "Open questions deferred to Phase 4." **Target:** Phase 3 (alongside Layer-3 "Manual fix") or Phase 4. **Severity:** functional.
+- **framer-motion stuck animations in dev mode** — node cards occasionally freeze mid-transition under HMR; clears on refresh. Production builds unaffected. Context: `docs/retrospectives/phase-2.md` bug #3. **Target:** monitor — file upstream issue if it reproduces post-Phase-4. **Severity:** cosmetic (dev-only).
+- **Worker card expand affordance (partial).** Phase 3 added per-state height overrides and a cancel button, but there is still no inline expansion to view a worker's full log beyond the tail. Context: commits `c0ea00f`, `1e93761`, `e2c6b5c`. **Target:** Phase 4. **Severity:** functional.
+- **Worktree path not inspectable from UI.** Layer-3 "Manual fix" opens the editor inside the worktree, but the path itself is not surfaced anywhere else — e.g., a failed worker has no "reveal in Finder" affordance. Context: `docs/retrospectives/phase-3.md` open debt. **Target:** Phase 4. **Severity:** functional.
 
 ### Orchestration
 
@@ -31,9 +31,18 @@ Each entry is one line of what, a link to where it was last discussed, a target 
 
 ### Testing
 
-- **Fake agent fixture too generous.** `ScriptedAgent` commits its own edits in `execute`, which masked the "who commits?" gap that surfaced in Step 11. Context: `docs/retrospectives/phase-2.md` bug #1. **Target:** Phase 3 (before writing retry-ladder tests). **Severity:** functional (test-only, but actively misleading).
-- **No stress test for rapid submit-after-terminal.** Three bugs in Phase 2 were specific to "user acts before the event round-trip settles." No integration test covers the rapid Apply → new task → Enter path. Context: commits `28077ed`, `23e1f19`. **Target:** Phase 3 verification checklist. **Severity:** functional.
-- **Flaky test: `replan_happy_path_accepts_replacement_and_reaches_done`.** Phase 3 Step 4 integration test failed once then passed on re-run during Step 5 Commit 1 work; Commit 1 added only stub commands and an editor module, so the cause is pre-existing. Likely timing-sensitive around the replan lifecycle (event emission vs. assertion). If fail rate increases, investigate the race between `SubtaskStateChanged` dispatch and the waiter in the test. Context: commit `6bee77c` report. **Target:** Phase 3 verification (Step 9). **Severity:** functional (flaky tests mask real regressions).
+- **No stress test for rapid submit-after-terminal.** Three bugs in Phase 2 were specific to "user acts before the event round-trip settles." No integration test covers the rapid Apply → new task → Enter path. Context: commits `28077ed`, `23e1f19`. **Target:** Phase 4 verification checklist. **Severity:** functional.
+- **Flaky test: `replan_happy_path_accepts_replacement_and_reaches_done`.** Failed once during Phase 3 Step 4, passed on re-run; did not recur in Step 9. Likely timing-sensitive around the replan lifecycle (event emission vs. assertion). If fail rate increases, investigate the race between `SubtaskStateChanged` dispatch and the waiter in the test. Context: commit `6bee77c` report; `docs/retrospectives/phase-3.md` bug #6. **Target:** monitor — fix only on recurrence. **Severity:** functional (flaky tests mask real regressions).
+- **No debug-only failure injection.** Phase 3 criteria 7, 15 (and arguably 14) could not be exercised end-to-end by hand because the app has no "force this subtask to fail" or "force ceiling exceeded" affordance — they were instead integration-verified via backend tests. A small debug surface (`force_fail_next`, `force_ceiling_exceeded`) behind a dev-only flag would let later phases ship full manual verification. Context: `docs/retrospectives/phase-3.md` lessons #6. **Target:** Phase 4 (estimate: 1 day, pays back within the phase). **Severity:** functional (test-only, but increasingly costly as the lifecycle grows).
+- **No visual regression pass for worker state transitions.** Three of Phase 3's six closeout bugs (title squeeze, running/done height, empty LogBlock black hole) were only caught by a human watching the card transition. Unit tests covered the logic but not the pixels. Context: `docs/retrospectives/phase-3.md` lessons #4. **Target:** Phase 4 (playbook-level: a Step-9 pass that runs a real task and records the running→done transition for every worker state). **Severity:** functional (process, not code).
+
+## Resolved in Phase 3
+
+- ~~Fake agent fixture too generous~~ → Phase 3 test fixtures kept deliberately weaker than real agents; no retry/replan bugs were masked (see `docs/retrospectives/phase-3.md` "What went well")
+- ~~Worker card title/why collapse under proposed state~~ → `98977c4`, `77867e6`
+- ~~Worker card height insufficient in running/done~~ → `1e93761`
+- ~~Empty LogBlock renders as a black hole~~ → `e2c6b5c`
+- ~~Cancel leaves store non-terminal~~ → `7a513e4`, `01f701f`, `0ddd8cd`, `f7fc2eb`
 
 ## Resolved in Phase 2
 

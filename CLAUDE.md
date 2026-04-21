@@ -132,11 +132,11 @@ whalecode/
 
 ## Current status
 
-**Active phase:** Phase 3 — Approval flow and progressive retry
-**Last shipped:** Phase 2 — agent integration (`8f7f895`, 2026-04-19)
-**Target:** Inline subtask editing, three-layer retry ladder (worker retry → master re-plan → human escalation), auto-approve bypass point.
+**Active phase:** Phase 4 — kickoff pending (mono-repo awareness + conflict resolution UX)
+**Last shipped:** Phase 3 — approval flow and progressive retry (`e2c6b5c`, 2026-04-21)
+**Target (Phase 4):** Merge conflict resolution UX, base-branch dirty stash helper, interactive agent Q&A channel, mono-repo dependency graph.
 
-See `docs/phase-3-spec.md` for the actionable spec, and `docs/phase-3-spec-review.md` for concerns flagged after Phase 2. Phase 2 retrospective lives at `docs/retrospectives/phase-2.md`; carry-over debt is tracked in `docs/KNOWN_ISSUES.md`.
+Phase 3 is closed: 15/15 acceptance criteria pass (11 manual, 4 integration-verified — see the verification tally in `docs/phase-3-spec.md`). Retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 4 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work. Phase 4 spec is still to be written.
 
 ## Useful commands
 

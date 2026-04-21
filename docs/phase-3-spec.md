@@ -831,6 +831,35 @@ Phase 3 ships when:
 14. Auto-approve mode: still honors human escalation (can't be fully automated)
 15. Auto-approve mode: subtask-count ceiling suspends bypass when exceeded, user sees `run:auto_approve_suspended` surfacing in the approval bar (Step 7b)
 
+## Verification tally (2026-04-21)
+
+Manual verification was done against `pnpm tauri dev` on the `fatura-budget` repo with real Claude agents. Fifteen criteria split across three verification modes:
+
+| # | Criterion | Status | Notes |
+|---|---|---|---|
+| 1 | Edit proposed title inline and approve | PASS (after fix) | Fixed in `98977c4` (shrink-0 title/why) + `1e93761` (140→180 height for running/done) + `e2c6b5c` (LogBlock placeholder) |
+| 2 | Change proposed subtask's assigned worker via dropdown | PASS (after fix) | Same fix chain as #1 — title/why rendered correctly in proposed state after the shrink-0 pass |
+| 3 | Add a new subtask from approval bar | PASS | Auto-focus on the new input verified in `77867e6` |
+| 4 | Remove a subtask before approving | PASS | X button in proposed worker card |
+| 5 | Layer 1: worker fails once → automatic retry → succeeds | PASS | Retry badge + new LogBlock visible |
+| 6 | Layer 2: worker fails twice → master re-plans → approve → replacement succeeds | PASS | `2fe299c` replan surface + ApprovalBar variant `'replan'` |
+| 7 | Re-plan exhaustion → Layer 3 offered | Integration-verified | Covered by `orchestration::tests::worker_failure_parks_on_escalation_then_aborts`; production manual verification requires failure injection |
+| 8 | Manual fix flow opens editor and continues | Integration-verified | Covered by Layer-3 IPC tests in `6bee77c`; user-side verification bounded by editor-detection fallbacks |
+| 9 | Skip subtask | PASS | Skip cascades through dependents (`e9972b8`) |
+| 10 | Abort run | PASS | Cancel button in TopBar (`f7fc2eb`) + actor sweep (`01f701f`) + EmptyState return (`0ddd8cd`) |
+| 11 | Master failure during planning | Integration-verified | Orchestrator emits `run:planning_failed` with structured error; covered in `orchestration::tests::master_plan_error_clears_run` |
+| 12 | Master failure during re-planning | Integration-verified | Layer 3 offered with retry option, covered in dispatcher re-plan tests |
+| 13 | Auto-approve bypasses initial + replan approvals | PASS | Verified via settings toggle; Auto badge visible |
+| 14 | Auto-approve still honors human escalation | Integration-verified | Covered by auto-approve + escalation integration tests in `f49ef39` |
+| 15 | Auto-approve ceiling suspends bypass + surfaces `run:auto_approve_suspended` | Integration-verified | Subtask-count ceiling path covered by backend tests; production manual verification requires a planned-count >ceiling scenario that was out of scope for Phase 3 |
+
+**Legend:**
+- **PASS** — exercised end-to-end in `pnpm tauri dev` against a real repo.
+- **PASS (after fix)** — exercised after the fix commit listed in the notes.
+- **Integration-verified** — covered by automated tests (frontend unit or Rust integration) but the production manual path requires a failure-injection mechanism not in Phase 3's scope. Acceptable for shipping; Phase 4's verification matrix will revisit if these regress.
+
+Additional bugs surfaced during the verification pass and fixed in the closeout window (all in the commit log between `78a6331` and `e2c6b5c`): worker card title/why squeezed under flex (shrink-0 pass), running/done cards overflowing the 140px default (per-state height override), empty LogBlock rendering as an opaque black rectangle (transparent bg + waiting placeholder), cancel run leaving store non-terminal (actor sweep + terminal-state guard alignment), title/why blank after edit save (re-focus on added subtask).
+
 ## What you'll create
 
 ```
