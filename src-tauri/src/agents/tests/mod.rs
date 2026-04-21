@@ -6,3 +6,9 @@
 //! assert on the output".
 
 pub mod fake_agent;
+
+// Phase 4 Step 0 diagnostic — asserts current behavior across every
+// abnormal worker exit path. Tests-only; does not change production
+// behavior. See docs/phase-4-crash-diagnostic.md.
+#[cfg(test)]
+mod crash_shapes;
