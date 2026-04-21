@@ -29,6 +29,20 @@ export default function App() {
   }, [init]);
 
   useEffect(() => {
+    // Re-validate the current repo whenever the window regains focus. If
+    // the user checked out a different branch in a terminal while this
+    // window was in the background, the TopBar chip would otherwise show
+    // stale branch info until the next restart. `validate_repo` is a few
+    // file reads — cheap to run on every focus tick. The action itself
+    // is a no-op when `currentRepo` is null, so this can stay always-on.
+    function onFocus() {
+      void useRepoStore.getState().refreshCurrentRepo();
+    }
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
+  useEffect(() => {
     // Boot-time heads-up for crash recovery. The backend already
     // marked any active-at-crash runs as `Failed` and swept their
     // worktrees in `lib.rs` setup; we just consume the report and

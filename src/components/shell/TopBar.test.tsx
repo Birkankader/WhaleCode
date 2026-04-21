@@ -279,6 +279,59 @@ describe('TopBar cancel-run button', () => {
   });
 });
 
+describe('TopBar repo label', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStores();
+    seedAvailable();
+  });
+
+  it('shows the repo name alone when no branch info is available', () => {
+    useRepoStore.setState({
+      currentRepo: {
+        path: '/tmp/foo',
+        name: 'foo',
+        isGitRepo: true,
+        currentBranch: null,
+      },
+    });
+    render(<TopBar />);
+    expect(screen.getByTestId('topbar-repo-label')).toHaveTextContent('· foo');
+    expect(screen.queryByTestId('topbar-branch-label')).toBeNull();
+  });
+
+  it('appends the branch name after a middle-dot separator', () => {
+    useRepoStore.setState({
+      currentRepo: {
+        path: '/tmp/foo',
+        name: 'foo',
+        isGitRepo: true,
+        currentBranch: 'feature/x',
+      },
+    });
+    render(<TopBar />);
+    const branch = screen.getByTestId('topbar-branch-label');
+    expect(branch).toHaveTextContent('feature/x');
+    expect(branch).toHaveAttribute('title', 'Branch: feature/x');
+    expect(screen.getByTestId('topbar-repo-label')).toHaveAccessibleName(
+      /Switch repository \(current: foo on feature\/x\)/,
+    );
+  });
+
+  it('shows a short SHA for detached HEAD (backend returns it via current_branch)', () => {
+    useRepoStore.setState({
+      currentRepo: {
+        path: '/tmp/foo',
+        name: 'foo',
+        isGitRepo: true,
+        currentBranch: 'deadbee',
+      },
+    });
+    render(<TopBar />);
+    expect(screen.getByTestId('topbar-branch-label')).toHaveTextContent('deadbee');
+  });
+});
+
 describe('TopBar settings gear', () => {
   beforeEach(() => {
     vi.clearAllMocks();

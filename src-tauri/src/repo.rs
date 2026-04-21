@@ -124,10 +124,24 @@ fn git_dir_for(repo: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Reads `.git/HEAD` and returns a short human-readable label for the current
+/// checkout: the branch name for an attached HEAD, or the 7-char short SHA for
+/// a detached HEAD. Returns `None` only when HEAD is unreadable or empty (i.e.
+/// not a working git repo). Mirrored in the TopBar repo chip.
 fn read_branch(git_dir: &Path) -> Option<String> {
     let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let head = head.trim();
-    head.strip_prefix("ref: refs/heads/").map(|s| s.to_string())
+    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
+        return Some(branch.to_string());
+    }
+    // Detached HEAD: HEAD holds a full 40-char SHA. Return the short form so
+    // the UI has something meaningful to show (e.g. after `git checkout <sha>`).
+    // Any non-hex or non-40-char line falls through to None — an unusual HEAD
+    // is better surfaced as "no branch info" than as garbage in the chrome.
+    if head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some(head[..7].to_string());
+    }
+    None
 }
 
 /// Opens a native folder dialog. Returns `None` if the user cancels; a
@@ -265,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn detached_head_returns_none_branch() {
+    fn detached_head_returns_short_sha() {
         let dir = tempdir().unwrap();
         let repo = dir.path().join("detached");
         std::fs::create_dir_all(&repo).unwrap();
@@ -275,8 +289,25 @@ mod tests {
 
         match validate_path(&repo) {
             RepoValidation::Valid { info } => {
-                assert!(info.current_branch.is_none());
+                assert_eq!(info.current_branch.as_deref(), Some("deadbee"));
                 assert!(info.is_git_repo);
+            }
+            other => panic!("expected Valid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_head_returns_none_branch() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("weird");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = repo.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "not-a-ref-or-sha\n").unwrap();
+
+        match validate_path(&repo) {
+            RepoValidation::Valid { info } => {
+                assert!(info.current_branch.is_none());
             }
             other => panic!("expected Valid, got {other:?}"),
         }

@@ -40,6 +40,15 @@ export type RepoState = {
   clearCurrentRepo: () => Promise<void>;
   setMasterAgent: (agent: AgentKind) => Promise<void>;
   /**
+   * Re-validates the current repo against disk and updates `currentRepo`
+   * in place if the branch (or any other field) changed. Used by the
+   * window-focus listener in `App.tsx` so external `git checkout` done in
+   * a terminal doesn't leave stale branch info in the TopBar. No-op when
+   * there is no current repo, and silent on failure — this runs on every
+   * focus tick and is strictly a cosmetic refresh.
+   */
+  refreshCurrentRepo: () => Promise<void>;
+  /**
    * Phase 3 Step 7: persist auto-approve settings. Accepts a partial
    * patch — any combination of toggle / ceiling / editor / consent
    * flag. The backend persists + re-emits the merged settings; we
@@ -157,5 +166,27 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   async updateSettings(patch) {
     const merged = await setSettingsIpc(patch);
     set({ settings: merged });
+  },
+
+  async refreshCurrentRepo() {
+    const { currentRepo } = get();
+    if (!currentRepo) return;
+    try {
+      const validation = await validateRepo(currentRepo.path);
+      if (!validation.valid) return;
+      const next = validation.info;
+      // Skip the set() if nothing changed — referential equality keeps
+      // subscribers idle on the common no-op tick.
+      if (
+        next.name === currentRepo.name &&
+        next.isGitRepo === currentRepo.isGitRepo &&
+        next.currentBranch === currentRepo.currentBranch
+      ) {
+        return;
+      }
+      set({ currentRepo: next });
+    } catch {
+      // Intentionally silent: focus-driven refresh is best-effort.
+    }
   },
 }));

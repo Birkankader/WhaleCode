@@ -76,8 +76,15 @@ export function TopBar() {
   }, [open]);
 
   const repoLabel = currentRepo?.name ?? NO_REPO_LABEL;
+  const branchLabel = currentRepo?.currentBranch ?? null;
   const noAgentsAvailable = detection !== null && detection.recommendedMaster === null;
   const chipLabel = noAgentsAvailable ? NO_AGENTS_LABEL : masterName;
+
+  const repoButtonLabel = currentRepo
+    ? branchLabel
+      ? `Switch repository (current: ${repoLabel} on ${branchLabel})`
+      : `Switch repository from ${repoLabel}`
+    : 'Open a repository';
 
   async function handleSelect(agent: AgentKind) {
     setOpen(false);
@@ -101,10 +108,23 @@ export function TopBar() {
           type="button"
           onClick={pickInteractively}
           className="-mx-1 rounded-sm px-1 py-0.5 text-meta text-fg-tertiary transition-colors hover:bg-bg-subtle hover:text-fg-secondary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-agent-master)]"
-          aria-label={currentRepo ? `Switch repository from ${repoLabel}` : 'Open a repository'}
+          aria-label={repoButtonLabel}
           title="Open repository (⌘O)"
+          data-testid="topbar-repo-label"
         >
           · {repoLabel}
+          {branchLabel ? (
+            <>
+              <span aria-hidden> · </span>
+              <span
+                className="text-fg-tertiary"
+                data-testid="topbar-branch-label"
+                title={`Branch: ${branchLabel}`}
+              >
+                {branchLabel}
+              </span>
+            </>
+          ) : null}
         </button>
       </div>
 
