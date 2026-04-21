@@ -5,9 +5,12 @@ src-tauri/gen
 src/bindings.ts
 pnpm-lock.yaml
 
-# Legacy v1 docs + planning artifacts — left untouched during v2 rewrite
+# Planning artifacts — not auto-formatted
 .gsd
 .planning
+
+# Prose docs we hand-format (line breaks are deliberate — prettier's
+# markdown reflow destroys careful paragraph and list layout in these).
 docs/architecture.md
 docs/ux-flows.md
 CHANGELOG.md
