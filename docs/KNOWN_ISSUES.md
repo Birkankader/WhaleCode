@@ -38,6 +38,17 @@ Each entry is one line of what, a link to where it was last discussed, a target 
 - **No debug-only failure injection.** Phase 3 criteria 7, 15 (and arguably 14) could not be exercised end-to-end by hand because the app has no "force this subtask to fail" or "force ceiling exceeded" affordance — they were instead integration-verified via backend tests. A small debug surface (`force_fail_next`, `force_ceiling_exceeded`) behind a dev-only flag would let later phases ship full manual verification. Context: `docs/retrospectives/phase-3.md` lessons #6. **Target:** Phase 4 (estimate: 1 day, pays back within the phase). **Severity:** functional (test-only, but increasingly costly as the lifecycle grows).
 - **No visual regression pass for worker state transitions.** Three of Phase 3's six closeout bugs (title squeeze, running/done height, empty LogBlock black hole) were only caught by a human watching the card transition. Unit tests covered the logic but not the pixels. Context: `docs/retrospectives/phase-3.md` lessons #4. **Target:** Phase 4 (playbook-level: a Step-9 pass that runs a real task and records the running→done transition for every worker state). **Severity:** functional (process, not code).
 
+## Resolved in Phase 3.5
+
+- ~~Cancel leaves grandchildren orphaned (MCP servers keep stdout open)~~ → `998be29` (Unix process-group kill + bounded pipe drain + dispatcher drain deadline). Windows equivalent tracked as an open item above.
+- ~~Master is silent during planning — UI looks frozen on slow providers~~ → `acedc10` (10s `MasterLog` heartbeat with elapsed seconds; fast Claude plans skip the first tick and emit nothing)
+- ~~Zoom range too tight; no Controls; no keyboard affordance~~ → `d600789` (minZoom 0.4, maxZoom 2.5, `+`/`-`/`0` keys, built-in Controls component)
+- ~~Scroll-to-zoom broke drag-pan on dense plans~~ → `46fa740` (reverted to RF defaults: scroll pans, Cmd/Ctrl+scroll zooms, pinch zooms; kept commit 4's zoom bounds + keyboard + Controls)
+- ~~Unticked proposed workers look identical to ticked ones~~ → `6bd3657` (50% opacity + neutral-gray border on node + in-edges)
+- ~~No per-subtask diff visibility before aggregate DiffReady~~ → `acedc10` (per-subtask `run:subtask_diff` event fired before DiffReady; "N files" chip + popover on done workers)
+- ~~TopBar doesn't show current branch~~ → `e3d367d` (branch rendered after middle-dot separator; re-polled on window focus; detached-HEAD falls back to short SHA)
+- ~~CI Frontend job fails before build — npm config against a pnpm repo~~ → `5723c15` (pnpm/action-setup v4 + `pnpm install --frozen-lockfile`)
+
 ## Resolved in Phase 3
 
 - ~~Fake agent fixture too generous~~ → Phase 3 test fixtures kept deliberately weaker than real agents; no retry/replan bugs were masked (see `docs/retrospectives/phase-3.md` "What went well")

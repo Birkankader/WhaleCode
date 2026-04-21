@@ -133,10 +133,10 @@ whalecode/
 ## Current status
 
 **Active phase:** Phase 4 — kickoff pending (mono-repo awareness + conflict resolution UX)
-**Last shipped:** Phase 3 — approval flow and progressive retry (`e2c6b5c`, 2026-04-21)
-**Target (Phase 4):** Merge conflict resolution UX, base-branch dirty stash helper, interactive agent Q&A channel, mono-repo dependency graph.
+**Last shipped:** Phase 3.5 — usability patches (`a2be333`, 2026-04-21)
+**Target (Phase 4):** Merge conflict resolution UX, base-branch dirty stash helper, interactive agent Q&A channel, mono-repo dependency graph, plus the Gemini-as-master latency decision carried from Phase 3.5 (see KNOWN_ISSUES).
 
-Phase 3 is closed: 15/15 acceptance criteria pass (11 manual, 4 integration-verified — see the verification tally in `docs/phase-3-spec.md`). Retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 4 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work. Phase 4 spec is still to be written.
+Phase 3.5 is closed: 7/8 observations fixed, 1 deferred with a written rationale (Gemini latency — benchmarked to ~230s TTFB with no 1-line fix available). Retro at `docs/retrospectives/phase-3.5.md`. Phase 3 retro remains at `docs/retrospectives/phase-3.md` (15/15 acceptance criteria). Open debt carried into Phase 4 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work. Phase 4 spec is still to be written.
 
 ## Useful commands
 
