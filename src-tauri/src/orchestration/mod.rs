@@ -788,6 +788,68 @@ impl Orchestrator {
         ))
     }
 
+    /// Phase 4 Step 4: resolve a subtask's worktree path for the
+    /// frontend's WorktreeActions menu (Reveal / Copy path / Open
+    /// terminal). Unlike [`Self::manual_fix_subtask`], this does NOT
+    /// require the run to be in `AwaitingHumanFix` — a completed or
+    /// cancelled run is still inspectable, and the Layer 3 escalation
+    /// gate is orthogonal to per-worker worktree exposure.
+    ///
+    /// Backend gate (defense in depth; the frontend also gates the
+    /// menu's visibility on derived state):
+    ///
+    ///   - The subtask must exist.
+    ///   - It must not be in [`SubtaskState::Proposed`] or
+    ///     [`SubtaskState::Waiting`] — both mean the worker never
+    ///     started, so there's nothing to reveal. These are the only
+    ///     states where `worktree_path` is definitionally `None`, but
+    ///     we reject them explicitly so the error message is specific.
+    ///   - `worktree_path` must be `Some` (the dispatcher stamps this
+    ///     when it flips a subtask to `Running`).
+    ///
+    /// Notes:
+    ///
+    ///   - `Running` / `Retrying` are accepted by the backend but the
+    ///     frontend hides the menu in those states. Accepting them
+    ///     here avoids a race where a subtask flips out of `Running`
+    ///     the moment the user clicks a menu item; the stricter
+    ///     "no live workers" rule lives in the UI gate, where it
+    ///     belongs (the user can't click what isn't rendered).
+    ///   - `Cancelled` runs clean up worktrees in the lifecycle
+    ///     terminal path; this method doesn't stat the path, so the
+    ///     reveal / terminal spawn may fail naturally on a gone
+    ///     directory. The frontend surfaces that as a toast.
+    ///
+    /// The CLAUDE.md "never expose worktree paths" rule has an
+    /// explicit carve-out for this method — see the project-rules
+    /// note landed with Phase 4 Step 4.
+    pub async fn subtask_worktree_path_for_inspection(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<std::path::PathBuf, OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let guard = run_arc.read().await;
+        let sub = guard
+            .find_subtask(subtask_id)
+            .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+        if matches!(sub.state, SubtaskState::Proposed | SubtaskState::Waiting) {
+            return Err(OrchestratorError::WrongSubtaskState {
+                subtask_id: subtask_id.clone(),
+                state: sub.state,
+                expected: "any post-start state",
+            });
+        }
+        sub.worktree_path.clone().ok_or_else(|| {
+            OrchestratorError::InvalidEdit(format!(
+                "subtask {subtask_id} has no worktree on disk"
+            ))
+        })
+    }
+
     /// User finished editing by hand and confirmed the subtask is
     /// green. Sends [`Layer3Decision::Fixed`] to the lifecycle, which
     /// auto-commits any changes, flips the subtask to `Done`, and

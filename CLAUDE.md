@@ -119,7 +119,7 @@ whalecode/
 - Do not add 600 or 700 font-weights. Only 400 (regular) and 500 (medium). The token and prop name is `medium`; never use the label "semibold".
 - Do not hard-code colors. Use Tailwind config tokens.
 - Do not use `unwrap()` or `.expect()` in Rust production paths.
-- Do not expose worktree paths in UI. They are an implementation detail.
+- Do not expose worktree paths in UI. They are an implementation detail. **Carve-out:** paths are exposed on workers in inspectable states (done / failed / human_escalation / cancelled) via the WorktreeActions menu only (Phase 4 Step 4). Running/proposed/waiting cards must never expose them.
 
 ## When you (Claude Code) start a session
 

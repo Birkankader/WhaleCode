@@ -9,6 +9,7 @@ mod safety;
 mod settings;
 mod storage;
 mod worktree;
+mod worktree_actions;
 
 use std::sync::Arc;
 
@@ -95,6 +96,14 @@ pub fn run() {
             commands::mark_subtask_fixed,
             commands::skip_subtask,
             commands::try_replan_again,
+            // Phase 4 Step 4: worktree inspection affordances. Three
+            // new handlers; all gate on the subtask being in an
+            // inspectable state (done / failed / human-escalation /
+            // cancelled) so running workers can't be poked at mid-
+            // write.
+            commands::get_subtask_worktree_path,
+            commands::reveal_worktree,
+            commands::open_terminal_at,
             repo::pick_repo,
             repo::validate_repo,
         ])

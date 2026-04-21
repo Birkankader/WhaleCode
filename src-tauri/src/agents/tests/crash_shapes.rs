@@ -22,7 +22,9 @@
 //! users may see "agent refused" for what is actually a crash.
 
 #![cfg(unix)]
-#![cfg(test)]
+// `#[cfg(test)]` is already applied at the mod-level in
+// `agents/tests/mod.rs`; an inner `#![cfg(test)]` here was flagged as
+// a duplicated-attribute clippy error post-rust-1.93 upgrade.
 
 use std::path::PathBuf;
 use std::time::Duration;

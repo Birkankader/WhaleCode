@@ -1268,3 +1268,48 @@ describe('WorkerNode — expand toggle (Phase 4 Step 3)', () => {
     expect(screen.queryByTestId('worker-log-load-more')).toBeNull();
   });
 });
+
+describe('WorkerNode — worktree-actions folder icon (Phase 4 Step 4)', () => {
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'done',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  // Locked decision 1 from the Step 4 directive: the folder icon
+  // appears on done/failed/human_escalation/cancelled; never on
+  // proposed/running/retrying/waiting/skipped/escalating. These two
+  // tests pin both ends of the matrix so regressions — e.g. someone
+  // adding `running` to INSPECTABLE_STATES — fail loudly.
+
+  it.each(['done', 'failed', 'human_escalation', 'cancelled'] as const)(
+    'renders the trigger on %s state',
+    (state) => {
+      renderNode('sub-a', baseData({ state }));
+      expect(
+        screen.getByTestId('worktree-actions-trigger-sub-a'),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    'proposed',
+    'running',
+    'retrying',
+    'waiting',
+    'skipped',
+    'escalating',
+  ] as const)('hides the trigger on %s state', (state) => {
+    renderNode('sub-a', baseData({ state }));
+    expect(screen.queryByTestId('worktree-actions-trigger-sub-a')).toBeNull();
+  });
+});

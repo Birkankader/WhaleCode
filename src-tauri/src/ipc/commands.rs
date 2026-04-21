@@ -38,6 +38,7 @@ use crate::detection::Detector;
 use crate::editor::EditorResult;
 use crate::orchestration::Orchestrator;
 use crate::settings::{Settings, SettingsStore};
+use crate::worktree_actions::TerminalResult;
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn submit_task(
@@ -239,4 +240,73 @@ pub async fn try_replan_again(
     orch.try_replan_again(&run_id, &subtask_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+// Phase 4 Step 4: worktree inspection affordances. The three commands
+// below back the frontend's WorktreeActions menu (folder icon on
+// inspectable worker cards → Reveal / Copy path / Open terminal).
+//
+// All three go through
+// [`Orchestrator::subtask_worktree_path_for_inspection`], which enforces
+// the invariant that paths only leak to the UI when the subtask is in
+// an inspectable state (done / failed / human-escalation / cancelled)
+// and a worktree still exists on disk. Running workers, proposed
+// subtasks, and skipped/waiting subtasks all refuse.
+//
+// `get_subtask_worktree_path` is the clipboard path-fetch — it runs no
+// side effects beyond the lookup so "Copy path" doesn't spawn anything
+// the user didn't ask for. `reveal_worktree` and `open_terminal_at`
+// forward to `crate::worktree_actions` after the lookup; each spawn
+// uses structured arg vectors only (no `sh -c` interpolation) so
+// shell metacharacters in the path — impossible today with ULIDs, but
+// cheap insurance — can't escape.
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_subtask_worktree_path(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<String, String> {
+    orch.subtask_worktree_path_for_inspection(&run_id, &subtask_id)
+        .await
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn reveal_worktree(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<String, String> {
+    let path = orch
+        .subtask_worktree_path_for_inspection(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let ok = crate::worktree_actions::reveal_path(&path);
+    if !ok {
+        return Err(format!(
+            "could not reveal {}: no file manager registered on this platform",
+            path.display()
+        ));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn open_terminal_at(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<TerminalResult, String> {
+    let path = orch
+        .subtask_worktree_path_for_inspection(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Never returns Err — the frontend branches on
+    // `TerminalMethod::ClipboardOnly` to toast "no terminal detected;
+    // path copied instead" and fall back to a clipboard write. An
+    // Err here would force the frontend to do the same branching
+    // against a string, which is worse.
+    Ok(crate::worktree_actions::open_terminal(&path))
 }

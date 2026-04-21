@@ -742,6 +742,77 @@ export async function tryReplanAgain(
   await invoke('try_replan_again', { runId, subtaskId });
 }
 
+// ---------- Phase 4 Step 4 worktree inspection commands ----------
+
+/**
+ * Did the terminal-open affordance find a spawner, or does the frontend
+ * need to fall back to copying the path? Mirrors
+ * `worktree_actions::TerminalMethod` on the Rust side.
+ *
+ *   - `spawned` — a terminal emulator was launched; UI toasts "opened
+ *     terminal at ...".
+ *   - `clipboard-only` — nothing launched (no candidate resolved or
+ *     every spawn failed). UI copies `result.path` via
+ *     `navigator.clipboard.writeText` and toasts a fallback message.
+ *
+ * Kebab-case on the wire (see `worktree_actions.rs` —
+ * `#[serde(rename_all = "kebab-case")]`).
+ */
+export const terminalMethodSchema = z.enum(['spawned', 'clipboard-only']);
+export type TerminalMethod = z.infer<typeof terminalMethodSchema>;
+
+export const terminalResultSchema = z.object({
+  method: terminalMethodSchema,
+  path: z.string(),
+});
+export type TerminalResult = z.infer<typeof terminalResultSchema>;
+
+/**
+ * Look up the worktree path for an inspectable subtask. Pure query,
+ * no side effects — used by "Copy path" so the menu item doesn't
+ * accidentally shell anything out. Rejects if the run/subtask is
+ * unknown, the subtask is in a pre-start state, or the worktree has
+ * been reaped (cancelled terminal path clears worktrees).
+ */
+export async function getSubtaskWorktreePath(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<string> {
+  const raw = await invoke<unknown>('get_subtask_worktree_path', { runId, subtaskId });
+  return z.string().parse(raw);
+}
+
+/**
+ * Reveal the subtask's worktree in the platform file manager (Finder /
+ * Explorer / xdg-open delegate). Returns the resolved path on success.
+ * Rejects with a "no file manager registered" message when the reveal
+ * spawner failed (or no handler exists on this platform) — the UI
+ * should surface that as an error toast and let the user fall back to
+ * Copy path.
+ */
+export async function revealWorktree(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<string> {
+  const raw = await invoke<unknown>('reveal_worktree', { runId, subtaskId });
+  return z.string().parse(raw);
+}
+
+/**
+ * Open a terminal emulator at the subtask's worktree. Never rejects on
+ * "no terminal found" — the backend returns `{ method: 'clipboard-only',
+ * path }` in that case, and the UI branches on `method` to copy the
+ * path + toast the fallback. Does reject if the run/subtask lookup
+ * fails (unknown id, pre-start state, missing worktree on disk).
+ */
+export async function openTerminalAt(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<TerminalResult> {
+  const raw = await invoke<unknown>('open_terminal_at', { runId, subtaskId });
+  return terminalResultSchema.parse(raw);
+}
+
 // Event subscription lives in `runSubscription.ts` — this file exports
 // only the raw schemas + EVENT_* constants. The store consumes
 // RunSubscription, not a free `listen` helper.

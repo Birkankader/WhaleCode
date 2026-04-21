@@ -8,6 +8,7 @@ import { EmptyState } from './components/shell/EmptyState';
 import { ErrorBanner } from './components/shell/ErrorBanner';
 import { Footer } from './components/shell/Footer';
 import { RepoPicker } from './components/shell/RepoPicker';
+import { ToastStack } from './components/shell/ToastStack';
 import { TopBar } from './components/shell/TopBar';
 import { WindowTooSmall } from './components/shell/WindowTooSmall';
 import { useRepoPickerShortcut } from './hooks/useRepoPickerShortcut';
@@ -134,6 +135,7 @@ export default function App() {
           <ApprovalBar />
         </main>
         <Footer />
+        <ToastStack />
       </div>
     </WindowTooSmall>
   );

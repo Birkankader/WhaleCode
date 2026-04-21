@@ -263,6 +263,25 @@ Today the LogBlock shows the last ~3-5 lines of the worker's output. Phase 3 exp
 
 ### Step 4: Worktree inspection affordances
 
+**Status:** shipped in `feat(phase-4): step 4 — worktree inspection affordances`.
+
+**Decision resolution (from Open questions below):**
+
+- **Menu surface:** folder-icon button (semantic icon, not kebab) on the worker card footer — renders only on inspectable states (done / failed / human_escalation / cancelled).
+- **macOS terminal:** `open -a Terminal <path>` forces Terminal.app. iTerm toggle deferred to Phase 5 (no bytes on the wire today).
+- **Linux terminal detection:** first-match of `gnome-terminal` → `konsole` → `xterm` → `alacritty` → `kitty`. Clipboard fallback with info toast on total miss.
+- **Windows terminal:** `cmd /C start "" cmd /K cd /d <path>` (CMD default). PowerShell toggle deferred to Phase 5.
+- **Security:** structured-argument API only (`std::process::Command::args(&[...])`). No `sh -c` interpolation. xterm's inline script passes the path as positional `$1`, never splatted into the script string.
+- **Clipboard failure:** error toast (pinned, no auto-dismiss) when both terminal and clipboard miss; also when the clipboard `writeText` itself rejects on Copy path.
+
+**Implementation shape:**
+
+- Backend: `src-tauri/src/worktree_actions.rs` (new module) splits resolve/spawn for testability. Three Tauri commands: `get_subtask_worktree_path` (pure lookup for Copy path), `reveal_worktree` (spawns file manager, `Err` on total miss), `open_terminal_at` (returns `TerminalResult { method, path }` — never `Err` on no-terminal; frontend branches on `method`). Orchestrator gate `subtask_worktree_path_for_inspection` rejects Proposed/Waiting; Running is allowed at the backend layer (defence in depth) with the frontend owning the stricter UI visibility.
+- Frontend: new `WorktreeActions` component (folder icon + popover menu + keyboard nav), new `toastStore` + `ToastStack` overlay mounted in `App.tsx`. WorkerNode footer gates on `INSPECTABLE_STATES`.
+- Tests: 6 unit tests for `worktree_actions.rs` (reveal/terminal spawn ordering, security regression guard for the xterm inline script), 9 component tests for `WorktreeActions` (trigger/menu, each action's IPC call + toast, clipboard failure, terminal fallback), 10 WorkerNode gating tests (trigger visible on 4 inspectable states, hidden on 6 non-inspectable states), 5 toast store tests.
+
+---
+
 Today: a failed or escalated worker's worktree path is visible only to the Layer-3 "Manual fix" action, which opens an editor inside it. There's no way to reveal it in Finder/Explorer, copy the path, or open a terminal at it. CLAUDE.md's "never expose worktree paths in UI" rule was written assuming the worktree was purely an implementation detail — Phase 3 broke that by shipping the Layer 3 editor-open affordance, which *does* expose the path (via the IDE). Phase 4 makes the exposure intentional and consistent: done / failed / escalated workers all get the same three affordances.
 
 **Scope (what it does):**

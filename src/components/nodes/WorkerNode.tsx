@@ -28,6 +28,7 @@ import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
 import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
+import { WorktreeActions } from './WorktreeActions';
 
 export type WorkerNodeData = {
   state: NodeState;
@@ -112,6 +113,28 @@ const EXPANDABLE_STATES: ReadonlySet<NodeState> = new Set([
 ]);
 
 /**
+ * Phase 4 Step 4: states that surface the WorktreeActions folder-icon
+ * affordance. The worktree only exists on disk for subtasks that have
+ * actually run; proposed and waiting cards have nothing to reveal.
+ * Running / retrying are omitted deliberately — the worker is still
+ * writing to the worktree and we don't want the user to poke at it
+ * mid-write (the spec calls this out explicitly). `skipped` and
+ * `escalating` are omitted for symmetry — the worktree either was
+ * never populated (skipped) or is about to be reassigned (escalating).
+ * `cancelled` is included even though the lifecycle terminal path
+ * clears worktrees: the backend reveals/terminal calls will naturally
+ * fail on a gone directory and the user will see an error toast — we
+ * still prefer to *offer* the action so the UX is consistent with done/
+ * failed.
+ */
+const INSPECTABLE_STATES: ReadonlySet<NodeState> = new Set([
+  'done',
+  'failed',
+  'human_escalation',
+  'cancelled',
+]);
+
+/**
  * Phase 4 Step 3: render-window cap for the expanded LogBlock. The
  * store keeps every line it receives; the expanded view shows only
  * the most recent `LOG_RENDER_WINDOW` by default, with a "Load N
@@ -153,6 +176,7 @@ export function WorkerNode({ id, data }: NodeProps) {
   const isEscalated = d.state === 'human_escalation';
   const strikeTitle = d.state === 'escalating' || d.state === 'skipped';
   const showLogs = LOG_VISIBLE_STATES.has(d.state);
+  const isInspectable = INSPECTABLE_STATES.has(d.state);
 
   const isSelected = useGraphStore((s) => s.selectedSubtaskIds.has(id));
   const toggle = useGraphStore((s) => s.toggleSubtaskSelection);
@@ -330,6 +354,12 @@ export function WorkerNode({ id, data }: NodeProps) {
       ) : null}
 
       <footer className="mt-auto flex items-center justify-end gap-1">
+        {/* Phase 4 Step 4: worktree inspection affordance. Rendered
+            only on inspectable states (done / failed / human_escalation
+            / cancelled) — running workers must not be poked at mid-
+            write, proposed subtasks have no worktree yet. Folder icon
+            opens a menu with Reveal / Copy path / Open terminal. */}
+        {isInspectable ? <WorktreeActions subtaskId={id} /> : null}
         {/* File-count chip sits left of the agent chip on done workers.
             Hidden while proposed (no work yet) and while running (diff
             hasn't been collected). `undefined` diff = no chip; empty
