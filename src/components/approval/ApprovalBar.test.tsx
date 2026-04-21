@@ -11,8 +11,8 @@ vi.mock('@tauri-apps/api/core', () => ({
 // Framer Motion's AnimatePresence exit animations would defer unmount; the
 // tests here assert on initial render + click handlers, so we stub to a
 // passthrough Fragment-like wrapper to keep DOM state instantly reflective.
-vi.mock('framer-motion', async () => {
-  const actual = await vi.importActual<typeof import('framer-motion')>('framer-motion');
+vi.mock('motion/react', async () => {
+  const actual = await vi.importActual<typeof import('motion/react')>('motion/react');
   return {
     ...actual,
     AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,

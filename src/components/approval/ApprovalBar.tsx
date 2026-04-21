@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import { useShallow } from 'zustand/shallow';
 
 import { isSelectable, useAgentStore } from '../../state/agentStore';

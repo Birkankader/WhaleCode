@@ -11,7 +11,7 @@
  * can coexist vertically if they both fire in the same frame.
  */
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import { AlertCircle, X } from 'lucide-react';
 
 import { useGraphStore } from '../../state/graphStore';
