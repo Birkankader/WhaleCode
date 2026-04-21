@@ -42,6 +42,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 import {
+  EVENT_APPLY_SUMMARY,
   EVENT_BASE_BRANCH_DIRTY,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
@@ -238,7 +239,21 @@ describe('graphStore — happy path (realistic backend sequence)', () => {
     expect(s.status).toBe('done');
     expect(snap('tests')?.value).toBe('done');
     expect(s.finalNode?.files).toEqual(['src/auth.ts', 'src/auth.test.ts']);
-    expect(s.activeSubscription).toBeNull(); // auto-detached
+    // Phase 4 Step 2: happy-path detach is deferred to ApplySummary.
+    // `StatusChanged(Done)` alone keeps the subscription live so the
+    // summary payload can land.
+    expect(s.activeSubscription).not.toBeNull();
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: BACKEND_RUN_ID,
+      commitSha: 'cccccccc00000000000000000000000000000000',
+      branch: 'main',
+      filesChanged: 2,
+      perWorker: [
+        { subtaskId: 'auth', filesChanged: 1 },
+        { subtaskId: 'tests', filesChanged: 1 },
+      ],
+    });
+    expect(state().activeSubscription).toBeNull();
   });
 
   it('subtask that fails without a prior Retrying lands in failed with retry count 0', async () => {
@@ -630,10 +645,21 @@ describe('graphStore — Layer-2 replan + Layer-3 human escalation', () => {
 });
 
 describe('graphStore — terminal events auto-detach', () => {
-  it('detaches subscription on status done', async () => {
+  it('detaches subscription after ApplySummary (not on plain status done)', async () => {
+    // Phase 4 Step 2: detach for the applied path is deferred to the
+    // terminal ApplySummary event so the overlay payload isn't dropped
+    // mid-sequence. `StatusChanged(Done)` on its own is not enough.
     await state().submitTask('x');
     expect(state().activeSubscription).not.toBeNull();
     emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'done' });
+    expect(state().activeSubscription).not.toBeNull();
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: BACKEND_RUN_ID,
+      commitSha: 'bbbbbbbb00000000000000000000000000000000',
+      branch: 'main',
+      filesChanged: 0,
+      perWorker: [],
+    });
     expect(state().activeSubscription).toBeNull();
   });
 
@@ -702,9 +728,22 @@ describe('graphStore — apply / conflict / completed', () => {
         commitsCreated: 1,
       },
     });
-    const s = state();
+    let s = state();
     expect(s.status).toBe('applied');
     expect(s.finalNode?.conflictFiles).toBeNull();
+    // Phase 4 Step 2: detach is now deferred to ApplySummary so the
+    // summary event can land through the same subscription. Until that
+    // arrives the subscription stays live.
+    expect(s.activeSubscription).not.toBeNull();
+
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: BACKEND_RUN_ID,
+      commitSha: 'aaaaaaaa00000000000000000000000000000000',
+      branch: 'main',
+      filesChanged: 1,
+      perWorker: [],
+    });
+    s = state();
     expect(s.activeSubscription).toBeNull();
   });
 
@@ -782,6 +821,165 @@ describe('graphStore — apply / conflict / completed', () => {
     });
     expect(snap(FINAL_ID)?.value).toBe('done');
     expect(state().status).toBe('applied');
+  });
+
+  it('ApplySummary payload is parked on applySummary slice and graph state is preserved', async () => {
+    // Phase 4 Step 2. Backend's ordering invariant is
+    // DiffReady → Completed → StatusChanged(Done) → ApplySummary.
+    // The frontend should flip to `applied` on Completed and ONLY then
+    // receive the summary — and the graph data (subtasks, finalNode)
+    // must survive the transition so the overlay's per-worker rows
+    // can resolve titles from the store.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'sub-a',
+          title: 'Worker A',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+          replaces: [],
+          replanCount: 0,
+        },
+        {
+          id: 'sub-b',
+          title: 'Worker B',
+          why: null,
+          assignedWorker: 'codex',
+          dependencies: [],
+          replaces: [],
+          replanCount: 0,
+        },
+      ],
+    });
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [
+        { path: 'src/a.ts', additions: 1, deletions: 0 },
+        { path: 'src/b.ts', additions: 2, deletions: 1 },
+      ],
+    });
+    emit(EVENT_COMPLETED, {
+      runId: BACKEND_RUN_ID,
+      summary: {
+        runId: BACKEND_RUN_ID,
+        subtaskCount: 2,
+        filesChanged: 2,
+        durationSecs: 3,
+        commitsCreated: 1,
+      },
+    });
+    expect(state().status).toBe('applied');
+    expect(state().applySummary).toBeNull();
+
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: BACKEND_RUN_ID,
+      commitSha: '0123456789abcdef0123456789abcdef01234567',
+      branch: 'main',
+      filesChanged: 2,
+      perWorker: [
+        { subtaskId: 'sub-a', filesChanged: 1 },
+        { subtaskId: 'sub-b', filesChanged: 1 },
+      ],
+    });
+
+    const s = state();
+    // Payload parked verbatim.
+    expect(s.applySummary).toEqual({
+      runId: BACKEND_RUN_ID,
+      commitSha: '0123456789abcdef0123456789abcdef01234567',
+      branch: 'main',
+      filesChanged: 2,
+      perWorker: [
+        { subtaskId: 'sub-a', filesChanged: 1 },
+        { subtaskId: 'sub-b', filesChanged: 1 },
+      ],
+    });
+    // Graph state preserved — the overlay reads titles from these maps.
+    expect(s.subtasks.map((st) => st.id)).toEqual(['sub-a', 'sub-b']);
+    expect(s.finalNode?.files).toEqual(['src/a.ts', 'src/b.ts']);
+    // Status stays `applied` through the overlay lifetime.
+    expect(s.status).toBe('applied');
+  });
+
+  it('ApplySummary from a stray run is dropped', async () => {
+    await state().submitTask('x');
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: 'some-other-run',
+      commitSha: 'deadbeef00000000000000000000000000000000',
+      branch: 'main',
+      filesChanged: 1,
+      perWorker: [],
+    });
+    expect(state().applySummary).toBeNull();
+  });
+
+  it('dismissApplySummary clears the slice and returns the store to idle', async () => {
+    await state().submitTask('x');
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+    });
+    emit(EVENT_COMPLETED, {
+      runId: BACKEND_RUN_ID,
+      summary: {
+        runId: BACKEND_RUN_ID,
+        subtaskCount: 1,
+        filesChanged: 1,
+        durationSecs: 2,
+        commitsCreated: 1,
+      },
+    });
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: BACKEND_RUN_ID,
+      commitSha: 'cafebabe00000000000000000000000000000000',
+      branch: 'main',
+      filesChanged: 1,
+      perWorker: [],
+    });
+    expect(state().applySummary).not.toBeNull();
+    expect(state().status).toBe('applied');
+
+    state().dismissApplySummary();
+    const s = state();
+    expect(s.applySummary).toBeNull();
+    expect(s.status).toBe('idle');
+    expect(s.runId).toBeNull();
+    expect(s.subtasks).toEqual([]);
+    expect(s.finalNode).toBeNull();
+  });
+
+  it('submitTask after an applied run clears the previous applySummary', async () => {
+    await state().submitTask('x');
+    emit(EVENT_DIFF_READY, {
+      runId: BACKEND_RUN_ID,
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+    });
+    emit(EVENT_COMPLETED, {
+      runId: BACKEND_RUN_ID,
+      summary: {
+        runId: BACKEND_RUN_ID,
+        subtaskCount: 1,
+        filesChanged: 1,
+        durationSecs: 2,
+        commitsCreated: 1,
+      },
+    });
+    emit(EVENT_APPLY_SUMMARY, {
+      runId: BACKEND_RUN_ID,
+      commitSha: 'aaaaaaaa00000000000000000000000000000000',
+      branch: 'main',
+      filesChanged: 1,
+      perWorker: [],
+    });
+    expect(state().applySummary).not.toBeNull();
+
+    // Fresh submit triggers reset(), which must drop the stale overlay
+    // payload along with every other run-scoped slice.
+    await state().submitTask('next');
+    expect(state().applySummary).toBeNull();
   });
 
   it('submitTask after a completed/applied run resets stale state and starts fresh', async () => {

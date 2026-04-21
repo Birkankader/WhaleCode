@@ -31,6 +31,13 @@ pub const EVENT_DIFF_READY: &str = "run:diff_ready";
 /// same `FileDiff` shape the aggregate uses, scoped to one subtask.
 pub const EVENT_SUBTASK_DIFF: &str = "run:subtask_diff";
 pub const EVENT_COMPLETED: &str = "run:completed";
+/// Phase 4 Step 2: fires immediately after the terminal
+/// [`EVENT_STATUS_CHANGED`]`(Done)` on a successful Apply. Carries the
+/// post-merge commit SHA, the base branch name, the aggregate file
+/// count, and a per-worker breakdown so the bottom-right overlay can
+/// render its body without a second IPC round-trip. Re-projects data
+/// already produced by the merge phase — no new orchestration logic.
+pub const EVENT_APPLY_SUMMARY: &str = "run:apply_summary";
 pub const EVENT_FAILED: &str = "run:failed";
 pub const EVENT_MERGE_CONFLICT: &str = "run:merge_conflict";
 pub const EVENT_BASE_BRANCH_DIRTY: &str = "run:base_branch_dirty";
@@ -119,6 +126,46 @@ pub struct SubtaskDiff {
 pub struct Completed {
     pub run_id: RunId,
     pub summary: RunSummary,
+}
+
+/// Phase 4 Step 2 wire payload for [`EVENT_APPLY_SUMMARY`]. Emitted
+/// once per successful Apply, immediately after the terminal
+/// `StatusChanged(Done)`. The frontend shows a sticky bottom-right
+/// overlay that renders these fields verbatim; the graph stays
+/// mounted until the user dismisses the overlay or submits a new
+/// task.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplySummary {
+    pub run_id: RunId,
+    /// Full 40-char head SHA of `branch` after the merge. The
+    /// overlay truncates to the first 7 chars for display and
+    /// offers a "Copy SHA" button that copies the full value.
+    pub commit_sha: String,
+    /// The base branch the run merged into — i.e. the branch that
+    /// now points at `commit_sha`. Captured from
+    /// `WorktreeManager::base_branch` at Apply time.
+    pub branch: String,
+    /// Total unique files changed across the merged commits.
+    /// Mirrors `RunSummary::files_changed`; duplicated here so the
+    /// overlay can render without looking at two payloads.
+    pub files_changed: u32,
+    /// Per-worker attribution — one entry per `Done` subtask that
+    /// contributed to the merge, in plan order. Used by the
+    /// overlay's attribution rows; clicking a row pans the graph
+    /// to the matching worker node.
+    pub per_worker: Vec<ApplySummaryPerWorker>,
+}
+
+/// One entry in [`ApplySummary::per_worker`]. Kept tiny on purpose —
+/// the frontend already has the subtask title from
+/// `SubtasksProposed`; the overlay just needs the id to look it up
+/// and the count to render the "N files" chip.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplySummaryPerWorker {
+    pub subtask_id: SubtaskId,
+    pub files_changed: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,6 +282,10 @@ pub fn emit_completed(app: &AppHandle, payload: &Completed) -> tauri::Result<()>
     app.emit(EVENT_COMPLETED, payload)
 }
 
+pub fn emit_apply_summary(app: &AppHandle, payload: &ApplySummary) -> tauri::Result<()> {
+    app.emit(EVENT_APPLY_SUMMARY, payload)
+}
+
 pub fn emit_failed(app: &AppHandle, payload: &Failed) -> tauri::Result<()> {
     app.emit(EVENT_FAILED, payload)
 }
@@ -334,6 +385,34 @@ mod tests {
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["files"][0]["path"], "src/foo.ts");
         assert_eq!(json["files"][0]["additions"], 3);
+    }
+
+    #[test]
+    fn apply_summary_serializes_camel_case_with_per_worker() {
+        let payload = ApplySummary {
+            run_id: "r1".into(),
+            commit_sha: "abc1234def5678".into(),
+            branch: "main".into(),
+            files_changed: 5,
+            per_worker: vec![
+                ApplySummaryPerWorker {
+                    subtask_id: "s1".into(),
+                    files_changed: 3,
+                },
+                ApplySummaryPerWorker {
+                    subtask_id: "s2".into(),
+                    files_changed: 2,
+                },
+            ],
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["runId"], "r1");
+        assert_eq!(json["commitSha"], "abc1234def5678");
+        assert_eq!(json["branch"], "main");
+        assert_eq!(json["filesChanged"], 5);
+        assert_eq!(json["perWorker"][0]["subtaskId"], "s1");
+        assert_eq!(json["perWorker"][0]["filesChanged"], 3);
+        assert_eq!(json["perWorker"][1]["subtaskId"], "s2");
     }
 
     #[test]

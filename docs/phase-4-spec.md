@@ -192,19 +192,23 @@ Phase 4 makes Apply feel like a destination: the graph stays mounted (not dismou
 - Event emission is order-invariant against other Applied-path events: `run:diff_ready` → `run:status_changed { Applied }` → `run:apply_summary`. One orchestration integration test snapshots this ordering.
 - Discard path is unchanged — no overlay, graph clears as before.
 
-**Open questions:**
+**Open questions (resolved before implementation):**
 
-- **Overlay position:** top-right (matches TopBar chip positions) vs bottom-right (matches the approval bar's pattern) vs centered-modal (heavier, more attention-grabbing). Recommend bottom-right — matches the approval-bar "task-level sticky surface" pattern that users have already learned.
-- **Auto-dismiss vs sticky:** should the overlay auto-fade after N seconds, or require explicit Dismiss? Recommend sticky — Apply is the moment the user wants to inspect; auto-dismiss fights the theme.
-- **Commit SHA clickable?** On macOS, `open https://github.com/.../commit/SHA` is trivial if we can detect the remote. But: we don't know if the remote is GitHub / GitLab / Bitbucket / Gitea without parsing `git remote`, and pushing hasn't happened yet — the SHA is local-only. **Recommend plain text + Copy SHA affordance** — defer GitHub links to a future phase that also handles push state.
-- **Does the overlay persist if the user resets and submits a new task?** Recommend auto-dismiss on new task submit (not on Idle transition alone).
+- **Overlay position:** bottom-right — matches the approval bar's "task-level sticky surface" pattern users have already learned. Rendered inside `ReactFlowProvider` as a sibling of `GraphCanvasInner`, positioned `absolute bottom-4 right-4 z-20` against the main's relative container.
+- **Auto-dismiss vs sticky:** sticky — require explicit Dismiss or new-task submit. Apply is the moment the user wants to inspect; auto-dismiss fights the theme.
+- **Commit SHA clickable?** plain text + Copy SHA affordance. Full 40-char SHA written to clipboard; display truncates to 7 chars. GitHub links deferred to a phase that also handles push state.
+- **Persist across new task submit?** auto-cleared via `submitTask`'s existing `reset()` call — no new wiring needed.
+- **Per-worker click behavior:** React Flow `setCenter(cx, cy, { zoom })` with the *current* viewport zoom read from `getViewport()` — same pattern as `WorkerNode`'s DependsOn pan. Preserves user zoom; `fitView` would be destructive.
 
-**Risk flags:**
+**Risk flags (resolved):**
 
-- **Graph mount/unmount race:** today Applied may trigger graph reset via the store's `reset()` action. Need to make sure the overlay's "graph stays visible" contract isn't fighting against an existing reset. The fix may be in `graphStore`, not in the overlay component.
-- **Per-worker attribution edge cases:** what if two workers wrote the same file? MergeResult should attribute via commit authorship — worth verifying the current merge path records this correctly. Step 0 diagnostic may brush up against this.
+- **Graph mount/unmount race:** `App.tsx` previously routed `status === 'applied'` to EmptyState, which unmounted the graph under the new overlay. Fixed: `applied` now falls through to `GraphCanvas`. Dismiss → `reset()` → store returns to `idle` → App.tsx routes back to EmptyState.
+- **Deferred-detach ordering:** backend emits `DiffReady → Completed → StatusChanged(Done) → ApplySummary`. The frontend's pre-Phase-4 pattern detached the subscription on `Completed`, which would drop `ApplySummary` mid-sequence. Fixed: detach is now triggered by `ApplySummary` itself (and still fires on `failed`/`rejected`/`cancelled` as before). Integration tests pin the new invariant.
+- **Per-worker attribution edge cases:** same worker writing the same file twice rolls up under that worker's count; two workers writing the same file are each credited for their touch. `per_worker_counts` is the set of files *that worker's diff reported*, not the post-merge union, so attribution matches authorship intent. Confirmed by reading the merge-phase loop.
 
 **Estimated complexity:** small-to-medium (2 days: 0.5 day backend event, 1 day overlay component + layout, 0.5 day integration tests and graph-state interaction).
+
+**Status:** shipped in `feat(phase-4): step 2 — apply summary overlay`.
 
 ---
 

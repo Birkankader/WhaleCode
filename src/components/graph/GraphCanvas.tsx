@@ -28,6 +28,7 @@ import {
 import { FinalNode, type FinalNodeData } from '../nodes/FinalNode';
 import { MasterNode, type MasterNodeData } from '../nodes/MasterNode';
 import { WorkerNode, type WorkerNodeData } from '../nodes/WorkerNode';
+import { ApplySummaryOverlay } from '../overlay/ApplySummaryOverlay';
 import { MASTER_ID, FINAL_ID, useGraphStore } from '../../state/graphStore';
 import type { NodeSnapshot } from '../../state/graphStore';
 import type { NodeState } from '../../state/nodeMachine';
@@ -83,6 +84,14 @@ export function GraphCanvas() {
   return (
     <ReactFlowProvider>
       <GraphCanvasInner />
+      {/*
+       * ApplySummaryOverlay lives inside ReactFlowProvider so it can
+       * call `useReactFlow().setCenter` for per-worker navigation.
+       * Positioned absolutely within the GraphCanvasInner container
+       * (bottom-right), so the overlay rides on top of the graph
+       * without interfering with canvas interaction.
+       */}
+      <ApplySummaryOverlay />
     </ReactFlowProvider>
   );
 }

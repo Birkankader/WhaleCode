@@ -615,6 +615,13 @@ async fn merge_phase(
 
     let mut by_path: HashMap<PathBuf, FileDiff> = HashMap::new();
     let mut order: Vec<PathBuf> = Vec::new();
+    // Phase 4 Step 2: per-worker file counts re-projected from the
+    // same diffs pass, kept in plan order to match the overlay's
+    // attribution rows. Entries with zero files are included — the
+    // overlay renders them as "0 files" (honest signal that the
+    // worker ran but touched nothing).
+    let mut per_worker_counts: Vec<(SubtaskId, u32)> =
+        Vec::with_capacity(done_ids.len());
     for sub_id in &done_ids {
         let diffs = match worktree_mgr.diff(sub_id).await {
             Ok(d) => d,
@@ -642,6 +649,7 @@ async fn merge_phase(
         // the set of done subtasks rather than silently skipping.
         let per_subtask_wire: Vec<IpcFileDiff> =
             diffs.iter().map(worktree_to_ipc_diff).collect();
+        per_worker_counts.push((sub_id.clone(), per_subtask_wire.len() as u32));
         deps.event_sink
             .emit(RunEvent::SubtaskDiff {
                 run_id: run_id.clone(),
@@ -722,6 +730,7 @@ async fn merge_phase(
                             &notes,
                             &done_ids,
                             &res,
+                            &per_worker_counts,
                             started_at,
                         )
                         .await;
@@ -839,6 +848,16 @@ async fn apply_step(
 }
 
 /// Finalize a successful Apply: cleanup, mark Done, emit Completed.
+///
+/// Event ordering (invariant — Phase 4 Step 2):
+///   `DiffReady` → `Completed` → `StatusChanged(Done)` → `ApplySummary`
+///
+/// `ApplySummary` is the last event in the run and carries the
+/// re-projected merge outputs for the bottom-right overlay. Capturing
+/// `branch` before the worktree cleanup is belt-and-braces — the
+/// WorktreeManager's `base_branch` field is stable across cleanup,
+/// but reading it up front keeps the emit free of any teardown
+/// ordering assumptions.
 #[allow(clippy::too_many_arguments)]
 async fn finalize_applied(
     deps: &LifecycleDeps,
@@ -848,8 +867,13 @@ async fn finalize_applied(
     notes: &Arc<SharedNotes>,
     done_ids: &[SubtaskId],
     res: &MergeResult,
+    per_worker_counts: &[(SubtaskId, u32)],
     started_at: chrono::DateTime<Utc>,
 ) {
+    // Capture the base branch *before* cleanup so the wire payload
+    // reflects the branch the merge actually landed on, independent
+    // of any later mutation.
+    let branch = worktree_mgr.base_branch().to_string();
     let _ = notes.clear().await;
     if let Err(e) = worktree_mgr.cleanup_all().await {
         // Log but continue — the run succeeded; cleanup failure is
@@ -875,10 +899,11 @@ async fn finalize_applied(
     {
         eprintln!("[orchestrator] finish_run(done) failed: {e}");
     }
+    let files_changed = res.files_changed.len() as u32;
     let summary = RunSummary {
         run_id: run_id.clone(),
         subtask_count: done_ids.len() as u32,
-        files_changed: res.files_changed.len() as u32,
+        files_changed,
         duration_secs: (now - started_at).num_seconds().max(0) as u64,
         commits_created: res.commits_created as u32,
     };
@@ -892,6 +917,15 @@ async fn finalize_applied(
         .emit(RunEvent::StatusChanged {
             run_id: run_id.clone(),
             status: RunStatus::Done,
+        })
+        .await;
+    deps.event_sink
+        .emit(RunEvent::ApplySummary {
+            run_id: run_id.clone(),
+            commit_sha: res.commit_sha.clone(),
+            branch,
+            files_changed,
+            per_worker: per_worker_counts.to_vec(),
         })
         .await;
 }

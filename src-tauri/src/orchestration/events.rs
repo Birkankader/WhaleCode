@@ -70,6 +70,19 @@ pub enum RunEvent {
         run_id: RunId,
         summary: RunSummary,
     },
+    /// Phase 4 Step 2: emitted once per successful Apply, *after* the
+    /// terminal `StatusChanged(Done)`. Carries the re-projected merge
+    /// outputs (commit SHA, base branch, aggregate + per-worker file
+    /// counts) that the bottom-right overlay renders. Ordering
+    /// invariant: `DiffReady → Completed → StatusChanged(Done) →
+    /// ApplySummary`.
+    ApplySummary {
+        run_id: RunId,
+        commit_sha: String,
+        branch: String,
+        files_changed: u32,
+        per_worker: Vec<(SubtaskId, u32)>,
+    },
     Failed {
         run_id: RunId,
         error: String,
@@ -143,6 +156,7 @@ impl RunEvent {
             | RunEvent::DiffReady { run_id, .. }
             | RunEvent::SubtaskDiff { run_id, .. }
             | RunEvent::Completed { run_id, .. }
+            | RunEvent::ApplySummary { run_id, .. }
             | RunEvent::Failed { run_id, .. }
             | RunEvent::MergeConflict { run_id, .. }
             | RunEvent::BaseBranchDirty { run_id, .. }
@@ -235,6 +249,28 @@ impl EventSink for TauriEventSink {
             RunEvent::Completed { run_id, summary } => {
                 wire::emit_completed(&self.app, &wire::Completed { run_id, summary })
             }
+            RunEvent::ApplySummary {
+                run_id,
+                commit_sha,
+                branch,
+                files_changed,
+                per_worker,
+            } => wire::emit_apply_summary(
+                &self.app,
+                &wire::ApplySummary {
+                    run_id,
+                    commit_sha,
+                    branch,
+                    files_changed,
+                    per_worker: per_worker
+                        .into_iter()
+                        .map(|(subtask_id, files_changed)| wire::ApplySummaryPerWorker {
+                            subtask_id,
+                            files_changed,
+                        })
+                        .collect(),
+                },
+            ),
             RunEvent::Failed { run_id, error } => {
                 wire::emit_failed(&self.app, &wire::Failed { run_id, error })
             }

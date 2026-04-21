@@ -188,6 +188,11 @@ export const EVENT_DIFF_READY = 'run:diff_ready' as const;
 // `run:diff_ready` still fires at the end of the Apply pre-merge pass.
 export const EVENT_SUBTASK_DIFF = 'run:subtask_diff' as const;
 export const EVENT_COMPLETED = 'run:completed' as const;
+// Phase 4 Step 2: final event in a successful run, emitted strictly
+// after `run:status_changed(done)`. Payload drives the bottom-right
+// apply-summary overlay (commit SHA, base branch, aggregate + per-
+// worker file counts).
+export const EVENT_APPLY_SUMMARY = 'run:apply_summary' as const;
 export const EVENT_FAILED = 'run:failed' as const;
 export const EVENT_MERGE_CONFLICT = 'run:merge_conflict' as const;
 export const EVENT_BASE_BRANCH_DIRTY = 'run:base_branch_dirty' as const;
@@ -253,6 +258,38 @@ export const completedSchema = z.object({
   summary: runSummarySchema,
 });
 export type Completed = z.infer<typeof completedSchema>;
+
+/**
+ * One entry in {@link ApplySummary.perWorker}. Kept tiny on purpose —
+ * the graph already has the subtask title from `SubtasksProposed`;
+ * the overlay looks it up by id and renders the file count.
+ */
+export const applySummaryPerWorkerSchema = z.object({
+  subtaskId: subtaskIdSchema,
+  filesChanged: z.number().int().nonnegative(),
+});
+export type ApplySummaryPerWorker = z.infer<typeof applySummaryPerWorkerSchema>;
+
+/**
+ * Phase 4 Step 2 payload. Fires once per successful Apply, strictly
+ * after `run:status_changed(done)`. Re-projects data already produced
+ * by the merge phase (commit SHA, base branch, aggregate + per-worker
+ * file counts) so the overlay renders from a single payload.
+ *
+ * The UI contract: the graph stays mounted while the overlay is
+ * visible; the user dismisses explicitly (Dismiss button) or
+ * implicitly (submitting a new task). Order invariant enforced by
+ * the backend and covered by an integration test — the store can
+ * assume the payload arrives *after* the terminal `Completed`.
+ */
+export const applySummarySchema = z.object({
+  runId: runIdSchema,
+  commitSha: z.string(),
+  branch: z.string(),
+  filesChanged: z.number().int().nonnegative(),
+  perWorker: z.array(applySummaryPerWorkerSchema),
+});
+export type ApplySummary = z.infer<typeof applySummarySchema>;
 
 export const failedSchema = z.object({
   runId: runIdSchema,

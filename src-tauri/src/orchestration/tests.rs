@@ -1627,6 +1627,122 @@ async fn apply_emits_subtask_diff_per_done_subtask_before_aggregate() {
 }
 
 #[tokio::test]
+async fn apply_emits_apply_summary_last_with_commit_sha_and_per_worker_counts() {
+    // Phase 4 Step 2: after a successful Apply the backend emits
+    // `ApplySummary` as the final event. The ordering invariant is
+    // `DiffReady → Completed → StatusChanged(Done) → ApplySummary`
+    // — the UI relies on the terminal Done arriving before the
+    // overlay payload so the graph has finished transitioning.
+    //
+    // Payload carries:
+    //   - full 40-char commit SHA of the merged HEAD
+    //   - base branch ("main" in the harness)
+    //   - aggregate files_changed (mirrors RunSummary)
+    //   - per-worker rows, one per done subtask, in plan order,
+    //     each with the file count that worker touched (0 for
+    //     workers that ran but wrote nothing).
+    let agent = agent_writing(&[
+        ("t0", vec![("a.txt", "hello\n")]),
+        ("t1", vec![("b.txt", "world\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("two writes".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // Payload shape.
+    let apply_summary = expect_event(&h, &run_id, |e| match e {
+        RunEvent::ApplySummary { .. } => Some(e.clone()),
+        _ => None,
+    })
+    .await;
+    let RunEvent::ApplySummary {
+        commit_sha,
+        branch,
+        files_changed,
+        per_worker,
+        ..
+    } = apply_summary
+    else {
+        unreachable!("matcher only returns ApplySummary");
+    };
+    assert_eq!(commit_sha.len(), 40, "full 40-char SHA expected");
+    assert!(
+        commit_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "commit SHA should be hex, got {commit_sha}"
+    );
+    assert_eq!(branch, "main");
+    assert_eq!(files_changed, 2);
+    assert_eq!(
+        per_worker.len(),
+        2,
+        "one per-worker entry per done subtask, got {per_worker:?}"
+    );
+    assert_eq!(per_worker[0].1, 1, "t0 touched 1 file");
+    assert_eq!(per_worker[1].1, 1, "t1 touched 1 file");
+
+    // Ordering invariant: ApplySummary is emitted after the
+    // DiffReady → Completed → StatusChanged(Done) chain and is the
+    // last event for the run.
+    let events = h.sink.snapshot().await;
+    let diff_ready_i = events
+        .iter()
+        .position(|e| matches!(e, RunEvent::DiffReady { run_id: r, .. } if *r == run_id))
+        .expect("DiffReady must be present");
+    let completed_i = events
+        .iter()
+        .position(|e| matches!(e, RunEvent::Completed { run_id: r, .. } if *r == run_id))
+        .expect("Completed must be present");
+    let status_done_i = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                RunEvent::StatusChanged { run_id: r, status: RunStatus::Done } if *r == run_id
+            )
+        })
+        .expect("StatusChanged(Done) must be present");
+    let apply_summary_i = events
+        .iter()
+        .position(|e| matches!(e, RunEvent::ApplySummary { run_id: r, .. } if *r == run_id))
+        .expect("ApplySummary must be present");
+    assert!(
+        diff_ready_i < completed_i,
+        "DiffReady must precede Completed"
+    );
+    assert!(
+        completed_i < status_done_i,
+        "Completed must precede StatusChanged(Done)"
+    );
+    assert!(
+        status_done_i < apply_summary_i,
+        "StatusChanged(Done) must precede ApplySummary"
+    );
+    let later_events_for_run: Vec<_> = events
+        .iter()
+        .skip(apply_summary_i + 1)
+        .filter(|e| e.run_id() == &run_id)
+        .collect();
+    assert!(
+        later_events_for_run.is_empty(),
+        "ApplySummary must be the last event for the run, got {later_events_for_run:?}"
+    );
+}
+
+#[tokio::test]
 async fn apply_conflict_keeps_run_in_merging_and_emits_merge_conflict() {
     // Two subtasks write the SAME file with DIFFERENT content →
     // merge of the second branch conflicts.

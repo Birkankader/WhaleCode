@@ -46,6 +46,7 @@ import {
   tryReplanAgain as tryReplanAgainIpc,
   updateSubtask as updateSubtaskIpc,
   type AgentKind as BackendAgentKind,
+  type ApplySummary,
   type AutoApproveSuspended,
   type AutoApproved,
   type BaseBranchDirty,
@@ -261,6 +262,21 @@ export type GraphState = {
    */
   autoApproveSuspended: { reason: string } | null;
   /**
+   * Phase 4 Step 2: set when the backend emits `run:apply_summary` on a
+   * successful Apply. Drives the bottom-right ApplySummaryOverlay (total
+   * files changed, branch, commit SHA, per-worker rows). Sticky: cleared
+   * only by explicit user action — `dismissApplySummary` (Dismiss click)
+   * or `reset` (new run submit). NOT cleared on `Completed` or the
+   * terminal `StatusChanged(Done)` so the overlay survives the run
+   * going terminal.
+   *
+   * Ordering invariant (from `orchestration/lifecycle.rs::finalize_applied`):
+   * `DiffReady → Completed → StatusChanged(Done) → ApplySummary`. By
+   * the time this slice lands the store has already transitioned to
+   * `applied`, so a render reading both sees a consistent pair.
+   */
+  applySummary: ApplySummary | null;
+  /**
    * Bug #5 follow-up: the window between `submitTask`'s optimistic local
    * runId (`pending_*`) and the real backend runId landing is roughly an
    * IPC round-trip, but if the user clicks Cancel in that window the
@@ -339,6 +355,14 @@ export type GraphState = {
    * the run stay manual regardless of dismissal.
    */
   dismissAutoApproveSuspended: () => void;
+  /**
+   * Dismiss the Apply-summary overlay. Resets the store to `idle`: the
+   * graph data goes away, the overlay disappears, App.tsx routes back
+   * to EmptyState. Semantically equivalent to the user saying "I've
+   * seen the result, take me home" — there's no state after Applied
+   * worth preserving since a fresh submit would `reset()` anyway.
+   */
+  dismissApplySummary: () => void;
   reset: () => void;
 };
 
@@ -449,6 +473,7 @@ const initial: Pick<
   | 'currentError'
   | 'autoApproved'
   | 'autoApproveSuspended'
+  | 'applySummary'
   | 'pendingCancel'
   | 'cancelInFlight'
 > = {
@@ -474,6 +499,7 @@ const initial: Pick<
   currentError: null,
   autoApproved: null,
   autoApproveSuspended: null,
+  applySummary: null,
   pendingCancel: false,
   cancelInFlight: false,
 };
@@ -735,12 +761,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
     // transient apply state, and conflicts may keep the run alive.
     // `cancelled` IS terminal: the backend's `finalize_cancelled` emits a
     // single StatusChanged(Cancelled) and stops all workers, so we detach
-    // symmetrically with done/failed/rejected. Without this, the
-    // subscription stays wired to a dead run and `submitTask`'s
-    // `priorIsTerminal` guard throws "A run is already active" — a soft-
-    // lock the user can only escape by full-reloading the app.
+    // symmetrically with failed/rejected. Without this, the subscription
+    // stays wired to a dead run and `submitTask`'s `priorIsTerminal`
+    // guard throws "A run is already active" — a soft-lock the user can
+    // only escape by full-reloading the app.
+    //
+    // `done` is NOT in the detach list: the backend's Phase 4 Step 2
+    // apply-summary path emits `StatusChanged(Done) → ApplySummary`.
+    // Detaching on `done` would kill the listener mid-sequence and drop
+    // the summary payload. The applied-path detach is handled by
+    // `handleApplySummary` once the overlay payload is parked.
     if (
-      mapped === 'done' ||
       mapped === 'failed' ||
       mapped === 'rejected' ||
       mapped === 'cancelled'
@@ -748,9 +779,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
       detachActiveSubscription();
       // Terminal → clear the transient "Cancelling…" indicator so the
       // next run starts clean. `cancelled` is the happy path here;
-      // done/failed/rejected also clear it because the user's intent
-      // was honoured (the cancel lost the race with natural
-      // completion, but the result is the same: run is over).
+      // failed/rejected also clear it because the user's intent was
+      // honoured (the cancel lost the race with natural completion,
+      // but the result is the same: run is over).
+      if (get().cancelInFlight) {
+        set({ cancelInFlight: false });
+      }
+    } else if (mapped === 'done') {
+      // Same indicator-clearing semantics as the other terminals, just
+      // without the detach. The subscription stays alive one more hop
+      // to receive ApplySummary.
       if (get().cancelInFlight) {
         set({ cancelInFlight: false });
       }
@@ -1037,8 +1075,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
   function handleCompleted(e: Completed) {
     if (e.runId !== get().runId) return;
     // `Completed` fires after a successful apply. Clear any stale conflict
-    // metadata, mark the run applied so App.tsx routes back to EmptyState,
-    // and detach.
+    // metadata and mark the run applied so App.tsx keeps the graph mounted
+    // while the ApplySummaryOverlay rides on top.
+    //
+    // Detach is deliberately deferred to `handleApplySummary`: the backend
+    // ordering is `Completed → StatusChanged(Done) → ApplySummary`, and
+    // tearing down the Tauri listeners here would drop the summary
+    // payload mid-sequence. For non-applied terminals the usual
+    // `handleStatusChanged` detach fires instead.
     set((state) => ({
       status: 'applied',
       finalNode: state.finalNode
@@ -1050,7 +1094,6 @@ export const useGraphStore = create<GraphState>((set, get) => {
     // matches reality — Completed only reaches the frontend after a
     // successful merge, by which point the actor is already in running.
     sendTo(FINAL_ID, { type: 'COMPLETE' });
-    detachActiveSubscription();
   }
 
   function handleFailed(e: Failed) {
@@ -1117,6 +1160,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
     set({ autoApproveSuspended: { reason: e.reason } });
   }
 
+  function handleApplySummary(e: ApplySummary) {
+    if (e.runId !== get().runId) return;
+    // Last event in the applied path's ordering invariant
+    // (DiffReady → Completed → StatusChanged(Done) → ApplySummary).
+    // Park the payload for the overlay and retire the subscription —
+    // no further events are expected for this run.
+    set({ applySummary: e });
+    detachActiveSubscription();
+  }
+
   function buildHandlers() {
     return {
       onStatusChanged: handleStatusChanged,
@@ -1134,6 +1187,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onHumanEscalation: handleHumanEscalation,
       onAutoApproved: handleAutoApproved,
       onAutoApproveSuspended: handleAutoApproveSuspended,
+      onApplySummary: handleApplySummary,
       onParseError: defaultOnParseError,
     };
   }
@@ -1509,6 +1563,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     dismissAutoApproveSuspended() {
       set({ autoApproveSuspended: null });
+    },
+
+    dismissApplySummary() {
+      // Full reset — same as a fresh submit path. The overlay is the
+      // last thing the user interacts with on an applied run; once
+      // they dismiss it there's nothing left to inspect, so we clear
+      // the graph, stop actors, and route back to EmptyState via the
+      // normal idle status. `reset()` already drops `applySummary` via
+      // the `...initial` spread.
+      get().reset();
     },
 
     reset() {

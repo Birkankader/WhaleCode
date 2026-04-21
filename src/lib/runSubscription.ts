@@ -26,6 +26,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { z } from 'zod';
 
 import {
+  EVENT_APPLY_SUMMARY,
   EVENT_AUTO_APPROVE_SUSPENDED,
   EVENT_AUTO_APPROVED,
   EVENT_BASE_BRANCH_DIRTY,
@@ -41,6 +42,7 @@ import {
   EVENT_SUBTASK_LOG,
   EVENT_SUBTASK_STATE_CHANGED,
   EVENT_SUBTASKS_PROPOSED,
+  applySummarySchema,
   autoApproveSuspendedSchema,
   autoApprovedSchema,
   baseBranchDirtySchema,
@@ -56,6 +58,7 @@ import {
   subtaskLogSchema,
   subtaskStateChangedSchema,
   subtasksProposedSchema,
+  type ApplySummary,
   type AutoApproveSuspended,
   type AutoApproved,
   type BaseBranchDirty,
@@ -83,6 +86,7 @@ export type RunEventHandlers = {
   onDiffReady?: (event: DiffReady) => void;
   onSubtaskDiff?: (event: SubtaskDiff) => void;
   onCompleted?: (event: Completed) => void;
+  onApplySummary?: (event: ApplySummary) => void;
   onFailed?: (event: Failed) => void;
   onMergeConflict?: (event: MergeConflict) => void;
   onBaseBranchDirty?: (event: BaseBranchDirty) => void;
@@ -203,6 +207,11 @@ export class RunSubscription {
         event: EVENT_COMPLETED,
         schema: completedSchema,
         handler: this.handlers.onCompleted as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_APPLY_SUMMARY,
+        schema: applySummarySchema,
+        handler: this.handlers.onApplySummary as ((e: unknown) => void) | undefined,
       },
       {
         event: EVENT_FAILED,

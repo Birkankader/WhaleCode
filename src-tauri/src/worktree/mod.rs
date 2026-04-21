@@ -140,6 +140,11 @@ impl DependencyGraph {
 pub struct MergeResult {
     pub commits_created: usize,
     pub files_changed: Vec<PathBuf>,
+    /// Head SHA of `base_branch` after all worker branches were
+    /// merged. Phase 4 Step 2 uses this in the `ApplySummary` overlay
+    /// so the user sees the commit their run produced. Always the
+    /// full 40-char hex SHA — the UI truncates to 7 for display.
+    pub commit_sha: String,
 }
 
 // -- Error taxonomy --------------------------------------------------
@@ -547,6 +552,7 @@ impl WorktreeManager {
         Ok(MergeResult {
             commits_created: order.len(),
             files_changed,
+            commit_sha: head_after,
         })
     }
 

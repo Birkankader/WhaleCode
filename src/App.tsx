@@ -104,13 +104,20 @@ export default function App() {
     body = <AgentSetupState />;
   } else if (!currentRepo) {
     body = <RepoPicker />;
-  } else if (status === 'idle' || status === 'applied' || status === 'cancelled') {
-    // `cancelled` routes back to EmptyState like `idle`/`applied`: the
-    // user explicitly stopped the run, so there's nothing to inspect
-    // — preserving the dead graph just left them staring at a
-    // tombstone with no obvious next action (Bug #5 follow-up). The
-    // store still carries the final subtasks/logs/snapshots, but the
-    // UI surfaces a fresh task input and lets them move on.
+  } else if (status === 'idle' || status === 'cancelled') {
+    // `cancelled` routes back to EmptyState like `idle`: the user
+    // explicitly stopped the run, so there's nothing to inspect —
+    // preserving the dead graph just left them staring at a tombstone
+    // with no obvious next action (Bug #5 follow-up). The store still
+    // carries the final subtasks/logs/snapshots, but the UI surfaces
+    // a fresh task input and lets them move on.
+    //
+    // `applied` DOES keep the graph mounted — Phase 4 Step 2's
+    // bottom-right ApplySummaryOverlay rides on top of the canvas and
+    // owns the "done, here's what happened" moment. The overlay's
+    // Dismiss action calls `dismissApplySummary` which resets the
+    // store to `idle`, at which point this branch catches us and
+    // routes back to EmptyState.
     body = <EmptyState />;
   } else {
     body = <GraphCanvas />;
