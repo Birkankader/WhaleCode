@@ -39,6 +39,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import {
   getSubtaskWorktreePath,
@@ -78,6 +79,19 @@ export function WorktreeActions({ subtaskId }: Props) {
   const menuRef = useRef<HTMLUListElement | null>(null);
   const listboxId = useId();
 
+  // Menu renders into a React portal at `document.body` so it escapes
+  // the React Flow node's `transform`-induced stacking context. Within
+  // that transformed context a `z-50` child still paints below sibling
+  // nodes (the merge card one row down), so the user can't reach the
+  // menu items. Coordinates are computed from `triggerRef`'s viewport
+  // rect on open; on tall monitors the menu anchors below the folder
+  // icon (mt:4), on tight-bottom-viewport cases we flip it above so it
+  // never clips off-screen. We don't track resize/scroll while open —
+  // the menu is a one-click affordance, a single snapshot is fine.
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(
+    null,
+  );
+
   const close = useCallback(() => {
     setOpen(false);
     triggerRef.current?.focus();
@@ -107,7 +121,30 @@ export function WorktreeActions({ subtaskId }: Props) {
   }, [open]);
 
   useLayoutEffect(() => {
-    if (open) menuRef.current?.focus();
+    // Closed → leave any stale `menuPos` untouched; the conditional in
+    // render (`open && menuPos`) gates visibility, and the next open
+    // will recompute synchronously before paint so no flash of the
+    // prior position occurs.
+    if (!open) return;
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    // Estimated menu height — three ~28px rows + padding. Enough for
+    // a conservative below/above flip decision without measuring the
+    // menu before paint.
+    const MENU_H_EST = 110;
+    const MENU_W_EST = 200;
+    const gap = 4;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const top =
+      spaceBelow >= MENU_H_EST + gap
+        ? rect.bottom + gap
+        : Math.max(gap, rect.top - MENU_H_EST - gap);
+    // Right-anchor: align menu's right edge with trigger's right edge,
+    // then clamp to the viewport so long-label menus don't clip left.
+    const left = Math.max(gap, Math.min(rect.right - MENU_W_EST, window.innerWidth - MENU_W_EST - gap));
+    setMenuPos({ top, left });
+    menuRef.current?.focus();
   }, [open]);
 
   const runAction = useCallback(
@@ -220,47 +257,56 @@ export function WorktreeActions({ subtaskId }: Props) {
       >
         <Folder size={12} />
       </button>
-      {open ? (
-        <ul
-          ref={menuRef}
-          id={listboxId}
-          role="menu"
-          aria-label="Worktree actions menu"
-          aria-activedescendant={`${listboxId}-${ACTIONS[highlight]?.key ?? ''}`}
-          tabIndex={-1}
-          onKeyDown={onMenuKeyDown}
-          className="nodrag nopan absolute right-0 z-50 mt-1 min-w-[180px] list-none overflow-hidden rounded-md border text-meta shadow-lg outline-none"
-          style={{
-            background: 'var(--color-bg-elevated)',
-            borderColor: 'var(--color-border-default)',
-            padding: 4,
-          }}
-          data-testid={`worktree-actions-menu-${subtaskId}`}
-        >
-          {ACTIONS.map((opt, idx) => {
-            const highlighted = idx === highlight;
-            const style: CSSProperties = {
-              background: highlighted ? 'var(--color-bg-subtle)' : 'transparent',
-              color: 'var(--color-fg-primary)',
-            };
-            return (
-              <li
-                key={opt.key}
-                id={`${listboxId}-${opt.key}`}
-                role="menuitem"
-                aria-disabled={busy !== null}
-                onClick={() => void runAction(opt.key)}
-                onMouseEnter={() => setHighlight(idx)}
-                className="flex cursor-pointer items-center rounded-sm px-2 py-1"
-                style={style}
-                data-testid={`worktree-actions-item-${opt.key}-${subtaskId}`}
-              >
-                <span>{opt.label}</span>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
+      {open && menuPos
+        ? createPortal(
+            <ul
+              ref={menuRef}
+              id={listboxId}
+              role="menu"
+              aria-label="Worktree actions menu"
+              aria-activedescendant={`${listboxId}-${ACTIONS[highlight]?.key ?? ''}`}
+              tabIndex={-1}
+              onKeyDown={onMenuKeyDown}
+              // Stop click bubbling so a menu click doesn't slip through
+              // to whatever the card-body would have done (same defence
+              // the in-tree wrapper used to provide before portaling).
+              onClick={(e) => e.stopPropagation()}
+              className="nodrag nopan fixed z-50 min-w-[180px] list-none overflow-hidden rounded-md border text-meta shadow-lg outline-none"
+              style={{
+                top: menuPos.top,
+                left: menuPos.left,
+                background: 'var(--color-bg-elevated)',
+                borderColor: 'var(--color-border-default)',
+                padding: 4,
+              }}
+              data-testid={`worktree-actions-menu-${subtaskId}`}
+            >
+              {ACTIONS.map((opt, idx) => {
+                const highlighted = idx === highlight;
+                const style: CSSProperties = {
+                  background: highlighted ? 'var(--color-bg-subtle)' : 'transparent',
+                  color: 'var(--color-fg-primary)',
+                };
+                return (
+                  <li
+                    key={opt.key}
+                    id={`${listboxId}-${opt.key}`}
+                    role="menuitem"
+                    aria-disabled={busy !== null}
+                    onClick={() => void runAction(opt.key)}
+                    onMouseEnter={() => setHighlight(idx)}
+                    className="flex cursor-pointer items-center rounded-sm px-2 py-1"
+                    style={style}
+                    data-testid={`worktree-actions-item-${opt.key}-${subtaskId}`}
+                  >
+                    <span>{opt.label}</span>
+                  </li>
+                );
+              })}
+            </ul>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

@@ -84,8 +84,15 @@ const LOGS_STATES: ReadonlySet<NodeState> = new Set([
  * state-tier heights (logs/escalation) via the expand-override path
  * in `buildGraph`; row-max alignment in `layoutGraph` means row-mates
  * grow in sympathy, which keeps the grid readable.
+ *
+ * Lowered from 560 → 420 after post-Step-6 manual verification: a
+ * single-worker expand on a 14" laptop pushed the card past the
+ * viewport, hiding the merge node below. 420 covers ~25 log lines at
+ * the current density while leaving room for the merge footer in the
+ * common single-worker case; row-max alignment means multi-worker
+ * rows still expand in sympathy without any additional bookkeeping.
  */
-const EXPANDED_WORKER_HEIGHT = 560;
+const EXPANDED_WORKER_HEIGHT = 420;
 /**
  * States where the expand toggle is legal. Proposed is excluded
  * because the whole-card click is already the selection-toggle
@@ -143,7 +150,7 @@ function GraphCanvasInner() {
   // bit straight from the store; `buildGraph` needs the set here so it
   // can tag edges whose source or target is a dim-worthy subtask.
   const selectedSubtaskIds = useGraphStore((s) => s.selectedSubtaskIds);
-  // Phase 4 Step 3: expanded-worker ids drive the ~560px height
+  // Phase 4 Step 3: expanded-worker ids drive the ~420px height
   // override in buildGraph. Subscribing here keeps the layout pass
   // reactive to toggle clicks from any WorkerNode — the Set identity
   // flips on each toggle so the memo below re-runs exactly once.
@@ -357,7 +364,7 @@ function buildGraph(
   // footprint.
   //
   // Three tiers above the 140px default (highest wins):
-  //   - expanded (Step 3): 560px, scrollable full-log surface.
+  //   - expanded (Step 3): 420px, scrollable full-log surface.
   //     Only promoted for non-proposed states — the store is
   //     permissive but WorkerNode gates toggle-on-click, and the
   //     `EXPANDABLE_STATES` guard here is defense-in-depth against

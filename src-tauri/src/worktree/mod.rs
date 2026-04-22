@@ -428,10 +428,19 @@ impl WorktreeManager {
                 String::new()
             } else {
                 let path_str = path.to_string_lossy();
+                // `-U10` bumps context from git's default -U3 so the
+                // inline diff preview shows roughly a screen of
+                // surrounding code around each change. 10 is enough
+                // for most "is this change sensible?" decisions
+                // without tipping into effectively-full-file output
+                // on small files. Full-file inspection uses the
+                // worktree-actions "Reveal in file manager" or
+                // "Open terminal here" affordances instead.
                 run_git(
                     &wt.path,
                     &[
                         "diff",
+                        "-U10",
                         &format!("{}..HEAD", self.base_branch),
                         "--",
                         &path_str,

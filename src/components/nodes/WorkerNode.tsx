@@ -367,7 +367,7 @@ export function WorkerNode({ id, data }: NodeProps) {
         (cancelled, human_escalation) still get the expanded surface
         — the tail LogBlock itself is gated on `showLogs`, but the
         expand toggle is legal on those states per the spec. Render
-        a placeholder so the card fills its ~560px container rather
+        a placeholder so the card fills its ~420px container rather
         than leaving blank space. Double-gated on `canExpand` to
         defend against a stale set entry on a transient non-
         expandable state (skipped / escalating).
