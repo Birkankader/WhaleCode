@@ -1,18 +1,24 @@
-import { useEffect, useId, useRef } from 'react';
+import { Suspense, lazy, useEffect, useId, useRef, useState } from 'react';
 
-import type { FileDiff } from '../../lib/ipc';
+import type { DiffStatus, FileDiff } from '../../lib/ipc';
 
 /**
  * Per-subtask diff popover — hangs off the "N files" chip on a done
- * WorkerNode (the chip itself only renders once the subtask's diff has
- * landed, so we're always in a post-run state here) and shows each file
- * this worker changed with +/- counts. Dismissed by clicking outside,
- * pressing Escape, or clicking the chip again.
+ * WorkerNode. Each file starts collapsed (filename + status + `+N/-M`
+ * stats only); clicking the header expands the unified-diff body.
  *
- * Positioned as an absolute child of the chip so React Flow's node
- * transforms apply automatically. Uses `nodrag`/`nopan` so clicks
- * inside don't start dragging the node or panning the canvas.
+ * Expand state is local to this popover instance: closing and re-opening
+ * the popover resets all files back to collapsed, by design — we don't
+ * want to surprise the user with "the same file I expanded ten minutes
+ * ago is still expanded."
+ *
+ * The expanded body ships in a dynamically-imported chunk (`./DiffBody`)
+ * so Shiki's grammar loader glue and `@tanstack/react-virtual` stay out
+ * of the main bundle until the user actually opens a diff preview.
  */
+
+const DiffBody = lazy(() => import('./DiffBody'));
+
 export function DiffPopover({
   files,
   onClose,
@@ -23,8 +29,6 @@ export function DiffPopover({
   const ref = useRef<HTMLDivElement | null>(null);
   const headerId = useId();
 
-  // Escape closes; outside-click closes. Effect depends on `onClose`
-  // so a re-render with a fresh handler swaps the listeners atomically.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -39,13 +43,8 @@ export function DiffPopover({
       onClose();
     }
     window.addEventListener('keydown', onKey, true);
-    // Bubble-phase `click` — the chip's own onClick (which toggles the
-    // popover closed) runs first and we see the already-settled native
-    // event on the way up. A capture-phase `mousedown` would close the
-    // popover before the chip's click fires, and the chip's subsequent
-    // click would then re-open it, defeating chip-click-to-close in
-    // real interactions (`fireEvent.click` tests don't surface this
-    // because they never dispatch mousedown).
+    // Bubble-phase click so the chip's own toggle fires first — see the
+    // long-form rationale in the Phase 3.5 implementation.
     document.addEventListener('click', onDocClick);
     return () => {
       window.removeEventListener('keydown', onKey, true);
@@ -58,12 +57,7 @@ export function DiffPopover({
       ref={ref}
       role="dialog"
       aria-labelledby={headerId}
-      // Position: anchor above the chip (chip is footer-bottom-right).
-      // Right-aligned so long paths don't overflow the card's right edge.
-      // z-50 to sit above sibling cards. nodrag/nopan kills React Flow
-      // gestures inside. onClick stops bubble so the chip's own toggle
-      // (which closes the popover) doesn't re-fire.
-      className="nodrag nopan absolute bottom-full right-0 z-50 mb-1 flex max-h-64 w-80 flex-col overflow-hidden rounded-md border bg-[var(--color-bg-elevated)] shadow-lg"
+      className="nodrag nopan nowheel absolute bottom-full right-0 z-50 mb-1 flex max-h-[70vh] w-[28rem] flex-col overflow-hidden rounded-md border bg-[var(--color-bg-elevated)] shadow-lg"
       style={{ borderColor: 'var(--color-border-default)' }}
       onClick={(e) => e.stopPropagation()}
       data-testid="diff-popover"
@@ -90,27 +84,97 @@ export function DiffPopover({
           This subtask ran but touched no files.
         </p>
       ) : (
-        <ul
-          className="flex min-h-0 flex-col overflow-y-auto font-mono text-meta"
-          data-testid="diff-popover-list"
-        >
+        <ul className="flex min-h-0 flex-col overflow-y-auto" data-testid="diff-popover-list">
           {files.map((f) => (
-            <li
-              key={f.path}
-              className="flex items-center justify-between gap-3 px-3 py-1 hover:bg-[var(--color-bg-subtle)]/40"
-            >
-              <span className="truncate text-fg-primary" title={f.path}>
-                {f.path}
-              </span>
-              <span className="shrink-0 tabular-nums">
-                <span style={{ color: 'var(--color-status-success)' }}>+{f.additions}</span>
-                <span className="mx-1 text-fg-tertiary">/</span>
-                <span style={{ color: 'var(--color-status-failed)' }}>−{f.deletions}</span>
-              </span>
-            </li>
+            <DiffFileRow key={f.path} file={f} />
           ))}
         </ul>
       )}
     </div>
   );
+}
+
+function DiffFileRow({ file }: { file: FileDiff }) {
+  const [expanded, setExpanded] = useState(false);
+  const label = renderPathLabel(file);
+  const variantLabel = renderVariantSuffix(file.status);
+  const rowId = useId();
+  const bodyId = `${rowId}-body`;
+
+  return (
+    <li
+      className="border-b last:border-b-0"
+      style={{ borderColor: 'var(--color-border-default)' }}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left font-mono text-meta hover:bg-[var(--color-bg-subtle)]/40"
+        data-testid="diff-file-header"
+        data-path={file.path}
+      >
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span aria-hidden className="text-fg-tertiary">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <span className="truncate text-fg-primary" title={file.path}>
+            {label}
+          </span>
+          {variantLabel ? (
+            <span
+              className="shrink-0 rounded px-1 text-hint uppercase tracking-wide text-fg-tertiary"
+              style={{ backgroundColor: 'var(--color-bg-subtle)' }}
+            >
+              {variantLabel}
+            </span>
+          ) : null}
+        </span>
+        <span className="shrink-0 font-mono tabular-nums">
+          <span style={{ color: 'var(--color-status-success)' }}>+{file.additions}</span>
+          <span className="mx-1 text-fg-tertiary">/</span>
+          <span style={{ color: 'var(--color-status-failed)' }}>−{file.deletions}</span>
+        </span>
+      </button>
+      {expanded ? (
+        <Suspense
+          fallback={
+            <div
+              id={bodyId}
+              className="px-3 py-2 font-mono text-meta italic text-fg-tertiary"
+              data-testid="diff-body-loading"
+            >
+              loading preview…
+            </div>
+          }
+        >
+          <DiffBody file={file} id={bodyId} />
+        </Suspense>
+      ) : null}
+    </li>
+  );
+}
+
+function renderPathLabel(file: FileDiff): string {
+  if (file.status?.kind === 'renamed') {
+    return `${file.status.from} → ${file.path}`;
+  }
+  return file.path;
+}
+
+function renderVariantSuffix(status: DiffStatus | undefined): string | null {
+  if (!status) return null;
+  switch (status.kind) {
+    case 'added':
+      return 'new';
+    case 'deleted':
+      return 'removed';
+    case 'renamed':
+      return 'renamed';
+    case 'binary':
+      return 'binary';
+    case 'modified':
+      return null;
+  }
 }
