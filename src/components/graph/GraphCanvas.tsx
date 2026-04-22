@@ -77,9 +77,9 @@ const LOGS_STATES: ReadonlySet<NodeState> = new Set([
   'failed',
 ]);
 /**
- * Phase 4 Step 3: worker card expanded height. Promoted when the user
- * clicks the card body (non-chip, non-button) on a non-proposed worker.
- * Fixed size — deliberately NOT viewport-relative so one enthusiastic
+ * Phase 4 Step 3: worker card expanded *ceiling*. Promoted when the
+ * user clicks the card body (non-chip, non-button) on a non-proposed
+ * worker. Deliberately NOT viewport-relative so one enthusiastic
  * expand can't eat the whole canvas on a tall monitor. Wins over the
  * state-tier heights (logs/escalation) via the expand-override path
  * in `buildGraph`; row-max alignment in `layoutGraph` means row-mates
@@ -91,12 +91,55 @@ const LOGS_STATES: ReadonlySet<NodeState> = new Set([
  * marginy(24) + master(80) + ranksep(48) + card(H) + ranksep(48)
  * + final(148) + marginy(24) = 372 + H; at H=340 total is 712px,
  * leaving real breathing room under the usable canvas height and
- * keeping the merge card visible without a pan. Covers ~18–20 log
- * lines at current density; the scrollable ExpandedLogBlock handles
- * the rest. Row-max alignment in `layoutGraph` keeps multi-worker
- * rows growing in sympathy without additional bookkeeping.
+ * keeping the merge card visible without a pan.
+ *
+ * As of the content-fit round: this value is a *ceiling* only — the
+ * actual height is computed by `expandedHeightFor(lineCount)` between
+ * `EXPANDED_FLOOR` and here. A freshly-expanded card with no output
+ * lands on the floor (200px) instead of painting a ~200px dead log
+ * area below the "Waiting for output…" placeholder; a long log
+ * clamps at the ceiling and the inner scroll handles the rest.
  */
 const EXPANDED_WORKER_HEIGHT = 340;
+/**
+ * Content-fit floor for the expanded card. Covers the non-log chrome
+ * (header ~20, title ~22, why ~18, footer ~28 + spacing) ≈ 120px plus
+ * ~60px of padded log area so the "Waiting for output…" placeholder
+ * and one/two-line log tails don't visibly underflow into dead space.
+ */
+const EXPANDED_FLOOR = 200;
+/**
+ * Non-log chrome height inside the expanded card: header row + title
+ * + why + footer chips + internal gaps. Measured against the current
+ * WorkerNode render at fontSize 10 + spacing token 4/8. Treated as a
+ * constant here because a tweak to chrome typography lands in one
+ * place and this math follows.
+ */
+const EXPANDED_CHROME_PX = 120;
+/**
+ * Per-log-line visual height inside `ExpandedLogBlock`: fontSize 10 ×
+ * lineHeight 1.5 = 15px. Wrapped long lines produce additional visual
+ * rows we can't see from layout time, but clamping at
+ * `EXPANDED_WORKER_HEIGHT` means the worst-case underestimate falls
+ * back to the fixed ceiling and an inner scrollbar takes over.
+ */
+const EXPANDED_LOG_LINE_PX = 15;
+/** Padding around the scrollable log area (top + bottom = 6 + 6). */
+const EXPANDED_LOG_PAD_PX = 12;
+
+/**
+ * Compute the expanded card height for a given log-line count. Caps
+ * at `EXPANDED_WORKER_HEIGHT` so a runaway log can't escape the post-
+ * Step-6 viewport constraint; floors at `EXPANDED_FLOOR` so the card
+ * looks intentional when the log is empty. Chrome is treated as a
+ * constant overhead; the log area grows linearly until the ceiling
+ * claims control and the inner scroll handles overflow.
+ */
+function expandedHeightFor(lineCount: number): number {
+  const logArea = lineCount * EXPANDED_LOG_LINE_PX + EXPANDED_LOG_PAD_PX;
+  const desired = EXPANDED_CHROME_PX + logArea;
+  return Math.max(EXPANDED_FLOOR, Math.min(EXPANDED_WORKER_HEIGHT, desired));
+}
 /**
  * States where the expand toggle is legal. Proposed is excluded
  * because the whole-card click is already the selection-toggle
@@ -159,6 +202,17 @@ function GraphCanvasInner() {
   // reactive to toggle clicks from any WorkerNode — the Set identity
   // flips on each toggle so the memo below re-runs exactly once.
   const workerExpanded = useGraphStore((s) => s.workerExpanded);
+  // Content-fit expand: the expanded card's height is computed from
+  // the actual log-line count so a "Waiting for output…" card doesn't
+  // paint a ~200px empty scroll area below the header. Subscribing
+  // to the raw nodeLogs map here means the memo below re-runs on
+  // every new log line pushed by the orchestrator stream — layout
+  // itself is pure JS and O(n) in worker count, so the recompute is
+  // cheap; React Flow's own data diff drops any node whose `height`
+  // didn't move across the threshold, so the downstream render cost
+  // stays proportional to how often the computed height actually
+  // changes.
+  const nodeLogs = useGraphStore((s) => s.nodeLogs);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -190,6 +244,7 @@ function GraphCanvasInner() {
       retryCounts,
       selectedSubtaskIds,
       workerExpanded,
+      nodeLogs,
       compact ? 2 : undefined,
     );
   }, [
@@ -198,6 +253,7 @@ function GraphCanvasInner() {
     retryCounts,
     selectedSubtaskIds,
     workerExpanded,
+    nodeLogs,
     compact,
   ]);
 
@@ -347,6 +403,7 @@ function buildGraph(
   retryCounts: Map<string, number>,
   selectedSubtaskIds: ReadonlySet<string>,
   workerExpanded: ReadonlySet<string>,
+  nodeLogs: ReadonlyMap<string, string[]>,
   maxPerRow: number | undefined,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
@@ -368,11 +425,14 @@ function buildGraph(
   // footprint.
   //
   // Three tiers above the 140px default (highest wins):
-  //   - expanded (Step 3): 340px, scrollable full-log surface.
-  //     Only promoted for non-proposed states — the store is
-  //     permissive but WorkerNode gates toggle-on-click, and the
-  //     `EXPANDABLE_STATES` guard here is defense-in-depth against
-  //     a stale id surviving a state transition.
+  //   - expanded (Step 3): content-fit within
+  //     [EXPANDED_FLOOR, EXPANDED_WORKER_HEIGHT], computed from the
+  //     actual log-line count so a freshly-expanded card that hasn't
+  //     received any output yet doesn't paint a ~200px blank scroll
+  //     area below the header. Only promoted for non-proposed states
+  //     — the store is permissive but WorkerNode gates toggle-on-
+  //     click, and the `EXPANDABLE_STATES` guard here is defence in
+  //     depth against a stale id surviving a state transition.
   //   - `human_escalation`: 280px, fits EscalationActions surface.
   //   - states with a LogBlock (running/retrying/done/failed): 180px,
   //     fits header + title + why + LogBlock(54px) + chip.
@@ -381,7 +441,8 @@ function buildGraph(
     const snap = snapshots.get(st.id);
     const state = snap?.value;
     if (workerExpanded.has(st.id) && state && EXPANDABLE_STATES.has(state)) {
-      workerHeights.set(st.id, EXPANDED_WORKER_HEIGHT);
+      const lineCount = nodeLogs.get(st.id)?.length ?? 0;
+      workerHeights.set(st.id, expandedHeightFor(lineCount));
     } else if (state === 'human_escalation') {
       workerHeights.set(st.id, ESCALATION_WORKER_HEIGHT);
     } else if (state && LOGS_STATES.has(state)) {

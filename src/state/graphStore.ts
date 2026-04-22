@@ -307,7 +307,7 @@ export type GraphState = {
    * `reset` / new submit. Lives in the store (not in local component
    * state) so it survives node re-renders triggered by graph-wide
    * recomputes, is observable for tests, and so the layout pass in
-   * `GraphCanvas` can promote these ids to the tall (~340px) height
+   * `GraphCanvas` can promote these ids to the content-fit expanded
    * tier without prop-drilling through WorkerNode.
    *
    * Only promoted for non-proposed states: the proposed-state card is
@@ -408,7 +408,8 @@ export type GraphState = {
    * Phase 4 Step 3: toggle worker card expand/collapse. WorkerNode
    * gates this on state (disabled in `proposed`); the store itself
    * is permissive. `GraphCanvas.buildGraph` promotes expanded ids
-   * to the ~340px height tier, and `layoutGraph` runs as usual —
+   * content-fit height tier (floor 200, ceiling 340, computed from
+   * log-line count), and `layoutGraph` runs as usual —
    * row-max alignment means a whole row expands when any one worker
    * does, which keeps the visual grid honest.
    */
