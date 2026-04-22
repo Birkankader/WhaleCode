@@ -310,6 +310,59 @@ describe('subtaskStateChangedSchema', () => {
     });
     expect(parsed.subtaskId).toBe('s1');
   });
+
+  // Phase 4 Step 5 — errorCategory is optional on the wire so a
+  // pre-Step-5 backend (no field) still decodes as `undefined`.
+  it('decodes absent errorCategory as undefined (backward compat)', () => {
+    const parsed = subtaskStateChangedSchema.parse({
+      runId: 'r1',
+      subtaskId: 's1',
+      state: 'failed',
+    });
+    expect(parsed.errorCategory).toBeUndefined();
+  });
+
+  it('decodes ProcessCrashed category payload', () => {
+    const parsed = subtaskStateChangedSchema.parse({
+      runId: 'r1',
+      subtaskId: 's1',
+      state: 'failed',
+      errorCategory: { kind: 'process-crashed' },
+    });
+    expect(parsed.errorCategory).toEqual({ kind: 'process-crashed' });
+  });
+
+  it('decodes Timeout category with afterSecs', () => {
+    const parsed = subtaskStateChangedSchema.parse({
+      runId: 'r1',
+      subtaskId: 's1',
+      state: 'failed',
+      errorCategory: { kind: 'timeout', afterSecs: 600 },
+    });
+    expect(parsed.errorCategory).toEqual({ kind: 'timeout', afterSecs: 600 });
+  });
+
+  it('rejects unknown category kinds', () => {
+    expect(
+      subtaskStateChangedSchema.safeParse({
+        runId: 'r1',
+        subtaskId: 's1',
+        state: 'failed',
+        errorCategory: { kind: 'something-new' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects Timeout without afterSecs', () => {
+    expect(
+      subtaskStateChangedSchema.safeParse({
+        runId: 'r1',
+        subtaskId: 's1',
+        state: 'failed',
+        errorCategory: { kind: 'timeout' },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('diffReadySchema', () => {

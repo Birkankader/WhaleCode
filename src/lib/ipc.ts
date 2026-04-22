@@ -226,10 +226,35 @@ export const subtasksProposedSchema = z.object({
 });
 export type SubtasksProposed = z.infer<typeof subtasksProposedSchema>;
 
+// Phase 4 Step 5: wire-level crash/failure classification. Surfaces on
+// Failed `SubtaskStateChanged` payloads so the UI can render a
+// category-specific banner (ErrorBanner) and inline chip (WorkerNode).
+// Serde shape is `{ kind: "<kebab>", …extra }`; Timeout carries
+// `afterSecs` for the "Timed out after Xm" copy. Cancellation does
+// NOT produce a Failed state change, so there's no `cancelled` variant
+// here — the backend's `AgentError::Cancelled` routes through a
+// different wire event entirely.
+export const errorCategoryWireSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('process-crashed') }),
+  z.object({ kind: z.literal('task-failed') }),
+  z.object({ kind: z.literal('parse-failed') }),
+  z.object({ kind: z.literal('timeout'), afterSecs: z.number().int().nonnegative() }),
+  z.object({ kind: z.literal('spawn-failed') }),
+]);
+export type ErrorCategoryWire = z.infer<typeof errorCategoryWireSchema>;
+
 export const subtaskStateChangedSchema = z.object({
   runId: runIdSchema,
   subtaskId: subtaskIdSchema,
   state: subtaskStateSchema,
+  // Optional for two reasons:
+  //   1. Backward compat — a future pre-Step-5 backend (e.g. a user
+  //      running an older bundled binary during dev) omits the field
+  //      entirely; `.optional()` decodes without throwing.
+  //   2. The backend only populates this for `Failed` transitions
+  //      whose source is an `AgentError` it can classify. Running /
+  //      Retrying / Done / Skipped emits all carry `undefined` here.
+  errorCategory: errorCategoryWireSchema.optional(),
 });
 export type SubtaskStateChanged = z.infer<typeof subtaskStateChangedSchema>;
 

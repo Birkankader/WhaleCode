@@ -10,6 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 
+import { describeErrorCategory } from '../../lib/errorCategory';
 import { NODE_DIMENSIONS } from '../../lib/layout';
 import {
   isSubtaskAdded,
@@ -204,6 +205,12 @@ export function WorkerNode({ id, data }: NodeProps) {
   const edited = useGraphStore((s) => isSubtaskEdited(s, id));
   const added = useGraphStore((s) => isSubtaskAdded(s, id));
 
+  // Phase 4 Step 5: error category attached to the last `Failed`
+  // transition for this subtask, if any. `undefined` for non-failed
+  // subtasks and for failed subtasks whose backend predates Step 5
+  // (Option payload on the wire). Only read; never written here.
+  const errorCategory = useGraphStore((s) => s.subtaskErrorCategories.get(id));
+
   // Inline-edit one-shot: if the store just coined this id via addSubtask,
   // auto-enter edit mode on the title. Consume the flag in a layout effect
   // so we don't re-trigger on re-renders of the same node.
@@ -298,6 +305,22 @@ export function WorkerNode({ id, data }: NodeProps) {
           <span className="text-hint uppercase tracking-wide text-fg-secondary">
             {STATE_LABEL[d.state]}
           </span>
+          {/* Phase 4 Step 5: inline error-category chip. Rendered only
+              on Failed cards with a classified category — legacy
+              failures (pre-Step-5 payloads) fall back to just the
+              "Failed" label. Copy flows through
+              `describeErrorCategory` so ErrorBanner and the chip stay
+              in lockstep on the five locked strings. */}
+          {d.state === 'failed' && errorCategory !== undefined ? (
+            <Badge
+              variant="failed"
+              tooltip={describeErrorCategory(errorCategory)}
+            >
+              <span data-testid={`worker-error-category-${id}`}>
+                {describeErrorCategory(errorCategory)}
+              </span>
+            </Badge>
+          ) : null}
           {isProposed && added ? (
             <Badge variant="added" tooltip="Added by you — not from master's original plan.">
               added

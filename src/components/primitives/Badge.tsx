@@ -8,7 +8,7 @@ import type { PropsWithChildren } from 'react';
  * Variants map to status/agent colors via CSS vars; no hard-coded colors.
  * Tooltip (via `title`) gives hover context since the badges are tight.
  */
-type Variant = 'edited' | 'added' | 'neutral';
+type Variant = 'edited' | 'added' | 'neutral' | 'failed';
 
 const VARIANT_STYLE: Record<Variant, { border: string; fg: string; bg: string }> = {
   edited: {
@@ -24,6 +24,15 @@ const VARIANT_STYLE: Record<Variant, { border: string; fg: string; bg: string }>
   neutral: {
     border: 'var(--color-border-default)',
     fg: 'var(--color-fg-secondary)',
+    bg: 'transparent',
+  },
+  // Phase 4 Step 5: error-category chip next to the `Failed` state
+  // label on a WorkerNode. Uses the status-failed color so the chip
+  // reads as diagnostic detail attached to the existing failure
+  // signal rather than a separate affordance.
+  failed: {
+    border: 'var(--color-status-failed)',
+    fg: 'var(--color-status-failed)',
     bg: 'transparent',
   },
 };

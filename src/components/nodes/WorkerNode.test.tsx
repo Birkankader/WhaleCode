@@ -1313,3 +1313,55 @@ describe('WorkerNode — worktree-actions folder icon (Phase 4 Step 4)', () => {
     expect(screen.queryByTestId('worktree-actions-trigger-sub-a')).toBeNull();
   });
 });
+
+describe('WorkerNode — inline error-category chip (Phase 4 Step 5)', () => {
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'failed',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  it('renders the locked copy next to the Failed label when a category is present', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-a', { kind: 'process-crashed' }]]),
+    });
+    renderNode('sub-a', baseData());
+    expect(screen.getByTestId('worker-error-category-sub-a')).toHaveTextContent(
+      'Subprocess crashed',
+    );
+  });
+
+  it('formats Timeout duration in whole minutes', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([
+        ['sub-a', { kind: 'timeout', afterSecs: 1800 }],
+      ]),
+    });
+    renderNode('sub-a', baseData());
+    expect(screen.getByTestId('worker-error-category-sub-a')).toHaveTextContent(
+      'Timed out after 30m',
+    );
+  });
+
+  it('hides the chip on non-failed states even if a category is stashed (stale-store guard)', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-a', { kind: 'process-crashed' }]]),
+    });
+    renderNode('sub-a', baseData({ state: 'running' }));
+    expect(screen.queryByTestId('worker-error-category-sub-a')).toBeNull();
+  });
+
+  it('hides the chip on a failed card when no category is present (pre-Step-5 backward compat)', () => {
+    renderNode('sub-a', baseData({ state: 'failed' }));
+    expect(screen.queryByTestId('worker-error-category-sub-a')).toBeNull();
+  });
+});

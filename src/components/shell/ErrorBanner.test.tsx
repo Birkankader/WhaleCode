@@ -73,4 +73,148 @@ describe('ErrorBanner', () => {
     const inline = alert.getAttribute('style') ?? '';
     expect(inline).toContain('var(--color-status-pending)');
   });
+
+  // -------------------------------------------------------------------
+  // Phase 4 Step 5 — category-aware banner
+  // -------------------------------------------------------------------
+
+  it('renders category-locked copy for ProcessCrashed', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'process-crashed' }]]),
+    });
+    render(<ErrorBanner />);
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveAttribute('data-category-kind', 'process-crashed');
+    expect(screen.getByText('Subprocess crashed')).toBeInTheDocument();
+  });
+
+  it('renders category-locked copy for TaskFailed', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'task-failed' }]]),
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByText('Task failed')).toBeInTheDocument();
+  });
+
+  it('renders category-locked copy for ParseFailed', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'parse-failed' }]]),
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByText('Invalid agent output')).toBeInTheDocument();
+  });
+
+  it('formats Timeout duration in whole minutes', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([
+        ['sub-1', { kind: 'timeout', afterSecs: 600 }],
+      ]),
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByText('Timed out after 10m')).toBeInTheDocument();
+  });
+
+  it('formats sub-minute Timeout as <1m', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([
+        ['sub-1', { kind: 'timeout', afterSecs: 0 }],
+      ]),
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByText('Timed out after <1m')).toBeInTheDocument();
+  });
+
+  it('renders category-locked copy for SpawnFailed', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'spawn-failed' }]]),
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByText("Agent couldn't start")).toBeInTheDocument();
+  });
+
+  it('collapses two same-kind failures into one banner', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([
+        ['sub-1', { kind: 'process-crashed' }],
+        ['sub-2', { kind: 'process-crashed' }],
+      ]),
+    });
+    render(<ErrorBanner />);
+    const summaries = screen.getAllByText('Subprocess crashed');
+    expect(summaries).toHaveLength(1);
+  });
+
+  it('falls back to generic error summary when kinds disagree', () => {
+    useGraphStore.setState({
+      currentError: 'Something went wrong',
+      subtaskErrorCategories: new Map([
+        ['sub-1', { kind: 'process-crashed' }],
+        ['sub-2', { kind: 'parse-failed' }],
+      ]),
+    });
+    render(<ErrorBanner />);
+    // Generic fallback — neither locked string appears as the summary.
+    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.queryByText('Subprocess crashed')).toBeNull();
+    expect(screen.queryByText('Invalid agent output')).toBeNull();
+    const alert = screen.getByRole('alert');
+    expect(alert.getAttribute('data-category-kind')).toBeNull();
+  });
+
+  it('promotes free-form currentError into the collapsible details of a category banner', () => {
+    useGraphStore.setState({
+      currentError: 'stderr: segfault at 0x0',
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'process-crashed' }]]),
+    });
+    render(<ErrorBanner />);
+    // Headline = locked copy; free-form text hidden until expanded.
+    expect(screen.getByText('Subprocess crashed')).toBeInTheDocument();
+    expect(screen.queryByText(/segfault at 0x0/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /show details/i }));
+    expect(screen.getByText(/segfault at 0x0/)).toBeInTheDocument();
+  });
+
+  it('dismiss sets the errorCategoryBannerDismissed latch', () => {
+    // jsdom + Framer Motion's AnimatePresence keeps the exiting node
+    // in the DOM for the duration of the exit animation, so we assert
+    // on the store flag rather than querying `alert`. The existing
+    // `currentError` dismissal test uses the same contract pattern.
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'timeout', afterSecs: 120 }]]),
+    });
+    render(<ErrorBanner />);
+    expect(useGraphStore.getState().errorCategoryBannerDismissed).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /dismiss error/i }));
+    expect(useGraphStore.getState().errorCategoryBannerDismissed).toBe(true);
+  });
+
+  it('honors the dismissal latch so the category headline does not render', () => {
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([['sub-1', { kind: 'timeout', afterSecs: 120 }]]),
+      errorCategoryBannerDismissed: true,
+    });
+    render(<ErrorBanner />);
+    // Latched — no category-kind marker, no locked copy.
+    expect(screen.queryByText(/Timed out/)).toBeNull();
+  });
+
+  it('re-arms the category banner when the latch is cleared', () => {
+    // Simulates the `handleSubtaskStateChanged` re-arm path: a new
+    // `Failed` transition with a not-yet-seen kind flips the latch
+    // back to false and the banner returns. Two entries that share a
+    // kind still collapse to a single category banner.
+    useGraphStore.setState({
+      subtaskErrorCategories: new Map([
+        ['sub-1', { kind: 'timeout', afterSecs: 120 }],
+        ['sub-2', { kind: 'timeout', afterSecs: 240 }],
+      ]),
+      errorCategoryBannerDismissed: false,
+    });
+    render(<ErrorBanner />);
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveAttribute('data-category-kind', 'timeout');
+    // Representative `afterSecs` on sub-1 (120s → 2m) drives the copy.
+    expect(screen.getByText('Timed out after 2m')).toBeInTheDocument();
+  });
 });

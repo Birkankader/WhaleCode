@@ -17,6 +17,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use super::{FileDiff, RunId, RunStatus, RunSummary, SubtaskData, SubtaskId, SubtaskState};
+use crate::agents::AgentError;
 
 pub const EVENT_STATUS_CHANGED: &str = "run:status_changed";
 pub const EVENT_MASTER_LOG: &str = "run:master_log";
@@ -92,6 +93,75 @@ pub struct SubtaskStateChanged {
     pub run_id: RunId,
     pub subtask_id: SubtaskId,
     pub state: SubtaskState,
+    /// Phase 4 Step 5: populated only when `state == Failed` and the
+    /// failure carries a classifiable [`AgentError`]. Absent (omitted
+    /// from JSON) for every non-terminal transition and for failure
+    /// paths that don't originate from an agent error (setup errors,
+    /// worker task panics). The frontend's schema has this field as
+    /// `.optional()` so older backends / non-failure transitions
+    /// decode unchanged.
+    ///
+    /// Five variants map to locked UI copy:
+    /// `ProcessCrashed` / `TaskFailed` / `ParseFailed` / `Timeout
+    /// { after_secs }` / `SpawnFailed`. Cancellation does *not* emit a
+    /// state change here at all — it routes through the Cancelled
+    /// path without producing a Failed transition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<ErrorCategoryWire>,
+}
+
+/// Wire-level classification of *why* a subtask ended in
+/// [`SubtaskState::Failed`]. Maps 1:1 onto
+/// [`crate::agents::AgentError`]'s retryable variants (the
+/// `Cancelled` variant doesn't surface here — cancellation takes a
+/// separate path and doesn't produce a `Failed` state change).
+///
+/// Serde shape is `{ "kind": "<kebab>", …extra }`: internally tagged
+/// so the discriminant is a flat JSON field regardless of whether the
+/// variant carries data. This keeps the frontend schema a
+/// discriminated union on `kind` instead of a sum of heterogeneously-
+/// shaped objects.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ErrorCategoryWire {
+    /// `AgentError::ProcessCrashed` — CLI exited non-zero with crashy
+    /// stderr (or was killed by a signal). UI copy: "Subprocess
+    /// crashed".
+    ProcessCrashed,
+    /// `AgentError::TaskFailed` — CLI exited non-zero with a
+    /// controlled-refusal stderr. UI copy: "Task failed".
+    TaskFailed,
+    /// `AgentError::ParseFailed` — CLI exited zero but stdout didn't
+    /// parse into the plan schema (Gemini zero-byte exits also land
+    /// here). UI copy: "Invalid agent output".
+    ParseFailed,
+    /// `AgentError::Timeout` — wall-clock deadline elapsed while the
+    /// CLI was still running. UI copy: "Timed out after Xm" (frontend
+    /// formats `after_secs`).
+    #[serde(rename_all = "camelCase")]
+    Timeout { after_secs: u64 },
+    /// `AgentError::SpawnFailed` — `Command::spawn` refused (binary
+    /// missing / unexecutable / permission). UI copy: "Agent couldn't
+    /// start".
+    SpawnFailed,
+}
+
+impl ErrorCategoryWire {
+    /// Classify an [`AgentError`] into a wire category. Returns
+    /// `None` for `Cancelled` — cancellation is a user-initiated exit
+    /// path that doesn't emit as a Failed state change.
+    pub fn from_agent_error(err: &AgentError) -> Option<Self> {
+        match err {
+            AgentError::ProcessCrashed { .. } => Some(Self::ProcessCrashed),
+            AgentError::TaskFailed { .. } => Some(Self::TaskFailed),
+            AgentError::ParseFailed { .. } => Some(Self::ParseFailed),
+            AgentError::Timeout { after_secs } => Some(Self::Timeout {
+                after_secs: *after_secs,
+            }),
+            AgentError::SpawnFailed { .. } => Some(Self::SpawnFailed),
+            AgentError::Cancelled => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -345,11 +415,97 @@ mod tests {
             run_id: "r1".into(),
             subtask_id: "s1".into(),
             state: SubtaskState::Running,
+            error_category: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["runId"], "r1");
         assert_eq!(json["subtaskId"], "s1");
         assert_eq!(json["state"], "running");
+        // Absent errorCategory is omitted — backward compat with
+        // pre-Step-5 frontends that don't know the field.
+        assert!(
+            json.get("errorCategory").is_none(),
+            "errorCategory should be omitted when None, got: {json}"
+        );
+    }
+
+    #[test]
+    fn subtask_state_changed_with_error_category_serializes_kebab_kind() {
+        let payload = SubtaskStateChanged {
+            run_id: "r1".into(),
+            subtask_id: "s1".into(),
+            state: SubtaskState::Failed,
+            error_category: Some(ErrorCategoryWire::ProcessCrashed),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["state"], "failed");
+        assert_eq!(json["errorCategory"]["kind"], "process-crashed");
+    }
+
+    #[test]
+    fn error_category_timeout_carries_after_secs_camel_case() {
+        let cat = ErrorCategoryWire::Timeout { after_secs: 600 };
+        let json = serde_json::to_value(&cat).unwrap();
+        assert_eq!(json["kind"], "timeout");
+        assert_eq!(json["afterSecs"], 600);
+    }
+
+    #[test]
+    fn error_category_structural_variants_serialize_kind_only() {
+        for (cat, kind) in [
+            (ErrorCategoryWire::ProcessCrashed, "process-crashed"),
+            (ErrorCategoryWire::TaskFailed, "task-failed"),
+            (ErrorCategoryWire::ParseFailed, "parse-failed"),
+            (ErrorCategoryWire::SpawnFailed, "spawn-failed"),
+        ] {
+            let json = serde_json::to_value(&cat).unwrap();
+            assert_eq!(json["kind"], kind, "kind mismatch for {cat:?}");
+            assert!(
+                json.get("afterSecs").is_none(),
+                "structural variants must not carry afterSecs: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_category_from_agent_error_maps_all_variants() {
+        use crate::agents::AgentError;
+
+        assert_eq!(
+            ErrorCategoryWire::from_agent_error(&AgentError::ProcessCrashed {
+                exit_code: Some(139),
+                signal: None,
+            }),
+            Some(ErrorCategoryWire::ProcessCrashed)
+        );
+        assert_eq!(
+            ErrorCategoryWire::from_agent_error(&AgentError::TaskFailed {
+                reason: "refused".into()
+            }),
+            Some(ErrorCategoryWire::TaskFailed)
+        );
+        assert_eq!(
+            ErrorCategoryWire::from_agent_error(&AgentError::ParseFailed {
+                reason: "bad json".into(),
+                raw_output: "".into()
+            }),
+            Some(ErrorCategoryWire::ParseFailed)
+        );
+        assert_eq!(
+            ErrorCategoryWire::from_agent_error(&AgentError::Timeout { after_secs: 42 }),
+            Some(ErrorCategoryWire::Timeout { after_secs: 42 })
+        );
+        assert_eq!(
+            ErrorCategoryWire::from_agent_error(&AgentError::SpawnFailed {
+                cause: "ENOENT".into()
+            }),
+            Some(ErrorCategoryWire::SpawnFailed)
+        );
+        // Cancelled doesn't surface as a state change — classifier
+        // returns None so call sites can skip the Failed emit.
+        assert!(
+            ErrorCategoryWire::from_agent_error(&AgentError::Cancelled).is_none()
+        );
     }
 
     #[test]

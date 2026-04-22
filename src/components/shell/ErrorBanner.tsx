@@ -1,7 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
+import { describeErrorCategory, sameErrorCategoryKind } from '../../lib/errorCategory';
+import type { ErrorCategoryWire } from '../../lib/ipc';
 import { useGraphStore } from '../../state/graphStore';
 
 type Variant = 'error' | 'warning';
@@ -30,11 +32,33 @@ const ACCENT: Record<Variant, { fg: string; bg: string }> = {
 export function ErrorBanner({ variant = 'error' }: Props) {
   const currentError = useGraphStore((s) => s.currentError);
   const dismissError = useGraphStore((s) => s.dismissError);
+  // Phase 4 Step 5: per-subtask error categories collected from
+  // `SubtaskStateChanged(Failed)` payloads. When every entry agrees on
+  // `kind` (including the common N=1 case) we derive a category-
+  // specific banner headline from the locked copy table; otherwise we
+  // fall back to the generic error summary below. The Map identity
+  // flips on each update so a useMemo keyed on it is cheap.
+  const subtaskErrorCategories = useGraphStore((s) => s.subtaskErrorCategories);
+  const categoryDismissed = useGraphStore((s) => s.errorCategoryBannerDismissed);
   const [expanded, setExpanded] = useState(false);
 
-  const { summary, details } = splitError(currentError);
+  const unanimousCategory = useMemo(
+    () => unanimousKind(subtaskErrorCategories),
+    [subtaskErrorCategories],
+  );
+  // Honor the per-session dismissal latch: once the user clicks X on a
+  // category banner, hide it until a new kind lands. `currentError`
+  // keeps its own null-means-hidden contract from Phase 2.
+  const effectiveCategory = categoryDismissed ? null : unanimousCategory;
+
+  const { summary, details } = deriveSummary(currentError, effectiveCategory);
   const accent = ACCENT[variant];
-  const visible = currentError !== null;
+  // The banner is visible whenever we have something to say — either a
+  // free-form error string from the store or at least one classified
+  // subtask failure that hasn't been dismissed. Pre-Step-5 backends
+  // only populate `currentError`; Step-5+ backends can populate the
+  // category map alone.
+  const visible = currentError !== null || effectiveCategory !== null;
 
   return (
     <AnimatePresence>
@@ -48,6 +72,7 @@ export function ErrorBanner({ variant = 'error' }: Props) {
           role="alert"
           aria-live="assertive"
           data-variant={variant}
+          data-category-kind={effectiveCategory?.kind ?? undefined}
           className="relative z-10 flex w-full flex-col gap-2 px-4 py-3 text-fg-primary"
           style={{
             background: accent.bg,
@@ -57,7 +82,9 @@ export function ErrorBanner({ variant = 'error' }: Props) {
           <div className="flex items-start gap-2">
             <AlertCircle size={16} style={{ color: accent.fg, flexShrink: 0, marginTop: 2 }} />
             <div className="flex flex-1 flex-col gap-1">
-              <span className="text-body">{summary}</span>
+              <span className="text-body" data-testid="error-banner-summary">
+                {summary}
+              </span>
               {details ? (
                 <button
                   type="button"
@@ -110,4 +137,55 @@ function splitError(err: string | null): { summary: string; details: string | nu
     summary: err.slice(0, idx).trimEnd(),
     details: err.slice(idx + 1).trimEnd() || null,
   };
+}
+
+/**
+ * Compose the banner's headline and detail body.
+ *
+ * Precedence rules (Phase 4 Step 5):
+ *   1. If every failed subtask reports the same `ErrorCategoryWire`
+ *      kind, the headline is the locked per-category copy. Any
+ *      free-form `currentError` text becomes the collapsed detail
+ *      body so nothing the backend produced is lost.
+ *   2. Otherwise (no categories, or conflicting kinds), fall back to
+ *      `splitError(currentError)` — pre-Step-5 behavior.
+ *
+ * Keeping this pure and outside the component keeps the render path
+ * trivial and lets tests exercise the derivation without mounting.
+ */
+function deriveSummary(
+  currentError: string | null,
+  unanimous: ErrorCategoryWire | null,
+): { summary: string; details: string | null } {
+  if (unanimous !== null) {
+    const headline = describeErrorCategory(unanimous);
+    // The free-form `currentError` still carries useful stderr /
+    // reason text — push it to the expandable detail body verbatim
+    // so power users can read it without clicking into the node.
+    const detail = currentError && currentError.trim().length > 0 ? currentError : null;
+    return { summary: headline, details: detail };
+  }
+  return splitError(currentError);
+}
+
+/**
+ * Reduce a category map to a single representative variant if — and
+ * only if — every entry agrees on `kind`. The empty map, and any map
+ * whose entries disagree, both return `null`. Timeout variants compare
+ * structurally on `kind` only (two subtasks that both timed out at
+ * different deadlines still collapse to one banner; the
+ * representative's `afterSecs` is used for the copy).
+ *
+ * Exported-in-module only; the banner is the single consumer.
+ */
+function unanimousKind(map: Map<string, ErrorCategoryWire>): ErrorCategoryWire | null {
+  let rep: ErrorCategoryWire | null = null;
+  for (const cat of map.values()) {
+    if (rep === null) {
+      rep = cat;
+      continue;
+    }
+    if (!sameErrorCategoryKind(rep, cat)) return null;
+  }
+  return rep;
 }

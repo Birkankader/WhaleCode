@@ -284,6 +284,79 @@ describe('graphStore — happy path (realistic backend sequence)', () => {
     expect(state().subtaskRetryCounts.get('a') ?? 0).toBe(0);
   });
 
+  it('Failed with errorCategory stashes the kind and re-arms a dismissed banner on new kinds', async () => {
+    // Phase 4 Step 5: SubtaskStateChanged(Failed, errorCategory=?)
+    // routes through `handleSubtaskStateChanged` which populates
+    // `subtaskErrorCategories` and manages the banner-dismissal latch.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+        { id: 'b', title: 'B', why: null, assignedWorker: 'gemini', dependencies: [] },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    await state().approveSubtasks(['a', 'b']);
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'running' });
+
+    // First failure: stash the category, latch stays false.
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'failed',
+      errorCategory: { kind: 'process-crashed' },
+    });
+    expect(state().subtaskErrorCategories.get('a')).toEqual({ kind: 'process-crashed' });
+    expect(state().errorCategoryBannerDismissed).toBe(false);
+
+    // User dismisses — latch flips true.
+    state().dismissError();
+    expect(state().errorCategoryBannerDismissed).toBe(true);
+
+    // Same kind re-emit on the same subtask: latch stays true (no
+    // surprise re-appearance).
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'failed',
+      errorCategory: { kind: 'process-crashed' },
+    });
+    expect(state().errorCategoryBannerDismissed).toBe(true);
+
+    // Different subtask with any category: latch re-arms to false.
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'b',
+      state: 'failed',
+      errorCategory: { kind: 'timeout', afterSecs: 600 },
+    });
+    expect(state().subtaskErrorCategories.get('b')).toEqual({
+      kind: 'timeout',
+      afterSecs: 600,
+    });
+    expect(state().errorCategoryBannerDismissed).toBe(false);
+  });
+
+  it('Failed without errorCategory leaves the store untouched (pre-Step-5 backward compat)', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        { id: 'a', title: 'A', why: null, assignedWorker: 'claude', dependencies: [] },
+      ],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'awaiting-approval' });
+    await state().approveSubtasks(['a']);
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'running' });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'a',
+      state: 'failed',
+    });
+    expect(state().subtaskErrorCategories.has('a')).toBe(false);
+  });
+
   it('re-plan replaces subtasks by id: removed subtasks drop, new ones append, retained ones stay', async () => {
     // Backend always emits the *full* current plan on re-emit (Phase 3
     // edit commands and master re-plan both work this way). The store

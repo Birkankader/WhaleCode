@@ -1318,6 +1318,7 @@ async fn record_approval(
                 run_id: run_id.clone(),
                 subtask_id: id.clone(),
                 state: SubtaskState::Skipped,
+                error_category: None,
             })
             .await;
     }
@@ -1989,6 +1990,7 @@ async fn resolve_fixed(
             run_id: run_id.clone(),
             subtask_id: sid.clone(),
             state: SubtaskState::Done,
+            error_category: None,
         })
         .await;
     Ok(())
@@ -2090,6 +2092,7 @@ async fn resolve_skipped(
                 run_id: run_id.clone(),
                 subtask_id: sid.clone(),
                 state: SubtaskState::Skipped,
+                error_category: None,
             })
             .await;
     }

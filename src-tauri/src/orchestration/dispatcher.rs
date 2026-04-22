@@ -51,6 +51,7 @@ use tokio_util::sync::CancellationToken;
 const DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 
 use crate::agents::{AgentError, AgentImpl, ExecutionResult};
+use crate::ipc::events::ErrorCategoryWire;
 use crate::ipc::{AgentKind, RunId, SubtaskId, SubtaskState};
 use crate::orchestration::events::{EventSink, RunEvent};
 use crate::orchestration::notes::{SharedNotes, CONSOLIDATE_THRESHOLD_BYTES};
@@ -233,6 +234,7 @@ async fn execute_subtask_with_retry(
             run_id: run_id.clone(),
             subtask_id: subtask_row.id.clone(),
             state: SubtaskState::Retrying,
+            error_category: None,
         })
         .await;
 
@@ -283,6 +285,7 @@ async fn execute_subtask_with_retry(
                     run_id: run_id.clone(),
                     subtask_id: subtask_row.id.clone(),
                     state: SubtaskState::Running,
+                    error_category: None,
                 })
                 .await;
             Ok(result)
@@ -374,8 +377,10 @@ pub async fn run_dispatcher(
                 }
                 Err(err) => {
                     // Couldn't even spawn: treat as a subtask failure
-                    // and fail-fast the run.
-                    mark_failed(deps, &run, &run_id, &sub_id, err.clone()).await;
+                    // and fail-fast the run. No AgentError in scope
+                    // here (setup errors are plain strings), so no
+                    // category chip on the banner for this path.
+                    mark_failed(deps, &run, &run_id, &sub_id, err.clone(), None).await;
                     cancel.cancel();
                     drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
                     return DispatchOutcome::Failed {
@@ -432,7 +437,10 @@ pub async fn run_dispatcher(
                         .await;
                     }
                     WorkerOutcome::Failed(err) => {
-                        mark_failed(deps, &run, &run_id, &sub_id, err.clone()).await;
+                        // `WorkerOutcome::Failed` carries a plain
+                        // string (setup / post-execute commit error),
+                        // no AgentError to classify.
+                        mark_failed(deps, &run, &run_id, &sub_id, err.clone(), None).await;
                         cancel.cancel();
                         drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
                         return DispatchOutcome::Failed {
@@ -463,7 +471,8 @@ pub async fn run_dispatcher(
                         // on re-entry). The lifecycle's replan /
                         // escalation helpers decide what to do next.
                         let err_msg = escalate_error_text(&kind);
-                        mark_failed(deps, &run, &run_id, &sub_id, err_msg).await;
+                        let category = escalate_error_category(&kind);
+                        mark_failed(deps, &run, &run_id, &sub_id, err_msg, category).await;
                         await_in_flight_naturally(
                             deps,
                             &run,
@@ -518,6 +527,7 @@ async fn transition_approved_to_waiting(
                 run_id: run_id.clone(),
                 subtask_id: id.clone(),
                 state: SubtaskState::Waiting,
+                error_category: None,
             })
             .await;
     }
@@ -632,6 +642,7 @@ async fn dispatch_one(
             run_id: run_id.clone(),
             subtask_id: sub_id.clone(),
             state: SubtaskState::Running,
+            error_category: None,
         })
         .await;
 
@@ -842,6 +853,7 @@ async fn on_worker_done(
             run_id: run_id.clone(),
             subtask_id: sub_id.clone(),
             state: SubtaskState::Done,
+            error_category: None,
         })
         .await;
     if let Err(e) = notes
@@ -894,6 +906,7 @@ async fn mark_failed(
     run_id: &RunId,
     sub_id: &SubtaskId,
     error: String,
+    error_category: Option<ErrorCategoryWire>,
 ) {
     {
         let mut guard = run.write().await;
@@ -913,6 +926,7 @@ async fn mark_failed(
             run_id: run_id.clone(),
             subtask_id: sub_id.clone(),
             state: SubtaskState::Failed,
+            error_category,
         })
         .await;
 }
@@ -948,6 +962,7 @@ async fn mark_skipped(
             run_id: run_id.clone(),
             subtask_id: sub_id.clone(),
             state: SubtaskState::Skipped,
+            error_category: None,
         })
         .await;
 }
@@ -991,7 +1006,7 @@ async fn await_in_flight_naturally(
                 maybe_consolidate(notes, master, cancel, &deps.event_sink, run_id).await;
             }
             WorkerOutcome::Failed(err) => {
-                mark_failed(deps, run, run_id, &sub_id, err).await;
+                mark_failed(deps, run, run_id, &sub_id, err, None).await;
             }
             WorkerOutcome::Cancelled => {
                 mark_skipped(deps, run, run_id, &sub_id).await;
@@ -1004,7 +1019,8 @@ async fn await_in_flight_naturally(
                 // and cascade_skip on re-entry picks up any
                 // dependents that should now be skipped.
                 let err_msg = escalate_error_text(&kind);
-                mark_failed(deps, run, run_id, &sub_id, err_msg).await;
+                let category = escalate_error_category(&kind);
+                mark_failed(deps, run, run_id, &sub_id, err_msg, category).await;
             }
         }
     }
@@ -1077,6 +1093,25 @@ pub(crate) fn escalate_error_text(kind: &EscalateToMaster) -> String {
         EscalateToMaster::UserCancelled => "cancelled".to_string(),
         EscalateToMaster::Deterministic(e) => format!("{e}"),
         EscalateToMaster::Exhausted(e) => format!("{e}"),
+    }
+}
+
+/// Phase 4 Step 5. Classify an escalation into a wire-level
+/// [`ErrorCategoryWire`] so the frontend can render a category-
+/// specific banner + inline chip on the Failed worker card.
+/// `UserCancelled` returns `None` — cancellation doesn't produce a
+/// Failed state change (the dispatcher routes it through the
+/// Cancelled path instead), so any caller that threads this value
+/// into `mark_failed` for a cancelled escalation would be a bug
+/// upstream; we surface `None` to keep this function total.
+pub(crate) fn escalate_error_category(
+    kind: &EscalateToMaster,
+) -> Option<ErrorCategoryWire> {
+    match kind {
+        EscalateToMaster::UserCancelled => None,
+        EscalateToMaster::Deterministic(e) | EscalateToMaster::Exhausted(e) => {
+            ErrorCategoryWire::from_agent_error(e)
+        }
     }
 }
 

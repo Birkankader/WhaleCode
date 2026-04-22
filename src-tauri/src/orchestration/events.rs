@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use tauri::AppHandle;
 
 use crate::ipc::events as wire;
+use crate::ipc::events::ErrorCategoryWire;
 use crate::ipc::{FileDiff, RunId, RunStatus, RunSummary, SubtaskData, SubtaskId, SubtaskState};
 
 /// Structured events the orchestrator emits during a run. Each is
@@ -47,6 +48,12 @@ pub enum RunEvent {
         run_id: RunId,
         subtask_id: SubtaskId,
         state: SubtaskState,
+        /// Phase 4 Step 5. Set only on `Failed` transitions whose
+        /// origin is an [`crate::agents::AgentError`] the dispatcher
+        /// can classify. `None` for non-failure transitions and for
+        /// failures whose source is a setup error / panic string
+        /// (those still emit `Failed`, but without a category chip).
+        error_category: Option<ErrorCategoryWire>,
     },
     SubtaskLog {
         run_id: RunId,
@@ -211,12 +218,14 @@ impl EventSink for TauriEventSink {
                 run_id,
                 subtask_id,
                 state,
+                error_category,
             } => wire::emit_subtask_state_changed(
                 &self.app,
                 &wire::SubtaskStateChanged {
                     run_id,
                     subtask_id,
                     state,
+                    error_category,
                 },
             ),
             RunEvent::SubtaskLog {

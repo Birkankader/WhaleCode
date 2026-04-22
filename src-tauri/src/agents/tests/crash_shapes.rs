@@ -36,6 +36,7 @@ use crate::agents::process::{classify_nonzero, run_streaming, RunSpec};
 use crate::agents::tests::fake_agent::{fixture_path, run_fake, FakeEnv};
 use crate::agents::AgentError;
 use crate::agents::plan_parser::parse_and_validate;
+use crate::ipc::events::ErrorCategoryWire;
 use crate::ipc::AgentKind;
 
 // ---------------------------------------------------------------------
@@ -60,13 +61,21 @@ async fn category_a_nonzero_exit_crashy_stderr_classified_as_process_crashed() {
     .await
     .expect("subprocess ran");
     assert_eq!(out.exit_code, Some(139));
-    match classify_nonzero(out.exit_code, out.signal, &out.stderr) {
+    let classified = classify_nonzero(out.exit_code, out.signal, &out.stderr);
+    match &classified {
         AgentError::ProcessCrashed { exit_code, signal } => {
-            assert_eq!(exit_code, Some(139));
-            assert_eq!(signal, None);
+            assert_eq!(*exit_code, Some(139));
+            assert_eq!(*signal, None);
         }
         other => panic!("expected ProcessCrashed, got {other:?}"),
     }
+    // Phase 4 Step 5: the wire-level category carried on
+    // `SubtaskStateChanged(Failed)` must match the classifier's
+    // variant. Category is structural (no `after_secs`) for crash.
+    assert_eq!(
+        ErrorCategoryWire::from_agent_error(&classified),
+        Some(ErrorCategoryWire::ProcessCrashed),
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -92,7 +101,8 @@ async fn category_b_nonzero_exit_refusal_stderr_classified_as_task_failed() {
     )
     .await
     .expect("subprocess ran");
-    match classify_nonzero(out.exit_code, out.signal, &out.stderr) {
+    let classified = classify_nonzero(out.exit_code, out.signal, &out.stderr);
+    match &classified {
         AgentError::TaskFailed { reason } => {
             assert!(
                 reason.to_lowercase().contains("cannot"),
@@ -101,6 +111,10 @@ async fn category_b_nonzero_exit_refusal_stderr_classified_as_task_failed() {
         }
         other => panic!("expected TaskFailed, got {other:?}"),
     }
+    assert_eq!(
+        ErrorCategoryWire::from_agent_error(&classified),
+        Some(ErrorCategoryWire::TaskFailed),
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -124,6 +138,21 @@ async fn category_c_zero_exit_malformed_stdout_maps_to_parse_failed() {
     // Note: `parse_and_validate` returns a parse-layer error type.
     // The adapter-level test below confirms the mapping to
     // `AgentError::ParseFailed` by routing through the adapter.
+    //
+    // Direct wire-level classifier check: construct the AgentError
+    // we'd see post-adapter-wrap and confirm it maps to the
+    // ParseFailed category. This is the same mapping the dispatcher
+    // uses at the `EscalateToMaster` → `mark_failed` boundary, so a
+    // regression here would land the wrong category on the frontend
+    // even though the adapter-level test still passes.
+    let wrapped = AgentError::ParseFailed {
+        reason: format!("{err}"),
+        raw_output: junk.into(),
+    };
+    assert_eq!(
+        ErrorCategoryWire::from_agent_error(&wrapped),
+        Some(ErrorCategoryWire::ParseFailed),
+    );
 }
 
 #[tokio::test]
@@ -162,13 +191,18 @@ async fn category_d_subprocess_hang_past_timeout_maps_to_timeout() {
     )
     .await;
     match res {
-        Err(AgentError::Timeout { after_secs }) => {
+        Err(ref e @ AgentError::Timeout { after_secs }) => {
             // `after_secs` is the configured timeout in seconds; 150ms
             // rounds to 0 in u64 seconds — that's the contract, we
-            // just assert the variant is right.
-            let _ = after_secs;
+            // just assert the variant is right and round-trips onto
+            // the wire as the Timeout category with the same
+            // `after_secs`.
+            assert_eq!(
+                ErrorCategoryWire::from_agent_error(e),
+                Some(ErrorCategoryWire::Timeout { after_secs }),
+            );
         }
-        other => panic!("expected Timeout, got {other:?}"),
+        ref other => panic!("expected Timeout, got {other:?}"),
     }
 }
 
@@ -194,13 +228,17 @@ async fn category_e_binary_missing_maps_to_spawn_failed() {
         cancel: CancellationToken::new(),
     };
     match run_streaming(spec).await {
-        Err(AgentError::SpawnFailed { cause }) => {
+        Err(ref e @ AgentError::SpawnFailed { ref cause }) => {
             assert!(
                 !cause.is_empty(),
                 "SpawnFailed.cause should explain what went wrong"
             );
+            assert_eq!(
+                ErrorCategoryWire::from_agent_error(e),
+                Some(ErrorCategoryWire::SpawnFailed),
+            );
         }
-        other => panic!("expected SpawnFailed, got {other:?}"),
+        ref other => panic!("expected SpawnFailed, got {other:?}"),
     }
 }
 
@@ -227,8 +265,13 @@ async fn category_e_unexecutable_binary_maps_to_spawn_failed() {
         cancel: CancellationToken::new(),
     };
     match run_streaming(spec).await {
-        Err(AgentError::SpawnFailed { .. }) => {}
-        other => panic!("expected SpawnFailed, got {other:?}"),
+        Err(ref e @ AgentError::SpawnFailed { .. }) => {
+            assert_eq!(
+                ErrorCategoryWire::from_agent_error(e),
+                Some(ErrorCategoryWire::SpawnFailed),
+            );
+        }
+        ref other => panic!("expected SpawnFailed, got {other:?}"),
     }
 }
 

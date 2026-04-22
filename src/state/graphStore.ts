@@ -52,6 +52,7 @@ import {
   type BaseBranchDirty,
   type Completed,
   type DiffReady,
+  type ErrorCategoryWire,
   type EditorResult,
   type Failed,
   type FileDiff,
@@ -185,6 +186,19 @@ export type GraphState = {
    */
   subtaskRetryCounts: Map<string, number>;
   /**
+   * Phase 4 Step 5: per-subtask wire-level crash category. Populated
+   * from `SubtaskStateChanged` when `state === 'failed'` *and* the
+   * backend supplied an `errorCategory`; other transitions leave the
+   * entry untouched (Running / Retrying / Done / Skipped never carry
+   * a category on the wire). Drives:
+   *   - ErrorBanner's category-specific variant + locked copy.
+   *   - WorkerNode's inline label next to the "Failed" status.
+   *
+   * Cleared on `reset` and per-subtask scrubbed alongside logs /
+   * retries / provenance when a subtask is dropped from the plan.
+   */
+  subtaskErrorCategories: Map<string, ErrorCategoryWire>;
+  /**
    * Phase 3.5 Item 6: per-subtask file diffs surfaced by the backend's
    * `run:subtask_diff` event during the Apply pre-merge pass. One entry
    * per done subtask (including empty-vec entries for subtasks that ran
@@ -244,6 +258,17 @@ export type GraphState = {
   activeSubscription: RunSubscription | null;
   /** Last surfaced error (IPC failure or backend `Failed` event). */
   currentError: string | null;
+  /**
+   * Phase 4 Step 5: user-dismissal latch for the category-aware banner
+   * path. `currentError` already self-dismisses via `dismissError`, but
+   * `subtaskErrorCategories` is persistent run state (WorkerNode reads
+   * it for the inline chip) so we can't clear it on dismiss. Instead we
+   * flip this flag, and the banner treats a `true` value as "nothing to
+   * say right now". Re-arms to `false` whenever a new `Failed`
+   * transition lands a category the user hasn't seen yet — i.e. a new
+   * subtask id, or a new kind on a previously-dismissed id.
+   */
+  errorCategoryBannerDismissed: boolean;
   /**
    * Phase 3 Step 7: set when the backend emits `run:auto_approved` for
    * the active run; the UI surfaces a transient "plan auto-approved"
@@ -488,6 +513,7 @@ const initial: Pick<
   | 'nodeSnapshots'
   | 'nodeLogs'
   | 'subtaskRetryCounts'
+  | 'subtaskErrorCategories'
   | 'subtaskDiffs'
   | 'originalSubtasks'
   | 'userAddedSubtaskIds'
@@ -496,6 +522,7 @@ const initial: Pick<
   | 'humanEscalation'
   | 'activeSubscription'
   | 'currentError'
+  | 'errorCategoryBannerDismissed'
   | 'autoApproved'
   | 'autoApproveSuspended'
   | 'applySummary'
@@ -515,6 +542,7 @@ const initial: Pick<
   nodeSnapshots: new Map(),
   nodeLogs: new Map(),
   subtaskRetryCounts: new Map(),
+  subtaskErrorCategories: new Map(),
   subtaskDiffs: new Map(),
   originalSubtasks: new Map(),
   userAddedSubtaskIds: new Set(),
@@ -523,6 +551,7 @@ const initial: Pick<
   humanEscalation: null,
   activeSubscription: null,
   currentError: null,
+  errorCategoryBannerDismissed: false,
   autoApproved: null,
   autoApproveSuspended: null,
   applySummary: null,
@@ -864,6 +893,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const nextSnaps = new Map(state.nodeSnapshots);
         const nextLogs = new Map(state.nodeLogs);
         const nextRetries = new Map(state.subtaskRetryCounts);
+        const nextCategories = new Map(state.subtaskErrorCategories);
         const nextDiffs = new Map(state.subtaskDiffs);
         // Step 3: same scrub pattern for the expand set — an expanded
         // subtask dropped by a replan shouldn't leave a dangling id
@@ -876,6 +906,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
           nextSnaps.delete(id);
           nextLogs.delete(id);
           nextRetries.delete(id);
+          nextCategories.delete(id);
           nextDiffs.delete(id);
           if (state.workerExpanded.has(id)) {
             if (!nextExpanded) nextExpanded = new Set(state.workerExpanded);
@@ -887,6 +918,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
           nodeSnapshots: nextSnaps,
           nodeLogs: nextLogs,
           subtaskRetryCounts: nextRetries,
+          subtaskErrorCategories: nextCategories,
           subtaskDiffs: nextDiffs,
           ...(nextExpanded ? { workerExpanded: nextExpanded } : {}),
         };
@@ -1016,6 +1048,32 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const next = new Map(state.subtaskRetryCounts);
         next.set(e.subtaskId, (next.get(e.subtaskId) ?? 0) + 1);
         return { subtaskRetryCounts: next };
+      });
+    }
+
+    // Phase 4 Step 5: stash the crash category *before* the state
+    // transition so any subscriber that reads `subtaskErrorCategories`
+    // in the same render pass as `nodeSnapshots.get(id) === 'failed'`
+    // sees both fields consistent. Only populated when the backend
+    // supplied one — non-failure transitions and pre-Step-5 backends
+    // leave the entry absent.
+    if (e.state === 'failed' && e.errorCategory !== undefined) {
+      const category = e.errorCategory;
+      set((state) => {
+        const next = new Map(state.subtaskErrorCategories);
+        const prior = next.get(e.subtaskId);
+        next.set(e.subtaskId, category);
+        // Re-arm the banner dismissal latch whenever a genuinely new
+        // signal lands — a first-time failure for this id, or a new
+        // kind on a previously-dismissed id. Same-kind re-emits (the
+        // dispatcher is allowed to re-deliver `Failed` on replan
+        // re-entry) leave the latch alone so the user doesn't see the
+        // same banner resurrect mid-interaction.
+        const rearm = prior === undefined || prior.kind !== category.kind;
+        return {
+          subtaskErrorCategories: next,
+          ...(rearm ? { errorCategoryBannerDismissed: false } : {}),
+        };
       });
     }
 
@@ -1596,7 +1654,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
     },
 
     dismissError() {
-      set({ currentError: null });
+      // Clear both the free-form error and the category-path latch.
+      // The per-subtask category map itself is preserved (the
+      // WorkerNode inline chip still needs it); the latch is what
+      // hides the banner until a new signal re-arms it.
+      set({ currentError: null, errorCategoryBannerDismissed: true });
     },
 
     dismissAutoApproveSuspended() {
@@ -1631,6 +1693,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeSnapshots: new Map(),
         nodeLogs: new Map(),
         subtaskRetryCounts: new Map(),
+        subtaskErrorCategories: new Map(),
         subtaskDiffs: new Map(),
         originalSubtasks: new Map(),
         userAddedSubtaskIds: new Set(),

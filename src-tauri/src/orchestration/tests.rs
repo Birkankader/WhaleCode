@@ -22,6 +22,7 @@ use super::*;
 use crate::agents::{
     AgentError, AgentImpl, ExecutionResult, Plan, PlannedSubtask, PlanningContext, ReplanContext,
 };
+use crate::ipc::events::ErrorCategoryWire;
 use crate::ipc::{AgentKind, RunStatus, SubtaskDraft, SubtaskPatch, SubtaskState};
 use crate::orchestration::events::{EventSink, RecordingEventSink, RunEvent};
 use crate::orchestration::registry::{AgentRegistry, RegistryError};
@@ -4423,4 +4424,200 @@ async fn auto_approve_bypasses_replan_plan_pass() {
 
     h.orch.discard_run(&run_id).await.unwrap();
     h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+// ---------------------------------------------------------------------
+// Phase 4 Step 5 — AgentError → ErrorCategoryWire on Failed emits
+// ---------------------------------------------------------------------
+
+/// Helper: pull the `error_category` from the **terminal** `Failed`
+/// `SubtaskStateChanged` event for `sub_id`. Panics if no such event
+/// was emitted, which is the signal we want: a missing Failed emit
+/// indicates a broken contract, not a "None" category.
+fn failed_error_category(
+    snap: &[RunEvent],
+    sub_id: &SubtaskId,
+) -> Option<ErrorCategoryWire> {
+    snap.iter()
+        .rev()
+        .find_map(|e| match e {
+            RunEvent::SubtaskStateChanged {
+                subtask_id,
+                state: SubtaskState::Failed,
+                error_category,
+                ..
+            } if subtask_id == sub_id => Some(error_category.clone()),
+            _ => None,
+        })
+        .expect("expected one SubtaskStateChanged(Failed) for sub_id")
+}
+
+/// Every retryable [`AgentError`] must round-trip through the
+/// dispatcher and surface on the terminal `Failed` state change as
+/// the matching [`ErrorCategoryWire`]. Category is populated at the
+/// `EscalateToMaster` → `mark_failed` boundary; this test drives the
+/// full path end-to-end (approve → dispatch → Layer-1 retry exhaust
+/// → Layer-2 empty replan → Layer-3 park).
+///
+/// `SpawnFailed` short-circuits Layer 1 (no Retrying emit) — the
+/// helper's `rev()` search still finds the Failed emit because we
+/// don't depend on the retry path here, only the terminal event.
+/// `Timeout` carries `after_secs` on the wire; we assert the value
+/// is preserved through the dispatcher.
+#[tokio::test]
+async fn failed_emit_carries_error_category_matching_agent_error() {
+    let cases: Vec<(AgentError, ErrorCategoryWire)> = vec![
+        (
+            AgentError::ProcessCrashed {
+                exit_code: Some(139),
+                signal: None,
+            },
+            ErrorCategoryWire::ProcessCrashed,
+        ),
+        (
+            AgentError::TaskFailed {
+                reason: "refused".into(),
+            },
+            ErrorCategoryWire::TaskFailed,
+        ),
+        (
+            AgentError::ParseFailed {
+                reason: "missing json block".into(),
+                raw_output: String::new(),
+            },
+            ErrorCategoryWire::ParseFailed,
+        ),
+        (
+            AgentError::Timeout { after_secs: 600 },
+            ErrorCategoryWire::Timeout { after_secs: 600 },
+        ),
+        (
+            AgentError::SpawnFailed {
+                cause: "ENOENT".into(),
+            },
+            ErrorCategoryWire::SpawnFailed,
+        ),
+    ];
+
+    for (err, expected) in cases {
+        // Two identical failures for non-SpawnFailed variants to
+        // exhaust Layer 1 (attempt 1 + retry). SpawnFailed is
+        // deterministic: the dispatcher short-circuits retry on the
+        // first SpawnFailed and routes straight to Layer 2, so one
+        // queued error is enough. `with_fail_attempts` pops one per
+        // `execute` call — under-queueing would leak into the default.
+        let is_deterministic = matches!(err, AgentError::SpawnFailed { .. });
+        let queue = if is_deterministic {
+            vec![err.clone()]
+        } else {
+            vec![err.clone(), err.clone()]
+        };
+
+        let agent = ScriptedAgent::new(AgentKind::Claude)
+            .with_plan(Ok(plan_of(1)))
+            .await
+            .with_fail_attempts("t0", queue)
+            .await
+            .with_execute_default(ExecuteScript::Fail(
+                "unexpected extra execute".into(),
+            ))
+            .await
+            .with_replan(ReplanScript::Empty)
+            .await;
+        let h = Harness::new(agent).await;
+
+        let run_id = h
+            .orch
+            .submit_task("cat".into(), h.repo_path.clone())
+            .await
+            .unwrap();
+        h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+        let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+        let sub_id = subs[0].id.clone();
+        h.orch
+            .approve_subtasks(&run_id, vec![sub_id.clone()])
+            .await
+            .unwrap();
+        // Layer-2 replan returns empty → run parks at Layer 3.
+        h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+
+        let snap = h.sink.snapshot().await;
+        let got = failed_error_category(&snap, &sub_id);
+        assert_eq!(
+            got,
+            Some(expected.clone()),
+            "category mismatch for {:?}: got {:?}, want {:?}",
+            err,
+            got,
+            expected,
+        );
+
+        send_resolution(&h, &run_id, Layer3Decision::Aborted).await;
+        h.await_status(&run_id, RunStatus::Cancelled).await;
+    }
+}
+
+/// Retrying + Running emits never carry an `error_category` — the
+/// field is exclusively a Failed-terminal annotation. Regression
+/// guard so a future refactor can't silently tack categories onto
+/// non-terminal transitions.
+#[tokio::test]
+async fn non_failed_state_changes_never_carry_error_category() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_fail_attempts(
+            "t0",
+            vec![AgentError::TaskFailed {
+                reason: "first".into(),
+            }],
+        )
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "recovered".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("one".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let sub_id = subs[0].id.clone();
+    h.orch
+        .approve_subtasks(&run_id, vec![sub_id.clone()])
+        .await
+        .unwrap();
+    // Runs through retry-success → Done → Merging.
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    let snap = h.sink.snapshot().await;
+    for event in &snap {
+        if let RunEvent::SubtaskStateChanged {
+            subtask_id,
+            state,
+            error_category,
+            ..
+        } = event
+        {
+            if subtask_id != &sub_id {
+                continue;
+            }
+            if !matches!(state, SubtaskState::Failed) {
+                assert!(
+                    error_category.is_none(),
+                    "non-Failed state {state:?} must carry None category, got {error_category:?}"
+                );
+            }
+        }
+    }
+
+    h.orch.discard_run(&run_id).await.unwrap();
 }
