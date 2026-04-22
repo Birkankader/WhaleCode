@@ -379,6 +379,68 @@ describe('diffReadySchema', () => {
     const parsed = diffReadySchema.parse({ runId: 'r1', files: [] });
     expect(parsed.files).toEqual([]);
   });
+
+  // Phase 4 Step 6 — `status` and `unifiedDiff` are optional for
+  // backward compatibility with pre-Step-6 backends.
+  it('decodes pre-Step-6 stat-only file rows (no status / unifiedDiff)', () => {
+    const parsed = diffReadySchema.parse({
+      runId: 'r1',
+      files: [{ path: 'a.ts', additions: 2, deletions: 1 }],
+    });
+    expect(parsed.files[0].status).toBeUndefined();
+    expect(parsed.files[0].unifiedDiff).toBeUndefined();
+  });
+
+  it('decodes Step-6 Modified status + patch body', () => {
+    const parsed = diffReadySchema.parse({
+      runId: 'r1',
+      files: [
+        {
+          path: 'a.ts',
+          additions: 2,
+          deletions: 1,
+          status: { kind: 'modified' },
+          unifiedDiff: '@@ -1 +1 @@\n-old\n+new\n',
+        },
+      ],
+    });
+    expect(parsed.files[0].status).toEqual({ kind: 'modified' });
+    expect(parsed.files[0].unifiedDiff).toContain('+new');
+  });
+
+  it('decodes Renamed status with the previous path', () => {
+    const parsed = diffReadySchema.parse({
+      runId: 'r1',
+      files: [
+        {
+          path: 'new/name.ts',
+          additions: 0,
+          deletions: 0,
+          status: { kind: 'renamed', from: 'old/name.ts' },
+        },
+      ],
+    });
+    expect(parsed.files[0].status).toEqual({
+      kind: 'renamed',
+      from: 'old/name.ts',
+    });
+  });
+
+  it('rejects unknown DiffStatus kinds', () => {
+    expect(
+      diffReadySchema.safeParse({
+        runId: 'r1',
+        files: [
+          {
+            path: 'a.ts',
+            additions: 0,
+            deletions: 0,
+            status: { kind: 'symlinked' },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('settingsSchema', () => {

@@ -177,8 +177,44 @@ pub struct SubtaskData {
 #[serde(rename_all = "camelCase")]
 pub struct FileDiff {
     pub path: String,
+    /// Change classification. Phase 4 Step 6: added so the frontend
+    /// can distinguish add / modify / delete / rename / binary
+    /// variants in the inline diff preview without re-parsing the
+    /// unified-diff header. Mirrors the discriminated shape of
+    /// `worktree::FileDiff` but with `String` paths (the worktree
+    /// type uses `PathBuf`, which doesn't round-trip through JSON
+    /// losslessly on non-UTF8 systems; on wire we've already
+    /// lossy-converted in `worktree_to_ipc_diff`).
+    pub status: DiffStatus,
     pub additions: u32,
     pub deletions: u32,
+    /// Unified diff patch body ready to feed into a syntax
+    /// highlighter. Phase 4 Step 6: added so the inline preview in
+    /// `DiffPopover` can render real hunks instead of just a +N/-M
+    /// stat line. Empty for `Binary` files (we never computed a
+    /// patch) and for Phase-3.5-era events the frontend falls back
+    /// to the stat-only rendering when the field is empty.
+    pub unified_diff: String,
+}
+
+/// Wire-level classification of a changed file. `#[serde(tag = "kind"
+/// , rename_all = "kebab-case")]` keeps the JSON shape aligned with
+/// the other `kind`-tagged unions the frontend consumes
+/// (`ErrorCategoryWire`, `DiffStatus` on the internal worktree type).
+/// `Renamed` carries the previous path so the UI can render a
+/// "`old` → `new`" header row.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DiffStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed {
+        #[serde(rename = "from")]
+        from: String,
+    },
+    Binary,
 }
 
 /// What the frontend sees on `run:completed`. Intentionally lean:

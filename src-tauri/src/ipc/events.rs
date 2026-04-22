@@ -396,7 +396,7 @@ pub fn emit_auto_approve_suspended(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::{AgentKind, FileDiff, RunStatus, SubtaskState};
+    use crate::ipc::{AgentKind, DiffStatus, FileDiff, RunStatus, SubtaskState};
 
     #[test]
     fn status_changed_serializes_camel_case() {
@@ -534,13 +534,25 @@ mod tests {
             run_id: "r1".into(),
             files: vec![FileDiff {
                 path: "src/foo.ts".into(),
+                status: DiffStatus::Modified,
                 additions: 3,
                 deletions: 1,
+                unified_diff: "@@ -1 +1 @@\n-old\n+new\n".into(),
             }],
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["files"][0]["path"], "src/foo.ts");
         assert_eq!(json["files"][0]["additions"], 3);
+        // Phase 4 Step 6: wire now carries the status discriminator
+        // and the unified-diff body so the inline preview has
+        // everything it needs without a follow-up IPC call.
+        assert_eq!(json["files"][0]["status"]["kind"], "modified");
+        assert!(
+            json["files"][0]["unifiedDiff"]
+                .as_str()
+                .unwrap()
+                .contains("+new"),
+        );
     }
 
     #[test]
@@ -578,8 +590,10 @@ mod tests {
             subtask_id: "s1".into(),
             files: vec![FileDiff {
                 path: "src/foo.ts".into(),
+                status: DiffStatus::Modified,
                 additions: 5,
                 deletions: 2,
+                unified_diff: String::new(),
             }],
         };
         let json = serde_json::to_value(&payload).unwrap();
@@ -588,5 +602,34 @@ mod tests {
         assert_eq!(json["files"][0]["path"], "src/foo.ts");
         assert_eq!(json["files"][0]["additions"], 5);
         assert_eq!(json["files"][0]["deletions"], 2);
+    }
+
+    // Phase 4 Step 6 — each DiffStatus variant lands on the wire
+    // with a `kind` discriminator and (for Renamed) the `from` path.
+    // Frontend decodes into a `z.discriminatedUnion('kind', …)`, so a
+    // regression that drops the discriminator or reshapes `Renamed`
+    // would break the inline diff preview at the schema layer.
+    #[test]
+    fn diff_status_variants_serialize_kebab_kind() {
+        let cases: &[(DiffStatus, &str)] = &[
+            (DiffStatus::Added, "added"),
+            (DiffStatus::Modified, "modified"),
+            (DiffStatus::Deleted, "deleted"),
+            (DiffStatus::Binary, "binary"),
+        ];
+        for (status, wire) in cases {
+            let json = serde_json::to_value(status).unwrap();
+            assert_eq!(json["kind"], *wire);
+        }
+    }
+
+    #[test]
+    fn diff_status_renamed_carries_from_path() {
+        let status = DiffStatus::Renamed {
+            from: "old/name.ts".into(),
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["kind"], "renamed");
+        assert_eq!(json["from"], "old/name.ts");
     }
 }

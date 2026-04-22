@@ -1201,10 +1201,8 @@ describe('WorkerNode — expand toggle (Phase 4 Step 3)', () => {
           [
             {
               path: 'a.ts',
-              status: 'modified',
               additions: 1,
               deletions: 0,
-              binary: false,
             },
           ],
         ],

@@ -160,10 +160,33 @@ export const subtaskDraftSchema = z.object({
 });
 export type SubtaskDraft = z.infer<typeof subtaskDraftSchema>;
 
+// Phase 4 Step 6 — wire-level diff status.
+// Mirrors `ipc::DiffStatus` on the Rust side: adjacently-tagged
+// discriminated union keyed on `kind` with `Renamed` carrying the
+// previous path. The UI renders a distinct header per variant
+// (added → "new file", deleted → "removed", renamed → "old → new",
+// binary → "binary, preview skipped", modified → normal header).
+export const diffStatusSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('added') }),
+  z.object({ kind: z.literal('modified') }),
+  z.object({ kind: z.literal('deleted') }),
+  z.object({ kind: z.literal('renamed'), from: z.string() }),
+  z.object({ kind: z.literal('binary') }),
+]);
+export type DiffStatus = z.infer<typeof diffStatusSchema>;
+
 export const fileDiffSchema = z.object({
   path: z.string(),
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
+  // Phase 4 Step 6: both fields are `.optional()` for backward
+  // compatibility with pre-Step-6 backends (a bundled binary that
+  // still emits the old stat-only shape decodes without throwing).
+  // When absent the UI falls back to the stat-only row rendering and
+  // hides the per-file expand affordance; when present the inline
+  // preview is available.
+  status: diffStatusSchema.optional(),
+  unifiedDiff: z.string().optional(),
 });
 export type FileDiff = z.infer<typeof fileDiffSchema>;
 

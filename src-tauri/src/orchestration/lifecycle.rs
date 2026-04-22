@@ -42,7 +42,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agents::{AgentError, AgentImpl, Plan, ReplanContext};
 use crate::ipc::{
-    FileDiff as IpcFileDiff, RunId, RunStatus, RunSummary, SubtaskData, SubtaskId, SubtaskState,
+    DiffStatus as IpcDiffStatus, FileDiff as IpcFileDiff, RunId, RunStatus, RunSummary,
+    SubtaskData, SubtaskId, SubtaskState,
 };
 use crate::orchestration::context::build_planning_context;
 use crate::orchestration::dispatcher::{
@@ -57,7 +58,10 @@ use crate::safety::SafetyGate;
 use crate::settings::SettingsStore;
 use crate::storage::models::NewSubtask;
 use crate::storage::Storage;
-use crate::worktree::{DependencyGraph, FileDiff, MergeResult, WorktreeError, WorktreeManager};
+use crate::worktree::{
+    DependencyGraph, DiffStatus as WorktreeDiffStatus, FileDiff, MergeResult, WorktreeError,
+    WorktreeManager,
+};
 
 /// How many lines of the failed subtask's worker log to include in
 /// the replan prompt. Mirrors `phase-3-spec.md` §4: enough forensics
@@ -1009,8 +1013,28 @@ async fn build_merge_inputs(run: &Arc<RwLock<Run>>) -> (Vec<String>, DependencyG
 fn worktree_to_ipc_diff(fd: &FileDiff) -> IpcFileDiff {
     IpcFileDiff {
         path: fd.path.to_string_lossy().into_owned(),
+        status: worktree_to_ipc_status(&fd.status),
         additions: fd.additions as u32,
         deletions: fd.deletions as u32,
+        // Clone the patch body onto the wire. `FileDiff::patch` is
+        // already the unified-diff output of `git diff base..HEAD --
+        // <path>` — empty for `Binary` files, non-empty for every
+        // other variant. The frontend feeds this straight into the
+        // Shiki `diff` grammar in the popover; no post-processing on
+        // this side.
+        unified_diff: fd.patch.clone(),
+    }
+}
+
+fn worktree_to_ipc_status(status: &WorktreeDiffStatus) -> IpcDiffStatus {
+    match status {
+        WorktreeDiffStatus::Added => IpcDiffStatus::Added,
+        WorktreeDiffStatus::Modified => IpcDiffStatus::Modified,
+        WorktreeDiffStatus::Deleted => IpcDiffStatus::Deleted,
+        WorktreeDiffStatus::Renamed { from } => IpcDiffStatus::Renamed {
+            from: from.to_string_lossy().into_owned(),
+        },
+        WorktreeDiffStatus::Binary => IpcDiffStatus::Binary,
     }
 }
 

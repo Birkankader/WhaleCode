@@ -1625,6 +1625,42 @@ async fn apply_emits_subtask_diff_per_done_subtask_before_aggregate() {
         .collect();
     assert!(all_files.iter().any(|p| p.ends_with("a.txt")));
     assert!(all_files.iter().any(|p| p.ends_with("b.txt")));
+
+    // Phase 4 Step 6: every per-subtask diff on the wire now carries
+    // the `status` discriminator and a non-empty `unified_diff` patch
+    // for text files. Assert directly against the event payloads so a
+    // regression in `worktree_to_ipc_diff` (e.g. dropping the patch
+    // clone) fails here rather than only in a UI test.
+    let mut observed_any_patch = false;
+    let mut observed_any_added_status = false;
+    for ev in events.iter() {
+        if let RunEvent::SubtaskDiff {
+            run_id: r, files, ..
+        } = ev
+        {
+            if *r != run_id {
+                continue;
+            }
+            for fd in files {
+                if !fd.unified_diff.is_empty() {
+                    observed_any_patch = true;
+                    assert!(
+                        fd.unified_diff.contains('\n'),
+                        "unified diff should be multi-line: {:?}",
+                        fd.unified_diff,
+                    );
+                }
+                if matches!(fd.status, crate::ipc::DiffStatus::Added) {
+                    observed_any_added_status = true;
+                }
+            }
+        }
+    }
+    assert!(observed_any_patch, "at least one per-subtask patch body");
+    assert!(
+        observed_any_added_status,
+        "fake writer created new files — at least one status should be Added",
+    );
 }
 
 #[tokio::test]
