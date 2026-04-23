@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
