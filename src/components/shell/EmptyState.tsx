@@ -24,6 +24,7 @@ export function EmptyState() {
   const submitTask = useGraphStore((s) => s.submitTask);
   const [value, setValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Auto-grow 1 → MAX_ROWS rows as the user types. Uses the
@@ -86,27 +87,41 @@ export function EmptyState() {
         </h1>
         <p className="mt-2 text-meta text-fg-tertiary">{TAGLINE}</p>
 
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={PLACEHOLDER}
-          autoFocus
-          disabled={submitting}
-          rows={1}
-          className="mt-12 w-full resize-none overflow-y-auto rounded-lg border border-border-default bg-bg-elevated px-5 py-[18px] text-[20px] leading-[1.4] text-fg-primary placeholder:text-fg-secondary focus:border-[var(--color-agent-master)] focus:outline-none disabled:opacity-60"
-          aria-label={PLACEHOLDER}
-        />
-
-        <div className="mt-3 flex w-full items-center gap-1.5 text-hint text-fg-tertiary">
-          <KeyChip>Enter</KeyChip>
-          <span>to start</span>
-          <span>·</span>
-          <KeyChip>Shift</KeyChip>
-          <span>+</span>
-          <KeyChip>Enter</KeyChip>
-          <span>for newline</span>
+        <div
+          className={[
+            'mt-12 flex w-full flex-col rounded-lg border bg-bg-elevated',
+            'transition-colors',
+            submitting ? 'opacity-60' : '',
+            focused
+              ? 'border-[var(--color-agent-master)]'
+              : 'border-border-default',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder={PLACEHOLDER}
+            autoFocus
+            disabled={submitting}
+            rows={1}
+            className="w-full resize-none overflow-y-auto rounded-t-lg bg-transparent px-5 pb-3 pt-[18px] text-[20px] leading-[1.4] text-fg-primary placeholder:text-fg-secondary focus:outline-none"
+            aria-label={PLACEHOLDER}
+          />
+          <div className="flex items-center gap-1.5 px-5 pb-3 pt-1 text-hint text-fg-tertiary">
+            <KeyChip>Enter</KeyChip>
+            <span>to start</span>
+            <span>·</span>
+            <KeyChip>Shift</KeyChip>
+            <span>+</span>
+            <KeyChip>Enter</KeyChip>
+            <span>for newline</span>
+          </div>
         </div>
       </form>
     </div>
