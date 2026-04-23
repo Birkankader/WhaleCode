@@ -68,6 +68,9 @@ whalecode/
 │   ├── phase-4-spec.md          # Phase 4 (shipped)
 │   ├── phase-4-verification.md  # Phase 4 goal-backward verification
 │   ├── phase-4-crash-diagnostic.md # Phase 4 Step 0 diagnostic output
+│   ├── phase-5-spec.md          # Phase 5 (shipped)
+│   ├── phase-5-verification.md  # Phase 5 goal-backward verification
+│   ├── phase-5-qa-diagnostic.md # Phase 5 Step 0 Q&A capability diagnostic
 │   ├── KNOWN_ISSUES.md          # Debt ledger — deferred items + target phase + severity
 │   ├── retrospectives/          # Post-phase retros
 │   └── roadmap.md               # All 8 phases + v2.5/v3 track
@@ -128,18 +131,18 @@ whalecode/
 
 1. You already have this file. Don't re-read it unless I say so.
 2. For any specific area, read the matching `docs/` file. Don't read all of them.
-3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 4 is shipped — see `docs/phase-4-verification.md` and `docs/retrospectives/phase-4.md`; Phase 5 spec is not yet written).
+3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 5 is shipped — see `docs/phase-5-verification.md` and `docs/retrospectives/phase-5.md`; Phase 6 spec is not yet written).
 4. When in doubt about design decisions, check `docs/architecture.md` section 11.
 5. For UI specifics (colors, spacing, animation timing), check `docs/design-system.md`.
 6. Before starting work, skim `docs/KNOWN_ISSUES.md` so you don't re-open already-triaged debt.
 
 ## Current status
 
-**Active phase:** Phase 5 — spec unwritten (awaiting real-usage data from Phase 4 shipment)
-**Last shipped:** Phase 4 — build trust through visibility (`56f5925`, 2026-04-23)
-**Phase 5 candidates (not commitments):** merge conflict resolution UX, base-branch dirty stash helper, interactive agent Q&A channel, mono-repo dependency graph, programmatic visual regression. Spec writes after users run real work on the shipped Phase 4 surface.
+**Active phase:** Phase 6 — spec unwritten (awaiting real-usage data from Phase 5 shipment)
+**Last shipped:** Phase 5 — unblock the run (`1976b94`, 2026-04-23; docs close-out follows)
+**Phase 6 candidates (not commitments):** Q&A false-positive heuristic calibration, Claude interactive-mode stdin injection, base-branch terminal affordance in conflict resolver, mono-repo planning awareness, cost tracking wire-up, rate-limit classification + backoff, programmatic visual regression pilot, debug-only failure injection. Spec writes after users run real work on the shipped Phase 5 surface.
 
-Phase 4 is closed: 6/6 goal-criteria PASS, 7/7 step acceptance PASS, frontend 630/630, Rust 325/325, typecheck/lint/clippy clean. Verification at `docs/phase-4-verification.md`; retro at `docs/retrospectives/phase-4.md`; six text visual observations under `docs/retrospectives/phase-4-visuals/`. Phase 3.5 retro remains at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 5 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
+Phase 5 is closed: 5/5 goal-criteria PASS, 25/25 step-level acceptance PASS, frontend 705/705, Rust 360/360, typecheck/lint/clippy clean, build succeeds. Verification at `docs/phase-5-verification.md`; retro at `docs/retrospectives/phase-5.md`; five text visual observations under `docs/retrospectives/phase-5-visuals/`; Q&A capability diagnostic at `docs/phase-5-qa-diagnostic.md` (Step 0 spike). Phase 4 verification + retro remain at `docs/phase-4-verification.md` / `docs/retrospectives/phase-4.md`. Phase 3.5 retro at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 6 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
 
 ## Useful commands
 

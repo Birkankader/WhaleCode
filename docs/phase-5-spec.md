@@ -1,5 +1,7 @@
 # Phase 5: Unblock the run
 
+> **Phase 5 shipped 2026-04-23** at `1976b94 feat(phase-5): step 4 — interactive agent Q&A` (code) + close-out commit (docs). See `docs/phase-5-verification.md` for goal-backward pass/fail and `docs/retrospectives/phase-5.md` for the retrospective.
+
 **Goal:** When a run gets stuck, give the user a way out that doesn't require killing the whole run. Merge conflicts, dirty base branches, worker agents asking questions, and workers grinding on the wrong problem are today's four dead-ends: each forces the user to Discard and start over, or to reach outside the app to fix it. Phase 5 ships the resolution paths for all four — *inside* the graph, without schema rewrites or a headless-mode detour.
 
 **Duration estimate:** 2 weeks (with a realistic read of 3-5 active working days based on Phase 3 / 3.5 / 4 evidence — prior three phases all came in at 2-3 days actual against 2-week estimates; padding here is for Q&A spike risk).
