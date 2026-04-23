@@ -12,3 +12,10 @@ pub mod fake_agent;
 // behavior. See docs/phase-4-crash-diagnostic.md.
 #[cfg(test)]
 mod crash_shapes;
+
+// Phase 5 Step 0 Q&A diagnostic — asserts current behavior when a
+// worker emits a question and either (G) blocks on stdin or (H) exits
+// 0 without reading further. Tests-only; does not change production
+// behavior. See docs/phase-5-qa-diagnostic.md.
+#[cfg(test)]
+mod question_shapes;
