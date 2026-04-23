@@ -40,6 +40,8 @@ import {
   stashAndRetryApply as stashAndRetryApplyIpc,
   popStash as popStashIpc,
   retryApply as retryApplyIpc,
+  answerSubtaskQuestion as answerSubtaskQuestionIpc,
+  skipSubtaskQuestion as skipSubtaskQuestionIpc,
   discardRun as discardRunIpc,
   manualFixSubtask as manualFixSubtaskIpc,
   markSubtaskFixed as markSubtaskFixedIpc,
@@ -69,6 +71,8 @@ import {
   type StashCreated,
   type StashPopFailed,
   type StashPopped,
+  type SubtaskAnswerReceived,
+  type SubtaskQuestionAsked,
   type SkipResult,
   type StatusChanged,
   type SubtaskDiff,
@@ -394,6 +398,18 @@ export type GraphState = {
   /** Phase 5 Step 3: open or close the conflict resolver popover. */
   setConflictResolverOpen: (open: boolean) => void;
   /**
+   * Phase 5 Step 4: deliver the user's answer to a parked question.
+   * Sets `questionAnswerInFlight` while the IPC is out; the store
+   * clears it on the backend's next `SubtaskStateChanged(Running)`
+   * (answer delivered) / `Done` (skipped) emit or on IPC rejection.
+   */
+  answerSubtaskQuestion: (subtaskId: SubtaskId, answer: string) => Promise<void>;
+  /**
+   * Phase 5 Step 4: flag the detected question as a false positive.
+   * Subtask finalizes as Done with current output.
+   */
+  skipSubtaskQuestion: (subtaskId: SubtaskId) => Promise<void>;
+  /**
    * Phase 5 Step 1: ids of subtasks with a cancel_subtask IPC in
    * flight. The footer renders "Stopping…" while an id sits here.
    * Cleared on the backend's `SubtaskStateChanged { state: cancelled }`
@@ -456,6 +472,21 @@ export type GraphState = {
    * flips it back to true.
    */
   conflictResolverOpen: boolean;
+  /**
+   * Phase 5 Step 4: active questions keyed by subtask id. Populated
+   * on `run:subtask_question_asked`, cleared on
+   * `run:subtask_answer_received` / `SubtaskStateChanged(Running|Done|Failed|
+   * Skipped|Cancelled)`. Multiple subtasks may have pending questions
+   * simultaneously — the UI renders each on its own card.
+   */
+  pendingQuestions: ReadonlyMap<SubtaskId, { question: string }>;
+  /**
+   * Phase 5 Step 4: transient per-subtask flag for "the answer /
+   * skip IPC is in flight." UI renders "Sending…" + disables
+   * controls while set. Cleared on the terminal subtask-state emit
+   * (running / done / cancelled) or on IPC rejection.
+   */
+  questionAnswerInFlight: ReadonlySet<SubtaskId>;
   /**
    * Phase 3 plan-edit actions. Valid only while the run is in
    * `awaiting_approval`. None of these mutate the store directly —
@@ -641,6 +672,8 @@ const initial: Pick<
   | 'mergeConflict'
   | 'retryApplyInFlight'
   | 'conflictResolverOpen'
+  | 'pendingQuestions'
+  | 'questionAnswerInFlight'
 > = {
   runId: null,
   taskInput: '',
@@ -677,6 +710,8 @@ const initial: Pick<
   mergeConflict: null,
   retryApplyInFlight: false,
   conflictResolverOpen: false,
+  pendingQuestions: new Map(),
+  questionAnswerInFlight: new Set(),
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -734,6 +769,11 @@ function eventsForSubtaskState(
       // a running signal means the retry took — emit RETRY_SUCCESS so
       // the machine rejoins the happy path.
       if (current === 'retrying') return ['RETRY_SUCCESS'];
+      // Phase 5 Step 4: backend transitions AwaitingInput → Running
+      // on both answer (re-execute) and skip (finalize path). The
+      // machine's equivalent is ANSWER_RECEIVED which lands back in
+      // running.
+      if (current === 'awaiting_input') return ['ANSWER_RECEIVED'];
       if (current === 'proposed') return ['APPROVE', 'START'];
       if (current === 'waiting') return ['UNBLOCK', 'START'];
       if (current === 'approved') return ['START'];
@@ -783,6 +823,17 @@ function eventsForSubtaskState(
       // The node machine accepts CANCEL from every non-final state, so
       // a single dispatch is enough regardless of where the actor sits.
       return ['CANCEL'];
+    case 'awaiting-input':
+      // Phase 5 Step 4: backend detected a question on the worker's
+      // output. Only valid from `running`. Other current states are
+      // handled defensively via bridge events — the backend always
+      // transitions through `running` before entering `awaiting_input`,
+      // so direct jumps from other states shouldn't happen in practice.
+      if (current === 'running') return ['ASK_QUESTION'];
+      if (current === 'proposed') return ['APPROVE', 'START', 'ASK_QUESTION'];
+      if (current === 'waiting') return ['UNBLOCK', 'START', 'ASK_QUESTION'];
+      if (current === 'approved') return ['START', 'ASK_QUESTION'];
+      return [];
   }
 }
 
@@ -1240,6 +1291,53 @@ export const useGraphStore = create<GraphState>((set, get) => {
         return { subtaskCancelInFlight: next };
       });
     }
+
+    // Phase 5 Step 4: clear pending-question entries when the
+    // subtask moves out of `awaiting-input`. `running` means the
+    // backend delivered the answer and the worker is re-executing;
+    // `done` / `failed` / `cancelled` / `skipped` all terminate
+    // the Q&A lifecycle. The matching transient `answerInFlight`
+    // marker clears on the same events.
+    if (
+      e.state !== 'awaiting-input' &&
+      (get().pendingQuestions.has(e.subtaskId) ||
+        get().questionAnswerInFlight.has(e.subtaskId))
+    ) {
+      set((state) => {
+        const nextPending = new Map(state.pendingQuestions);
+        nextPending.delete(e.subtaskId);
+        const nextInFlight = new Set(state.questionAnswerInFlight);
+        nextInFlight.delete(e.subtaskId);
+        return {
+          pendingQuestions: nextPending,
+          questionAnswerInFlight: nextInFlight,
+        };
+      });
+    }
+  }
+
+  function handleSubtaskQuestionAsked(e: SubtaskQuestionAsked) {
+    if (e.runId !== get().runId) return;
+    set((state) => {
+      const next = new Map(state.pendingQuestions);
+      next.set(e.subtaskId, { question: e.question });
+      return { pendingQuestions: next };
+    });
+  }
+
+  function handleSubtaskAnswerReceived(e: SubtaskAnswerReceived) {
+    if (e.runId !== get().runId) return;
+    // Clear the in-flight marker proactively so the "Sending…" UI
+    // dismisses the moment the backend confirms delivery. The
+    // pendingQuestions entry clears on the subsequent
+    // `SubtaskStateChanged(Running)` emit, which follows this event
+    // per the backend's ordering.
+    if (!get().questionAnswerInFlight.has(e.subtaskId)) return;
+    set((state) => {
+      const next = new Set(state.questionAnswerInFlight);
+      next.delete(e.subtaskId);
+      return { questionAnswerInFlight: next };
+    });
   }
 
   function handleSubtaskLog(e: SubtaskLog) {
@@ -1505,6 +1603,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onStashCreated: handleStashCreated,
       onStashPopped: handleStashPopped,
       onStashPopFailed: handleStashPopFailed,
+      onSubtaskQuestionAsked: handleSubtaskQuestionAsked,
+      onSubtaskAnswerReceived: handleSubtaskAnswerReceived,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -1775,6 +1875,50 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set({ conflictResolverOpen: open });
     },
 
+    async answerSubtaskQuestion(subtaskId, answer) {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      if (get().questionAnswerInFlight.has(subtaskId)) return;
+      const next = new Set(get().questionAnswerInFlight);
+      next.add(subtaskId);
+      set({ questionAnswerInFlight: next });
+      try {
+        await answerSubtaskQuestionIpc(runId, subtaskId, answer);
+        // Clears on `handleSubtaskAnswerReceived` (normal path) or
+        // on the subsequent `SubtaskStateChanged` emits (fallback).
+      } catch (err) {
+        const rolledBack = new Set(get().questionAnswerInFlight);
+        rolledBack.delete(subtaskId);
+        set({
+          questionAnswerInFlight: rolledBack,
+          currentError: `Answer failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
+    async skipSubtaskQuestion(subtaskId) {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      if (get().questionAnswerInFlight.has(subtaskId)) return;
+      const next = new Set(get().questionAnswerInFlight);
+      next.add(subtaskId);
+      set({ questionAnswerInFlight: next });
+      try {
+        await skipSubtaskQuestionIpc(runId, subtaskId);
+        // Clears on `SubtaskStateChanged(Done)` that the backend
+        // emits after the worker task returns from resolve_qa_loop.
+      } catch (err) {
+        const rolledBack = new Set(get().questionAnswerInFlight);
+        rolledBack.delete(subtaskId);
+        set({
+          questionAnswerInFlight: rolledBack,
+          currentError: `Skip question failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
     async retryApply() {
       const runId = get().runId;
       if (!runId || runId.startsWith('pending_')) return;
@@ -2032,6 +2176,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         mergeConflict: null,
         retryApplyInFlight: false,
         conflictResolverOpen: false,
+        pendingQuestions: new Map(),
+        questionAnswerInFlight: new Set(),
       });
     },
   };

@@ -96,6 +96,11 @@ export const subtaskStateSchema = z.enum([
   // retry-exhausted) — users stopped this worker intentionally. Store
   // bridge dispatches CANCEL to the node machine.
   'cancelled',
+  // Phase 5 Step 4: worker emitted a question and is paused pending
+  // the user's answer. Transient; answer restarts the worker,
+  // skip / timeout finalizes as `done` with current output. Backend
+  // kebab-case shape is `awaiting-input` on the wire.
+  'awaiting-input',
 ]);
 export type SubtaskState = z.infer<typeof subtaskStateSchema>;
 
@@ -246,6 +251,9 @@ export const EVENT_STASH_POP_FAILED = 'run:stash_pop_failed' as const;
 // frontend can key "Still conflicted (attempt N)" copy off the
 // retry counter without breaking existing consumers.
 export const EVENT_MERGE_RETRY_FAILED = 'run:merge_retry_failed' as const;
+// Phase 5 Step 4: worker paused pending user answer.
+export const EVENT_SUBTASK_QUESTION_ASKED = 'run:subtask_question_asked' as const;
+export const EVENT_SUBTASK_ANSWER_RECEIVED = 'run:subtask_answer_received' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -434,6 +442,28 @@ export const mergeRetryFailedSchema = z.object({
   retryAttempt: z.number().int().nonnegative(),
 });
 export type MergeRetryFailed = z.infer<typeof mergeRetryFailedSchema>;
+
+/**
+ * Phase 5 Step 4 payload for {@link EVENT_SUBTASK_QUESTION_ASKED}.
+ * `question` is the detected text (verbatim line that triggered the
+ * heuristic); UI renders it without truncation. `detectionMethod`
+ * is reserved for future structured signals — Step 0 found only
+ * heuristic detection available today.
+ */
+export const subtaskQuestionAskedSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  question: z.string(),
+  detectionMethod: z.enum(['heuristic-trailing-question-mark']),
+});
+export type SubtaskQuestionAsked = z.infer<typeof subtaskQuestionAskedSchema>;
+
+/** Phase 5 Step 4 payload for {@link EVENT_SUBTASK_ANSWER_RECEIVED}. */
+export const subtaskAnswerReceivedSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+});
+export type SubtaskAnswerReceived = z.infer<typeof subtaskAnswerReceivedSchema>;
 
 /**
  * Emitted right before the orchestrator calls `AgentImpl::replan` on the
@@ -686,6 +716,32 @@ export async function popStash(runId: RunId): Promise<void> {
  */
 export async function retryApply(runId: RunId): Promise<void> {
   await invoke('retry_apply', { runId });
+}
+
+/**
+ * Phase 5 Step 4: deliver the user's answer to a parked question.
+ * Subtask must be in `awaiting-input`; rejection (wrong state,
+ * already answered, subtask unknown) returns a string error the UI
+ * toasts. Empty answers permitted.
+ */
+export async function answerSubtaskQuestion(
+  runId: RunId,
+  subtaskId: SubtaskId,
+  answer: string,
+): Promise<void> {
+  await invoke('answer_subtask_question', { runId, subtaskId, answer });
+}
+
+/**
+ * Phase 5 Step 4: false-positive escape hatch. User flags the
+ * detected question as non-actionable → subtask finalizes as
+ * `Done` with current output preserved.
+ */
+export async function skipSubtaskQuestion(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<void> {
+  await invoke('skip_subtask_question', { runId, subtaskId });
 }
 
 // ---------- Phase 3 plan-edit commands ----------

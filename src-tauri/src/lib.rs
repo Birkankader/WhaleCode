@@ -100,6 +100,12 @@ pub fn run() {
             // retry just re-enters the merge attempt with whatever
             // resolutions the user landed externally.
             commands::retry_apply,
+            // Phase 5 Step 4: interactive agent Q&A. Universal
+            // restart-with-appended-prompt path (Step 0 diagnostic
+            // confirmed no adapter-specific structured signal). Skip
+            // is the false-positive escape hatch.
+            commands::answer_subtask_question,
+            commands::skip_subtask_question,
             commands::update_subtask,
             commands::add_subtask,
             commands::remove_subtask,

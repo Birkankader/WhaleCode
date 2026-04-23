@@ -118,6 +118,12 @@ struct ScriptedAgent {
     /// runs — so a `fail_attempts(vec![Timeout])` + `with_execute(Ok)`
     /// combination models "fail once, then succeed".
     fail_attempts: Arc<Mutex<std::collections::HashMap<String, Vec<AgentError>>>>,
+    /// Phase 5 Step 4: per-title FIFO queues of scripted successes.
+    /// `with_execute_sequence` pushes here; `execute()` pops the
+    /// front before checking `execute_scripts`. Empty → fallthrough
+    /// to the HashMap path. Enables Q&A tests with distinct per-call
+    /// summaries without fighting HashMap's insert-overwrite.
+    execute_sequence: Arc<Mutex<std::collections::HashMap<String, Vec<ExecuteScript>>>>,
     /// Captures every `extra_context` value the dispatcher passes, in
     /// call order. Tests assert on this to verify retry prompts carry
     /// the previous error. `None` entries are also recorded so tests
@@ -163,6 +169,7 @@ impl ScriptedAgent {
             concurrency: Arc::new(Mutex::new(None)),
             summarize_outcome: Arc::new(Mutex::new(None)),
             fail_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            execute_sequence: Arc::new(Mutex::new(std::collections::HashMap::new())),
             extra_context_log: Arc::new(Mutex::new(Vec::new())),
             replan_queue: Arc::new(Mutex::new(Vec::new())),
             replan_calls_log: Arc::new(Mutex::new(Vec::new())),
@@ -207,6 +214,20 @@ impl ScriptedAgent {
             .lock()
             .await
             .insert(title.to_string(), errors);
+        self
+    }
+
+    /// Phase 5 Step 4: queue a sequence of scripted *successes* for
+    /// `title`. Each `execute()` call pops the front; once empty,
+    /// falls through to the `execute_scripts` / `execute_default`
+    /// path. Used for Q&A tests that want distinct summaries on the
+    /// first (question) vs second (post-answer) execute — a simple
+    /// HashMap insert-overwrite would only surface the last one.
+    async fn with_execute_sequence(self, title: &str, scripts: Vec<ExecuteScript>) -> Self {
+        self.execute_sequence
+            .lock()
+            .await
+            .insert(title.to_string(), scripts);
         self
     }
 
@@ -288,18 +309,30 @@ impl AgentImpl for ScriptedAgent {
             return Err(err);
         }
 
-        let script = {
-            let table = self.execute_scripts.lock().await;
-            table.get(&subtask.title).cloned()
+        // Phase 5 Step 4: check the sequence queue first. Each call
+        // pops one front entry. Falls through to execute_scripts /
+        // execute_default once empty.
+        let sequenced = {
+            let mut seq = self.execute_sequence.lock().await;
+            seq.get_mut(&subtask.title)
+                .and_then(|q| (!q.is_empty()).then(|| q.remove(0)))
         };
-        let script = match script {
-            Some(s) => s,
-            None => self
-                .execute_default
-                .lock()
-                .await
-                .clone()
-                .unwrap_or_else(|| panic!("no execute script for {}", subtask.title)),
+        let script = if let Some(s) = sequenced {
+            s
+        } else {
+            let one_off = {
+                let table = self.execute_scripts.lock().await;
+                table.get(&subtask.title).cloned()
+            };
+            match one_off {
+                Some(s) => s,
+                None => self
+                    .execute_default
+                    .lock()
+                    .await
+                    .clone()
+                    .unwrap_or_else(|| panic!("no execute script for {}", subtask.title)),
+            }
         };
 
         let probe = self.concurrency.lock().await.clone();
@@ -1415,6 +1448,19 @@ async fn approve_all(h: &Harness, run_id: &RunId) {
     let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
     h.orch.approve_subtasks(run_id, ids).await.unwrap();
     h.await_status(run_id, RunStatus::Merging).await;
+}
+
+/// Phase 5 Step 4: like `approve_all` but only waits until the run
+/// reaches Running. Q&A tests park the run in `AwaitingInput` before
+/// it can reach Merging, so the extra `Merging` await in `approve_all`
+/// would block the whole test. Caller drives further transitions
+/// (answer / skip / cancel) and awaits the outcome itself.
+async fn approve_only(h: &Harness, run_id: &RunId) {
+    h.await_status(run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(run_id, ids).await.unwrap();
+    h.await_status(run_id, RunStatus::Running).await;
 }
 
 /// Send a Layer-3 resolution directly into the lifecycle's park select.
@@ -5589,4 +5635,331 @@ async fn initial_conflict_does_not_carry_retry_attempt_counter() {
     // Cleanup.
     h.orch.discard_run(&run_id).await.unwrap();
     h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+// -- Phase 5 Step 4: interactive agent Q&A ---------------------------
+//
+// Worker's `ExecutionResult.summary` ending in `?` triggers a pause
+// in `AwaitingInput`. User answers via `answer_subtask_question`
+// (re-execute with appended prompt) or skips via
+// `skip_subtask_question` (finalize with current output). Detection
+// is conservative-heuristic across all three adapters per Step 0.
+
+async fn wait_for_pending_answer(h: &Harness, subtask_id: &SubtaskId) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if h.orch.pending_answers.lock().await.contains_key(subtask_id) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("no pending answer for {subtask_id}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn worker_output_ending_in_question_mark_parks_in_awaiting_input() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "Should I use option A or B?".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("ask me".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+
+    let question = expect_event(&h, &run_id, |e| match e {
+        RunEvent::SubtaskQuestionAsked { question, .. } => Some(question.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(question, "Should I use option A or B?");
+
+    // Subtask should land in AwaitingInput.
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0 = &subs[0];
+    assert_eq!(t0.state, SubtaskState::AwaitingInput);
+
+    // Cleanup: skip to finalize.
+    h.orch
+        .skip_subtask_question(&run_id, &t0.id)
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::Merging).await;
+}
+
+#[tokio::test]
+async fn answer_subtask_question_re_executes_with_appended_prompt() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute_sequence(
+            "t0",
+            vec![
+                ExecuteScript::Ok {
+                    summary: "Which option should I take?".into(),
+                    delay: Duration::from_millis(0),
+                },
+                ExecuteScript::Ok {
+                    summary: "Done, went with your choice.".into(),
+                    delay: Duration::from_millis(0),
+                },
+            ],
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("ask + answer".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::SubtaskQuestionAsked { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    wait_for_pending_answer(&h, &t0_id).await;
+
+    h.orch
+        .answer_subtask_question(&run_id, &t0_id, "option A".into())
+        .await
+        .unwrap();
+
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::SubtaskAnswerReceived { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // Second execute fired — no more Retrying events in the
+    // transcript (answer should not consume retry budget).
+    let events = h.sink.snapshot().await;
+    let retrying_count = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                RunEvent::SubtaskStateChanged {
+                    state: SubtaskState::Retrying,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        retrying_count, 0,
+        "answer restart must not fire Retrying events"
+    );
+}
+
+#[tokio::test]
+async fn skip_subtask_question_finalizes_as_done_with_original_output() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "Is this the right approach?".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("skip".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::SubtaskQuestionAsked { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    wait_for_pending_answer(&h, &t0_id).await;
+
+    h.orch.skip_subtask_question(&run_id, &t0_id).await.unwrap();
+
+    // Run proceeds to merging (no second execute).
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // Pending-answer slot cleared.
+    assert!(!h.orch.pending_answers.lock().await.contains_key(&t0_id));
+}
+
+#[tokio::test]
+async fn cancel_run_during_awaiting_input_cleans_up_pending_answer() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "Should I proceed?".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cancel during Q&A".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::SubtaskQuestionAsked { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    wait_for_pending_answer(&h, &t0_id).await;
+
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+
+    // Pending-answer sender was dropped by the worker task's cancel
+    // branch; late IPCs return SubtaskNotFound.
+    let err = h
+        .orch
+        .answer_subtask_question(&run_id, &t0_id, "late".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::SubtaskNotFound(_)));
+}
+
+#[tokio::test]
+async fn answer_subtask_question_with_no_pending_returns_subtask_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .answer_subtask_question(
+            &"ghost-run".into(),
+            &"ghost-sub".into(),
+            "hi".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::SubtaskNotFound(_)));
+}
+
+#[tokio::test]
+async fn non_question_output_does_not_trigger_awaiting_input() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "Done. Files updated.".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("no question".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // No question-asked event in the transcript.
+    let events = h.sink.snapshot().await;
+    let q_count = events
+        .iter()
+        .filter(|e| matches!(e, RunEvent::SubtaskQuestionAsked { .. }))
+        .count();
+    assert_eq!(q_count, 0);
+}
+
+#[tokio::test]
+async fn two_workers_in_awaiting_input_handled_independently() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(2)))
+        .await
+        .with_execute_sequence(
+            "t0",
+            vec![
+                ExecuteScript::Ok {
+                    summary: "Go with A or B?".into(),
+                    delay: Duration::from_millis(0),
+                },
+                ExecuteScript::Ok {
+                    summary: "Picked A.".into(),
+                    delay: Duration::from_millis(0),
+                },
+            ],
+        )
+        .await
+        .with_execute_sequence(
+            "t1",
+            vec![
+                ExecuteScript::Ok {
+                    summary: "Choose C or D?".into(),
+                    delay: Duration::from_millis(0),
+                },
+                ExecuteScript::Ok {
+                    summary: "Picked D.".into(),
+                    delay: Duration::from_millis(0),
+                },
+            ],
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("two workers Q&A".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs.iter().find(|s| s.title == "t0").unwrap().id.clone();
+    let t1_id = subs.iter().find(|s| s.title == "t1").unwrap().id.clone();
+
+    wait_for_pending_answer(&h, &t0_id).await;
+    wait_for_pending_answer(&h, &t1_id).await;
+
+    h.orch
+        .answer_subtask_question(&run_id, &t0_id, "A".into())
+        .await
+        .unwrap();
+    h.orch
+        .answer_subtask_question(&run_id, &t1_id, "D".into())
+        .await
+        .unwrap();
+
+    h.await_status(&run_id, RunStatus::Merging).await;
 }

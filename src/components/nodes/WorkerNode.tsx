@@ -29,6 +29,7 @@ import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
 import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
+import { QuestionInput } from './QuestionInput';
 import { StopButton } from './StopButton';
 import { WorktreeActions } from './WorktreeActions';
 
@@ -82,6 +83,7 @@ const STATE_LABEL: Record<NodeState, string> = {
   failed: 'Failed',
   escalating: 'Escalating',
   human_escalation: 'Needs you',
+  awaiting_input: 'Has a question',
   done: 'Done',
   skipped: 'Skipped',
   cancelled: 'Cancelled',
@@ -148,6 +150,10 @@ const STOPPABLE_STATES: ReadonlySet<NodeState> = new Set([
   'running',
   'retrying',
   'waiting',
+  // Phase 5 Step 4: allow Stop during `awaiting_input` so the user
+  // can bail out without having to answer or skip if they want to
+  // cancel the subtask outright.
+  'awaiting_input',
 ]);
 
 /**
@@ -205,6 +211,9 @@ export function WorkerNode({ id, data }: NodeProps) {
   // projection gives us a stable boolean selector so unrelated
   // expands/collapses don't rerender this card.
   const isExpanded = useGraphStore((s) => s.workerExpanded.has(id));
+  // Phase 5 Step 4: subscribe to this subtask's pending question
+  // entry only. Identity-stable across sibling updates.
+  const pendingQuestion = useGraphStore((s) => s.pendingQuestions.get(id));
   const toggleExpanded = useGraphStore((s) => s.toggleWorkerExpanded);
   const canExpand = EXPANDABLE_STATES.has(d.state);
   // Phase 3.5 Item 6: per-subtask diff — available once the backend has
@@ -390,6 +399,16 @@ export function WorkerNode({ id, data }: NodeProps) {
       */}
       {isExpanded && canExpand && !showLogs ? (
         <ExpandedLogBlock lines={logs ?? []} animateCursor={false} />
+      ) : null}
+
+      {/* Phase 5 Step 4: QuestionInput renders on `awaiting_input`
+          state, sitting above the footer so it's the primary
+          interaction surface on the card. Backed by the store's
+          `pendingQuestions` map — ignored when the state is not
+          awaiting_input (defensive, since the map clears on every
+          transition out). */}
+      {d.state === 'awaiting_input' && pendingQuestion ? (
+        <QuestionInput subtaskId={id} question={pendingQuestion.question} />
       ) : null}
 
       <footer className="mt-auto flex items-center justify-end gap-1">

@@ -221,6 +221,18 @@ pub struct LifecycleDeps {
     /// discarding. Plumbed through from the orchestrator so tests can
     /// shrink it without changing the global constant.
     pub apply_timeout: std::time::Duration,
+    /// Phase 5 Step 4: pending-answer channel map shared with the
+    /// orchestrator. Worker tasks park on a oneshot inserted here
+    /// when a question triggers; `answer_subtask_question` /
+    /// `skip_subtask_question` take + fire the sender.
+    pub pending_answers: Arc<
+        Mutex<
+            HashMap<
+                SubtaskId,
+                oneshot::Sender<crate::orchestration::AnswerDecision>,
+            >,
+        >,
+    >,
 }
 
 /// Entry point for the per-run background task. Consumes the
@@ -396,6 +408,7 @@ pub async fn run_lifecycle(
                     event_sink: deps.event_sink.clone(),
                     registry: deps.registry.clone(),
                     safety_gate: deps.safety_gate.clone(),
+                    pending_answers: deps.pending_answers.clone(),
                 };
 
                 // Inner dispatch/escalation loop. A `Fixed` / `Skipped`

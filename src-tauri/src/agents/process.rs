@@ -32,6 +32,35 @@ pub const DEFAULT_PLAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Default deadline for a worker's `execute()` call.
 pub const DEFAULT_EXECUTE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Phase 5 Step 4: conservative question-detection heuristic shared
+/// across all three adapters (Step 0 diagnostic confirmed no
+/// adapter-specific signal exists). Returns `Some(question)` when the
+/// summary's last non-empty line ends in `?`; `None` otherwise.
+///
+/// Why conservative: the trailing `?` pattern is the strongest signal
+/// we have without structured output. A false positive is cheap — the
+/// user clicks "Skip (mark as done)" and the subtask finalizes with
+/// the output it already produced. A false negative (question missed)
+/// is also cheap — the worker's output lands in the log and the user
+/// sees the question there, same as pre-Phase-5 behavior.
+///
+/// Per Step 0, the detection lives at the dispatcher layer (not the
+/// adapter) because all three adapters funnel through the same
+/// `ExecutionResult.summary` shape — one check covers them all.
+pub fn detect_question(summary: &str) -> Option<String> {
+    let trimmed = summary.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Last non-empty line (skip trailing blank lines).
+    let last_line = trimmed.lines().rev().find(|l| !l.trim().is_empty())?;
+    let last_line = last_line.trim_end();
+    if !last_line.ends_with('?') {
+        return None;
+    }
+    Some(last_line.to_string())
+}
+
 /// A completed run's captured output. `stdout` and `stderr` are the
 /// concatenation of every line the child emitted, in arrival order,
 /// without the trailing newline. `exit_status` is the raw OS status
@@ -411,6 +440,43 @@ mod tests {
             AgentError::ProcessCrashed { exit_code, .. } => assert_eq!(exit_code, Some(1)),
             e => panic!("expected ProcessCrashed, got {e:?}"),
         }
+    }
+
+    // Phase 5 Step 4 — question detection heuristic.
+    #[test]
+    fn detect_question_triggers_on_trailing_question_mark() {
+        let s = "Did some work.\nShould I use option A or B?";
+        assert_eq!(
+            detect_question(s),
+            Some("Should I use option A or B?".into())
+        );
+    }
+
+    #[test]
+    fn detect_question_ignores_trailing_blank_lines() {
+        let s = "Looking at the task.\nWhich file should I edit?\n\n\n";
+        assert_eq!(
+            detect_question(s),
+            Some("Which file should I edit?".into())
+        );
+    }
+
+    #[test]
+    fn detect_question_none_when_last_line_is_statement() {
+        let s = "Asked myself: should I do X? Decided yes.\nDone.";
+        assert!(detect_question(s).is_none());
+    }
+
+    #[test]
+    fn detect_question_none_on_empty_string() {
+        assert!(detect_question("").is_none());
+        assert!(detect_question("   \n\n").is_none());
+    }
+
+    #[test]
+    fn detect_question_none_when_no_question_mark() {
+        let s = "Did the work. Files updated.";
+        assert!(detect_question(s).is_none());
     }
 
     #[test]

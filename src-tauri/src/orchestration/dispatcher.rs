@@ -50,16 +50,32 @@ use tokio_util::sync::CancellationToken;
 /// reach its terminal status.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 
+use crate::agents::process::detect_question;
 use crate::agents::{AgentError, AgentImpl, ExecutionResult};
-use crate::ipc::events::ErrorCategoryWire;
+use crate::ipc::events::{ErrorCategoryWire, QuestionDetectionMethod};
 use crate::ipc::{AgentKind, RunId, SubtaskId, SubtaskState};
 use crate::orchestration::events::{EventSink, RunEvent};
 use crate::orchestration::notes::{SharedNotes, CONSOLIDATE_THRESHOLD_BYTES};
 use crate::orchestration::registry::AgentRegistry;
 use crate::orchestration::run::{Run, SubtaskRuntime};
+use crate::orchestration::AnswerDecision;
 use crate::storage::models::Subtask;
 use crate::storage::Storage;
 use crate::worktree::WorktreeManager;
+
+/// Phase 5 Step 4: upper bound on Q&A rounds per worker execution.
+/// A pathological adapter could otherwise keep ending every reply in
+/// `?` and loop forever. Six lets the user legitimately clarify a
+/// handful of times; beyond that we treat it as a misdetection and
+/// finalize with the most recent output as `Done`.
+const MAX_QA_ROUNDS: u32 = 6;
+
+/// Phase 5 Step 4: how long a question can sit in `AwaitingInput`
+/// before the orchestrator treats it as a false positive and
+/// finalizes the subtask as `Done`. User can explicitly answer or
+/// skip at any point before the deadline; after, the decision is
+/// synthesized on their behalf.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Terminal outcome of a dispatch attempt.
 #[derive(Debug)]
@@ -104,6 +120,21 @@ pub struct DispatcherDeps {
     /// (file writes / deletes / shell invocations). Today it always
     /// returns `true`; the seam is the point.
     pub safety_gate: Arc<crate::safety::SafetyGate>,
+    /// Phase 5 Step 4: shared map of pending answer channels. The
+    /// worker task inserts + awaits on a oneshot when a question
+    /// triggers; `Orchestrator::answer_subtask_question` /
+    /// `skip_subtask_question` pop the sender and fire it. Keyed by
+    /// subtask id (ulids are globally unique).
+    pub pending_answers: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<
+                SubtaskId,
+                tokio::sync::oneshot::Sender<
+                    crate::orchestration::AnswerDecision,
+                >,
+            >,
+        >,
+    >,
 }
 
 #[derive(Debug)]
@@ -315,6 +346,206 @@ async fn execute_subtask_with_retry(
             // fast to the rest of the run). This keeps the event
             // sequence Retrying → Failed with exactly one `Failed` emit.
             Err(EscalateToMaster::exhausted(e))
+        }
+    }
+}
+
+/// Phase 5 Step 4: context bundle the Q&A loop needs. Holds
+/// references (not clones) — the loop runs inside the already-owned
+/// worker task, so borrowing is fine.
+#[allow(clippy::too_many_arguments)]
+struct RunCtx<'a> {
+    storage: &'a Storage,
+    event_sink: &'a dyn EventSink,
+    pending_answers: &'a tokio::sync::Mutex<
+        HashMap<SubtaskId, tokio::sync::oneshot::Sender<AnswerDecision>>,
+    >,
+    run_id: &'a RunId,
+    subtask_id: &'a SubtaskId,
+    subtask_row: &'a Subtask,
+    worker: &'a dyn AgentImpl,
+    worktree_path: &'a std::path::Path,
+    notes_snapshot: &'a str,
+    log_tx: &'a mpsc::Sender<String>,
+    cancel: &'a CancellationToken,
+}
+
+/// Phase 5 Step 4: detection + answer loop. Wraps the first execute
+/// attempt's result. When the summary ends in `?` (heuristic), parks
+/// the subtask in `AwaitingInput` and awaits the user's decision via
+/// `ctx.pending_answers`. An answer re-executes the adapter with the
+/// answer appended to `extra_context`; a skip / timeout / cancel
+/// returns the current result so the caller finalizes as Done.
+///
+/// Retry ladder is deliberately bypassed for Q&A restarts — this
+/// isn't a failure, it's a user-driven continuation. One direct
+/// `agent.execute` call per answer keeps the semantics clean.
+async fn resolve_qa_loop<'a>(
+    initial: Result<ExecutionResult, EscalateToMaster>,
+    ctx: RunCtx<'a>,
+) -> Result<ExecutionResult, EscalateToMaster> {
+    let mut current = initial?;
+    let mut round: u32 = 0;
+    loop {
+        let Some(question) = detect_question(&current.summary) else {
+            return Ok(current);
+        };
+        if round >= MAX_QA_ROUNDS {
+            eprintln!(
+                "[dispatcher] Q&A rounds exceeded for {} — finalizing as Done",
+                ctx.subtask_id
+            );
+            return Ok(current);
+        }
+        round += 1;
+
+        // Transition to AwaitingInput and emit events. Persistence is
+        // best-effort (eprintln on failure, consistent with sibling
+        // updates in this module).
+        if let Err(e) = ctx
+            .storage
+            .update_subtask_state(ctx.subtask_id, SubtaskState::AwaitingInput, None)
+            .await
+        {
+            eprintln!(
+                "[dispatcher] update_subtask_state(awaiting-input, {}) failed: {e}",
+                ctx.subtask_id
+            );
+        }
+        ctx.event_sink
+            .emit(RunEvent::SubtaskStateChanged {
+                run_id: ctx.run_id.clone(),
+                subtask_id: ctx.subtask_id.clone(),
+                state: SubtaskState::AwaitingInput,
+                error_category: None,
+            })
+            .await;
+        ctx.event_sink
+            .emit(RunEvent::SubtaskQuestionAsked {
+                run_id: ctx.run_id.clone(),
+                subtask_id: ctx.subtask_id.clone(),
+                question: question.clone(),
+                detection_method:
+                    QuestionDetectionMethod::HeuristicTrailingQuestionMark,
+            })
+            .await;
+
+        // Install the pending-answer oneshot. `Orchestrator::
+        // answer_subtask_question` / `skip_subtask_question` pop +
+        // fire; we hold the receiver until then.
+        let (tx, rx) = tokio::sync::oneshot::channel::<AnswerDecision>();
+        ctx.pending_answers
+            .lock()
+            .await
+            .insert(ctx.subtask_id.clone(), tx);
+
+        let decision = tokio::select! {
+            res = rx => res.unwrap_or(AnswerDecision::Skip),
+            _ = ctx.cancel.cancelled() => {
+                // Run- or per-worker cancel. Clean up the pending
+                // entry so a late IPC doesn't find a stale sender,
+                // then escalate through the normal cancel path.
+                ctx.pending_answers.lock().await.remove(ctx.subtask_id);
+                return Err(EscalateToMaster::UserCancelled);
+            }
+            _ = tokio::time::sleep(ANSWER_TIMEOUT) => {
+                ctx.pending_answers.lock().await.remove(ctx.subtask_id);
+                AnswerDecision::Timeout
+            }
+        };
+
+        // On non-cancel decisions the oneshot has already fired and
+        // the map entry is gone. The orchestrator methods remove on
+        // send; the timeout branch removes above. Idempotent cleanup
+        // here handles the rare "sender dropped without send" path
+        // (shouldn't happen but defends against leaks).
+        ctx.pending_answers.lock().await.remove(ctx.subtask_id);
+
+        match decision {
+            AnswerDecision::Answer(text) => {
+                // Transition back to Running + emit event so the UI
+                // flips the card out of `awaiting_input`.
+                if let Err(e) = ctx
+                    .storage
+                    .update_subtask_state(ctx.subtask_id, SubtaskState::Running, None)
+                    .await
+                {
+                    eprintln!(
+                        "[dispatcher] update_subtask_state(running-after-answer, {}) failed: {e}",
+                        ctx.subtask_id
+                    );
+                }
+                ctx.event_sink
+                    .emit(RunEvent::SubtaskStateChanged {
+                        run_id: ctx.run_id.clone(),
+                        subtask_id: ctx.subtask_id.clone(),
+                        state: SubtaskState::Running,
+                        error_category: None,
+                    })
+                    .await;
+                ctx.event_sink
+                    .emit(RunEvent::SubtaskAnswerReceived {
+                        run_id: ctx.run_id.clone(),
+                        subtask_id: ctx.subtask_id.clone(),
+                    })
+                    .await;
+
+                let extra = format!(
+                    "# User's answer to your question\n\n{}",
+                    text.trim()
+                );
+                let next = ctx
+                    .worker
+                    .execute(
+                        ctx.subtask_row,
+                        ctx.worktree_path,
+                        ctx.notes_snapshot,
+                        Some(&extra),
+                        ctx.log_tx.clone(),
+                        ctx.cancel.clone(),
+                    )
+                    .await;
+                match next {
+                    Ok(r) => {
+                        current = r;
+                        continue;
+                    }
+                    Err(AgentError::Cancelled) => {
+                        return Err(EscalateToMaster::UserCancelled)
+                    }
+                    Err(e @ AgentError::SpawnFailed { .. }) => {
+                        return Err(EscalateToMaster::Deterministic(e))
+                    }
+                    Err(e) => return Err(EscalateToMaster::Exhausted(e)),
+                }
+            }
+            AnswerDecision::Skip | AnswerDecision::Timeout => {
+                // Finalize with the most recent execute result —
+                // the question was a false positive (or walkaway).
+                // Transition back to Running briefly so downstream
+                // commit logic sees a consistent state; the outer
+                // WorkerOutcome::Done emit lands the subtask in
+                // Done regardless.
+                if let Err(e) = ctx
+                    .storage
+                    .update_subtask_state(ctx.subtask_id, SubtaskState::Running, None)
+                    .await
+                {
+                    eprintln!(
+                        "[dispatcher] update_subtask_state(running-after-skip, {}) failed: {e}",
+                        ctx.subtask_id
+                    );
+                }
+                ctx.event_sink
+                    .emit(RunEvent::SubtaskStateChanged {
+                        run_id: ctx.run_id.clone(),
+                        subtask_id: ctx.subtask_id.clone(),
+                        state: SubtaskState::Running,
+                        error_category: None,
+                    })
+                    .await;
+                return Ok(current);
+            }
         }
     }
 }
@@ -760,6 +991,7 @@ async fn dispatch_one(
     let storage = deps.storage.clone();
     let event_sink = deps.event_sink.clone();
     let run_for_cancel_check = run.clone();
+    let pending_answers = deps.pending_answers.clone();
     join_set.spawn(async move {
         // Phase 3 Step 3b: route through the Layer-1 retry ladder
         // instead of calling `execute` directly. `execute_subtask_with_retry`
@@ -768,7 +1000,7 @@ async fn dispatch_one(
         // same `ExecutionResult` the direct call used to. On escalation
         // it maps onto `WorkerOutcome::Failed` so Phase 2's fail-fast
         // dispatcher behaviour is preserved until Step 4 adds Layer 2.
-        let execute_result = execute_subtask_with_retry(
+        let first_attempt = execute_subtask_with_retry(
             storage.as_ref(),
             event_sink.as_ref(),
             &run_id_owned,
@@ -776,8 +1008,34 @@ async fn dispatch_one(
             worker.as_ref(),
             &worktree_path,
             &notes_snapshot,
-            log_tx,
-            sub_cancel,
+            log_tx.clone(),
+            sub_cancel.clone(),
+        )
+        .await;
+
+        // Phase 5 Step 4: Q&A loop. If the adapter's output ends in
+        // `?` (heuristic), park the subtask in `AwaitingInput` and
+        // wait for the user's decision. Answer → re-execute with
+        // augmented prompt (skipping the retry ladder, since this
+        // isn't a failure). Skip / Timeout → finalize with the
+        // current output. On each round, the detection re-runs.
+        // Bounded to MAX_QA_ROUNDS so a pathological adapter can't
+        // loop forever on `?`-ended output.
+        let execute_result = resolve_qa_loop(
+            first_attempt,
+            RunCtx {
+                storage: storage.as_ref(),
+                event_sink: event_sink.as_ref(),
+                pending_answers: &pending_answers,
+                run_id: &run_id_owned,
+                subtask_id: &sub_id_owned,
+                subtask_row: &subtask_row,
+                worker: worker.as_ref(),
+                worktree_path: &worktree_path,
+                notes_snapshot: &notes_snapshot,
+                log_tx: &log_tx,
+                cancel: &sub_cancel,
+            },
         )
         .await;
 

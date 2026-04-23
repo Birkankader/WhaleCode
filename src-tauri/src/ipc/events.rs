@@ -61,6 +61,13 @@ pub const EVENT_STASH_POP_FAILED: &str = "run:stash_pop_failed";
 /// so the frontend can toggle banner copy to "Still conflicted
 /// (attempt N)" without breaking the initial-conflict contract.
 pub const EVENT_MERGE_RETRY_FAILED: &str = "run:merge_retry_failed";
+/// Phase 5 Step 4: worker emitted a question and is paused pending
+/// the user's answer. Payload carries the detected question text +
+/// the detection method (reserved for future structured signals).
+pub const EVENT_SUBTASK_QUESTION_ASKED: &str = "run:subtask_question_asked";
+/// Phase 5 Step 4: user answered a pending question; the worker is
+/// about to re-execute with the answer appended to its prompt.
+pub const EVENT_SUBTASK_ANSWER_RECEIVED: &str = "run:subtask_answer_received";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -338,6 +345,39 @@ pub struct MergeRetryFailed {
     pub retry_attempt: u32,
 }
 
+/// Phase 5 Step 4 — how the question was detected. Reserved for
+/// future structured signals; Step 0 diagnostic found only
+/// heuristic detection available today (trailing `?` on last
+/// non-empty stdout line).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuestionDetectionMethod {
+    HeuristicTrailingQuestionMark,
+}
+
+/// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_QUESTION_ASKED`].
+/// `question` is the detected text (the exact line the heuristic
+/// triggered on); UI renders it verbatim without truncation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskQuestionAsked {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+    pub question: String,
+    pub detection_method: QuestionDetectionMethod,
+}
+
+/// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_ANSWER_RECEIVED`].
+/// Fires immediately before the subtask transitions back to
+/// `Running`. No answer text on the wire — the reply is ephemeral
+/// and never persisted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskAnswerReceived {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+}
+
 /// Layer-2 replan just kicked off. The dispatcher escalated because a
 /// subtask exhausted its Layer-1 retry budget; the master is now being
 /// asked for a replacement plan. The frontend uses this to set the
@@ -457,6 +497,20 @@ pub fn emit_stash_pop_failed(app: &AppHandle, payload: &StashPopFailed) -> tauri
 
 pub fn emit_merge_retry_failed(app: &AppHandle, payload: &MergeRetryFailed) -> tauri::Result<()> {
     app.emit(EVENT_MERGE_RETRY_FAILED, payload)
+}
+
+pub fn emit_subtask_question_asked(
+    app: &AppHandle,
+    payload: &SubtaskQuestionAsked,
+) -> tauri::Result<()> {
+    app.emit(EVENT_SUBTASK_QUESTION_ASKED, payload)
+}
+
+pub fn emit_subtask_answer_received(
+    app: &AppHandle,
+    payload: &SubtaskAnswerReceived,
+) -> tauri::Result<()> {
+    app.emit(EVENT_SUBTASK_ANSWER_RECEIVED, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

@@ -161,6 +161,27 @@ pub struct Orchestrator {
     /// on successful pop or on Missing; persists across conflict so
     /// the user can resolve manually.
     pub(crate) stashes: Arc<Mutex<HashMap<RunId, StashEntry>>>,
+    /// Phase 5 Step 4: active question-answer channels keyed by
+    /// subtask id. The worker task parks on the oneshot receiver
+    /// after emitting `SubtaskQuestionAsked`; the orchestrator's
+    /// `answer_subtask_question` / `skip_subtask_question` methods
+    /// take the sender and fire it. Map is a `HashMap<SubtaskId,
+    /// oneshot::Sender<AnswerDecision>>` — subtask ids are globally
+    /// unique (ulid) so no run-id scoping needed.
+    pub(crate) pending_answers:
+        Arc<Mutex<HashMap<SubtaskId, oneshot::Sender<AnswerDecision>>>>,
+}
+
+/// Phase 5 Step 4: what the user (or a timeout) decides about a
+/// parked question. `Answer` re-executes the worker with the text
+/// appended to the prompt. `Skip` finalizes the subtask as `Done`
+/// with whatever output triggered the question. `Timeout` mirrors
+/// skip — the question is old, we proceed with current output.
+#[derive(Debug, Clone)]
+pub enum AnswerDecision {
+    Answer(String),
+    Skip,
+    Timeout,
 }
 
 /// Phase 5 Step 2: one entry in the Orchestrator's stash registry.
@@ -192,6 +213,7 @@ impl Orchestrator {
             max_concurrent_workers: MAX_CONCURRENT_WORKERS,
             apply_timeout: APPLY_TIMEOUT,
             stashes: Arc::new(Mutex::new(HashMap::new())),
+            pending_answers: Arc::new(Mutex::new(HashMap::new())),
             recovery_report: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -386,6 +408,7 @@ impl Orchestrator {
             apply_senders: self.apply_senders.clone(),
             resolution_senders: self.resolution_senders.clone(),
             apply_timeout: self.apply_timeout,
+            pending_answers: self.pending_answers.clone(),
         };
         let runs_map = self.runs.clone();
         let approval_senders = self.approval_senders.clone();
@@ -472,6 +495,57 @@ impl Orchestrator {
                 state: RunStatus::Merging,
                 expected: "merging",
             })?;
+        Ok(())
+    }
+
+    /// Phase 5 Step 4: deliver the user's answer to a parked
+    /// question. Takes the pending-answer sender for this subtask
+    /// and fires it with `Answer(text)`. The dispatcher's worker
+    /// task is awaiting on the receiver — on fire, it re-executes
+    /// the adapter with the answer appended to the prompt.
+    ///
+    /// Rejects with `SubtaskNotFound` when no pending answer slot
+    /// exists for the given subtask id (subtask isn't in
+    /// `AwaitingInput`, or was already answered / skipped / cancelled).
+    /// Empty answers are permitted — the adapter sees an empty
+    /// "User's answer:" block and may decide how to proceed.
+    pub async fn answer_subtask_question(
+        &self,
+        _run_id: &RunId,
+        subtask_id: &SubtaskId,
+        answer: String,
+    ) -> Result<(), OrchestratorError> {
+        let sender = self
+            .pending_answers
+            .lock()
+            .await
+            .remove(subtask_id)
+            .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+        // `send` only errors if the receiver was dropped — possible
+        // if the run was cancelled between the UI reading the pending
+        // state and the IPC landing. Treat as no-op: the worker task
+        // already took its cancel path.
+        let _ = sender.send(AnswerDecision::Answer(answer));
+        Ok(())
+    }
+
+    /// Phase 5 Step 4: false-positive escape hatch. User flags the
+    /// detected "question" as non-actionable output → finalize the
+    /// subtask as `Done` with the current output preserved. Same
+    /// sender / receiver shape as `answer_subtask_question`, different
+    /// decision variant.
+    pub async fn skip_subtask_question(
+        &self,
+        _run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let sender = self
+            .pending_answers
+            .lock()
+            .await
+            .remove(subtask_id)
+            .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+        let _ = sender.send(AnswerDecision::Skip);
         Ok(())
     }
 

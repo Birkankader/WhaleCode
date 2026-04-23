@@ -1359,6 +1359,63 @@ describe('WorkerNode — Stop button (Phase 5 Step 1)', () => {
   });
 });
 
+describe('WorkerNode — AwaitingInput + QuestionInput (Phase 5 Step 4)', () => {
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'awaiting_input',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  it('renders QuestionInput when state is awaiting_input and a pending question is present', () => {
+    useGraphStore.setState({
+      pendingQuestions: new Map([
+        ['sub-a', { question: 'Should I use A or B?' }],
+      ]),
+    });
+    renderNode('sub-a', baseData());
+    expect(screen.getByTestId('question-input-sub-a')).toBeInTheDocument();
+    expect(screen.getByTestId('question-text-sub-a').textContent).toBe(
+      'Should I use A or B?',
+    );
+  });
+
+  it('hides QuestionInput when the state is not awaiting_input even if a question is mapped', () => {
+    useGraphStore.setState({
+      pendingQuestions: new Map([[
+        'sub-a',
+        { question: 'old question?' },
+      ]]),
+    });
+    renderNode('sub-a', baseData({ state: 'running' }));
+    expect(screen.queryByTestId('question-input-sub-a')).toBeNull();
+  });
+
+  it('hides QuestionInput when awaiting_input but no question mapped (defensive)', () => {
+    useGraphStore.setState({ pendingQuestions: new Map() });
+    renderNode('sub-a', baseData());
+    expect(screen.queryByTestId('question-input-sub-a')).toBeNull();
+  });
+
+  it('renders StopButton on awaiting_input (user can cancel outright)', () => {
+    useGraphStore.setState({
+      pendingQuestions: new Map([['sub-a', { question: '?' }]]),
+    });
+    renderNode('sub-a', baseData());
+    expect(
+      screen.getByRole('button', { name: /stop this worker/i }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('WorkerNode — inline error-category chip (Phase 4 Step 5)', () => {
   function baseData(
     overrides: Partial<WorkerNodeData> = {},

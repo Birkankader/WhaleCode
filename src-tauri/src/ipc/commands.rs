@@ -127,6 +127,36 @@ pub async fn stash_and_retry_apply(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 5 Step 4: deliver the user's answer to a parked question.
+/// Subtask must be in `AwaitingInput`; rejection (wrong state /
+/// already answered) returns a string error the UI toasts. Empty
+/// answers are permitted (the adapter decides whether to use them).
+#[tauri::command(rename_all = "camelCase")]
+pub async fn answer_subtask_question(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+    answer: String,
+) -> Result<(), String> {
+    orch.answer_subtask_question(&run_id, &subtask_id, answer)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase 5 Step 4: user flags the detected question as a false
+/// positive. Subtask finalizes as `Done` with the current output
+/// preserved.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn skip_subtask_question(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.skip_subtask_question(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Phase 5 Step 3: retry a merge that just conflicted. Semantic
 /// alias for `apply_run` — the lifecycle re-installed the apply
 /// oneshot on the conflict branch, so this re-enters the merge

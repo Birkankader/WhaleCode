@@ -149,6 +149,15 @@ pub enum SubtaskState {
     /// `manual_cancel` flag set on the runtime row. Dependents cascade
     /// to `Skipped` via the same path `Failed` takes.
     Cancelled,
+    /// Phase 5 Step 4: worker emitted a question (heuristic: last
+    /// non-empty stdout chunk ends in `?`) and is paused pending the
+    /// user's answer. Transient, non-terminal — answer restarts the
+    /// worker with the user's reply appended to the prompt; skip /
+    /// timeout finalize with the current output as Done. Dispatch is
+    /// gated while in this state (no new work scheduled), but the
+    /// subtask row is still considered "in progress" for the run's
+    /// "all terminal" exit predicate.
+    AwaitingInput,
 }
 
 #[allow(dead_code)]

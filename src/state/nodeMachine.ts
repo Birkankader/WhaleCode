@@ -11,6 +11,7 @@ export type NodeState =
   | 'failed'
   | 'escalating'
   | 'human_escalation'
+  | 'awaiting_input'
   | 'done'
   | 'skipped'
   | 'cancelled';
@@ -32,6 +33,8 @@ export type NodeEventType =
   | 'REPLAN_DONE'
   | 'HUMAN_NEEDED'
   | 'MANUAL_FIX'
+  | 'ASK_QUESTION'
+  | 'ANSWER_RECEIVED'
   | 'CANCEL';
 
 export type NodeEvent = { type: NodeEventType };
@@ -118,6 +121,10 @@ export const nodeMachine = setup({
         // START_RETRY; we don't guess it from here.
         FAIL: 'failed',
         START_RETRY: 'retrying',
+        // Phase 5 Step 4: backend's question-detection heuristic
+        // fired on the worker's output. Transition pauses the card
+        // in `awaiting_input` until the user answers or skips.
+        ASK_QUESTION: 'awaiting_input',
         CANCEL: 'cancelled',
       },
     },
@@ -145,6 +152,25 @@ export const nodeMachine = setup({
       on: {
         MANUAL_FIX: 'done',
         SKIP: 'skipped',
+        CANCEL: 'cancelled',
+      },
+    },
+    // Phase 5 Step 4: worker paused pending user answer. Distinct
+    // from `failed` (orchestrator couldn't proceed) and
+    // `human_escalation` (retry ladder exhausted) — this is a
+    // normal, expected collaboration point where the agent asked
+    // something and we wait for the reply.
+    awaiting_input: {
+      on: {
+        // Backend confirms answer delivered → re-execute with
+        // augmented prompt → lands back in `running`.
+        ANSWER_RECEIVED: 'running',
+        // User clicked "Skip (mark as done)" → finalize with
+        // current output. Done terminal.
+        SKIP: 'done',
+        // Backend-synthesized timeout (10 min) OR run-wide cancel
+        // reach here via the same path the other non-final states
+        // take.
         CANCEL: 'cancelled',
       },
     },

@@ -47,6 +47,8 @@ import {
   EVENT_STASH_CREATED,
   EVENT_STASH_POP_FAILED,
   EVENT_STASH_POPPED,
+  EVENT_SUBTASK_ANSWER_RECEIVED,
+  EVENT_SUBTASK_QUESTION_ASKED,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -113,6 +115,8 @@ beforeEach(() => {
   invokeHandlers.set('stash_and_retry_apply', async () => undefined);
   invokeHandlers.set('pop_stash', async () => undefined);
   invokeHandlers.set('retry_apply', async () => undefined);
+  invokeHandlers.set('answer_subtask_question', async () => undefined);
+  invokeHandlers.set('skip_subtask_question', async () => undefined);
 });
 
 afterEach(() => {
@@ -2336,6 +2340,108 @@ describe('graphStore — Phase 5 Step 3 merge conflict resolver', () => {
       calls += 1;
     });
     await state().retryApply();
+    expect(calls).toBe(0);
+  });
+});
+
+describe('graphStore — Phase 5 Step 4 interactive Q&A', () => {
+  it('SubtaskQuestionAsked populates pendingQuestions', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASK_QUESTION_ASKED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      question: 'Should I use A or B?',
+      detectionMethod: 'heuristic-trailing-question-mark',
+    });
+    expect(state().pendingQuestions.get('one')?.question).toBe(
+      'Should I use A or B?',
+    );
+  });
+
+  it('SubtaskAnswerReceived clears questionAnswerInFlight', async () => {
+    await state().submitTask('x');
+    useGraphStore.setState({
+      questionAnswerInFlight: new Set(['one']),
+    });
+    emit(EVENT_SUBTASK_ANSWER_RECEIVED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+    });
+    expect(state().questionAnswerInFlight.has('one')).toBe(false);
+  });
+
+  it('SubtaskStateChanged(running) clears pendingQuestions when leaving awaiting-input', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'one',
+          title: 'One',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'running',
+    });
+    emit(EVENT_SUBTASK_QUESTION_ASKED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      question: '?',
+      detectionMethod: 'heuristic-trailing-question-mark',
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'awaiting-input',
+    });
+    expect(state().pendingQuestions.has('one')).toBe(true);
+
+    // Answer arrives → backend flips state back to running.
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'running',
+    });
+    expect(state().pendingQuestions.has('one')).toBe(false);
+  });
+
+  it('answerSubtaskQuestion sets in-flight and rejection rolls back', async () => {
+    await state().submitTask('x');
+    invokeHandlers.set('answer_subtask_question', async () => {
+      throw 'wrong state';
+    });
+    await expect(state().answerSubtaskQuestion('one', 'A')).rejects.toBeDefined();
+    expect(state().questionAnswerInFlight.has('one')).toBe(false);
+    expect(state().currentError).toMatch(/answer failed/i);
+  });
+
+  it('skipSubtaskQuestion sets in-flight and rejection rolls back', async () => {
+    await state().submitTask('x');
+    invokeHandlers.set('skip_subtask_question', async () => {
+      throw 'wrong state';
+    });
+    await expect(state().skipSubtaskQuestion('one')).rejects.toBeDefined();
+    expect(state().questionAnswerInFlight.has('one')).toBe(false);
+    expect(state().currentError).toMatch(/skip question failed/i);
+  });
+
+  it('no-op on pending_* runId', async () => {
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let calls = 0;
+    invokeHandlers.set('answer_subtask_question', async () => {
+      calls += 1;
+    });
+    invokeHandlers.set('skip_subtask_question', async () => {
+      calls += 1;
+    });
+    await state().answerSubtaskQuestion('one', 'A');
+    await state().skipSubtaskQuestion('one');
     expect(calls).toBe(0);
   });
 });

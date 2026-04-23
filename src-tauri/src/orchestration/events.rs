@@ -172,6 +172,29 @@ pub enum RunEvent {
         kind: crate::ipc::events::StashPopFailureKind,
         error: String,
     },
+    /// Phase 5 Step 4: worker emitted a question (heuristic: last
+    /// non-empty stdout line ends in `?`) and is paused. The UI
+    /// renders a `QuestionInput` on the worker card; the user's
+    /// reply lands via `answer_subtask_question` / skip via
+    /// `skip_subtask_question`. `question` is the detected text
+    /// (same line the heuristic triggered on), `detection_method`
+    /// is reserved for future structured signals (Step 0 found
+    /// only heuristic detection available today).
+    SubtaskQuestionAsked {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        question: String,
+        detection_method: crate::ipc::events::QuestionDetectionMethod,
+    },
+    /// Phase 5 Step 4: user answered a pending question; the worker
+    /// is about to re-execute with the answer appended to its
+    /// prompt. Emitted immediately before the subtask transitions
+    /// back to `Running`. No payload beyond the ids — the answer
+    /// text itself is ephemeral and never persisted.
+    SubtaskAnswerReceived {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+    },
     /// Phase 5 Step 3: the user clicked "Retry apply" after resolving
     /// a merge conflict, but the re-attempted merge hit a conflict
     /// again. Same file-set payload as `MergeConflict`, plus a
@@ -212,7 +235,9 @@ impl RunEvent {
             | RunEvent::StashCreated { run_id, .. }
             | RunEvent::StashPopped { run_id, .. }
             | RunEvent::StashPopFailed { run_id, .. }
-            | RunEvent::MergeRetryFailed { run_id, .. } => run_id,
+            | RunEvent::MergeRetryFailed { run_id, .. }
+            | RunEvent::SubtaskQuestionAsked { run_id, .. }
+            | RunEvent::SubtaskAnswerReceived { run_id, .. } => run_id,
         }
     }
 }
@@ -397,6 +422,26 @@ impl EventSink for TauriEventSink {
                     retry_attempt,
                 },
             ),
+            RunEvent::SubtaskQuestionAsked {
+                run_id,
+                subtask_id,
+                question,
+                detection_method,
+            } => wire::emit_subtask_question_asked(
+                &self.app,
+                &wire::SubtaskQuestionAsked {
+                    run_id,
+                    subtask_id,
+                    question,
+                    detection_method,
+                },
+            ),
+            RunEvent::SubtaskAnswerReceived { run_id, subtask_id } => {
+                wire::emit_subtask_answer_received(
+                    &self.app,
+                    &wire::SubtaskAnswerReceived { run_id, subtask_id },
+                )
+            }
         };
         if let Err(e) = result {
             eprintln!("[orchestrator] event emit failed: {e}");
