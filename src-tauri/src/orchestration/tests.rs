@@ -5020,3 +5020,353 @@ async fn cancel_subtask_on_unknown_subtask_returns_not_found() {
     h.orch.reject_run(&run_id).await.unwrap();
     h.await_status(&run_id, RunStatus::Rejected).await;
 }
+
+// -- Phase 5 Step 2: base-branch dirty helper ------------------------
+//
+// `stash_and_retry_apply` composes `git stash push -u` + the existing
+// apply oneshot. `pop_stash` is explicit (no auto-pop after Apply
+// because the stash may conflict with the just-applied diffs and the
+// user should see the state before deciding).
+
+use crate::ipc::events::StashPopFailureKind;
+
+#[tokio::test]
+async fn stash_and_retry_apply_happy_path_lands_run_in_done() {
+    // Dirty the base branch, apply → BaseBranchDirty, stash & retry →
+    // Done. The stash ref is recorded on the run and the StashCreated
+    // event carries it.
+    let agent = agent_writing(&[("t0", vec![("feature.txt", "new\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    tokio::fs::write(h.repo_path.join("seed.txt"), "user wip\n")
+        .await
+        .unwrap();
+
+    let run_id = h
+        .orch
+        .submit_task("dirty base".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::BaseBranchDirty { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.orch.stash_and_retry_apply(&run_id).await.unwrap();
+
+    let stash_ref = expect_event(&h, &run_id, |e| match e {
+        RunEvent::StashCreated { stash_ref, .. } => Some(stash_ref.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        !stash_ref.is_empty(),
+        "stash_ref must be a non-empty SHA, got {stash_ref:?}"
+    );
+
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // Feature landed; original wip preserved in the stash.
+    assert_eq!(
+        tokio::fs::read_to_string(h.repo_path.join("feature.txt"))
+            .await
+            .unwrap(),
+        "new\n",
+    );
+    // The dirty file returned to HEAD at merge time (base-branch
+    // working tree clean now).
+    let seed = tokio::fs::read_to_string(h.repo_path.join("seed.txt"))
+        .await
+        .unwrap();
+    assert_eq!(seed, "x", "stash should have taken the dirty content away");
+}
+
+#[tokio::test]
+async fn pop_stash_happy_path_restores_dirty_content() {
+    let agent = agent_writing(&[("t0", vec![("feature.txt", "new\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    tokio::fs::write(h.repo_path.join("seed.txt"), "user wip\n")
+        .await
+        .unwrap();
+
+    let run_id = h
+        .orch
+        .submit_task("dirty base".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::BaseBranchDirty { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.stash_and_retry_apply(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // Pop the stash. Post-Done status — pop_stash doesn't validate
+    // status (the run's in-memory state still carries the ref).
+    h.orch.pop_stash(&run_id).await.unwrap();
+    let _ = expect_event(&h, &run_id, |e| match e {
+        RunEvent::StashPopped { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Dirty content restored.
+    let seed = tokio::fs::read_to_string(h.repo_path.join("seed.txt"))
+        .await
+        .unwrap();
+    assert_eq!(seed, "user wip\n");
+
+    // Stash ref cleared from the registry.
+    assert!(
+        !h.orch.stashes.lock().await.contains_key(&run_id),
+        "pop should have cleared the stash registry entry"
+    );
+}
+
+#[tokio::test]
+async fn pop_stash_before_stash_returns_invalid_edit() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("nothing to pop".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    let err = h.orch.pop_stash(&run_id).await.unwrap_err();
+    assert!(matches!(err, OrchestratorError::InvalidEdit(_)));
+}
+
+#[tokio::test]
+async fn stash_and_retry_apply_rejects_when_not_merging() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("not-merging".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    let err = h.orch.stash_and_retry_apply(&run_id).await.unwrap_err();
+    match err {
+        OrchestratorError::WrongState { state, .. } => {
+            assert_eq!(state, RunStatus::AwaitingApproval);
+        }
+        e => panic!("expected WrongState, got {e:?}"),
+    }
+
+    // Cleanup.
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn stash_and_retry_apply_rejects_double_stash() {
+    // Use the conflict-after-stash shape so the run stays in Merging
+    // while the registry holds the entry. Second stash_and_retry
+    // must trip the double-stash guard (InvalidEdit).
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    tokio::fs::write(h.repo_path.join("seed.txt"), "user wip\n")
+        .await
+        .unwrap();
+
+    let run_id = h
+        .orch
+        .submit_task("double stash".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::BaseBranchDirty { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.stash_and_retry_apply(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::StashCreated { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    // Two workers both touched shared.txt → MergeConflict keeps run
+    // in Merging with the registry entry still held.
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let err = h.orch.stash_and_retry_apply(&run_id).await.unwrap_err();
+    match err {
+        OrchestratorError::InvalidEdit(msg) => {
+            assert!(msg.contains("stash"), "msg should reference stash: {msg}");
+        }
+        other => panic!("expected InvalidEdit(stash), got {other:?}"),
+    }
+
+    // Cleanup.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn stash_and_retry_apply_with_conflict_preserves_stash_for_next_attempt() {
+    // Two workers both write `shared.txt`. Base branch is dirty. We
+    // stash + retry → merge conflict. The stash ref must remain on the
+    // run so the user can pop it after resolution, and the run stays
+    // in Merging (per existing lifecycle contract).
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    tokio::fs::write(h.repo_path.join("seed.txt"), "user wip\n")
+        .await
+        .unwrap();
+
+    let run_id = h
+        .orch
+        .submit_task("conflict after stash".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::BaseBranchDirty { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.orch.stash_and_retry_apply(&run_id).await.unwrap();
+
+    // StashCreated fires first, then MergeConflict.
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::StashCreated { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Run stays Merging (conflict path re-installs the oneshot).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let stored = h.storage.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(stored.status, RunStatus::Merging);
+
+    // Stash ref still held in the registry.
+    assert!(
+        h.orch.stashes.lock().await.contains_key(&run_id),
+        "stash ref should persist across a post-stash conflict"
+    );
+
+    // Cleanup.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+
+    // Pop the stash after Rejected — still valid (status isn't
+    // validated).
+    h.orch.pop_stash(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::StashPopped { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn pop_stash_missing_ref_emits_missing_and_clears() {
+    // Stash was dropped externally (test simulates via git stash drop
+    // after stash_and_retry_apply). pop_stash must emit the Missing
+    // variant and clear the run's ref.
+    let agent = agent_writing(&[("t0", vec![("feature.txt", "new\n")])]).await;
+    let h = Harness::new(agent).await;
+
+    tokio::fs::write(h.repo_path.join("seed.txt"), "user wip\n")
+        .await
+        .unwrap();
+
+    let run_id = h
+        .orch
+        .submit_task("drop then pop".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::BaseBranchDirty { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.stash_and_retry_apply(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Done).await;
+
+    // Drop externally.
+    TokioCommand::new("git")
+        .args(["stash", "drop", "stash@{0}"])
+        .current_dir(&h.repo_path)
+        .output()
+        .await
+        .unwrap();
+
+    h.orch.pop_stash(&run_id).await.unwrap();
+    let kind = expect_event(&h, &run_id, |e| match e {
+        RunEvent::StashPopFailed { kind, .. } => Some(*kind),
+        _ => None,
+    })
+    .await;
+    assert_eq!(kind, StashPopFailureKind::Missing);
+
+    // Ref cleared from the registry.
+    assert!(!h.orch.stashes.lock().await.contains_key(&run_id));
+}

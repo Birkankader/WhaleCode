@@ -147,6 +147,31 @@ pub enum RunEvent {
         run_id: RunId,
         reason: String,
     },
+    /// Phase 5 Step 2: `stash_and_retry_apply` captured the dirty base
+    /// branch into git stash. Emitted *before* the subsequent
+    /// `ApplyDecision::Apply` is sent, so the UI sees the new stash
+    /// reference even if the retry runs into a merge conflict and the
+    /// run stays in `Merging`.
+    StashCreated {
+        run_id: RunId,
+        stash_ref: String,
+    },
+    /// Phase 5 Step 2: `pop_stash` applied cleanly; the run no longer
+    /// holds the stash ref. Lets the "stash still held" post-apply
+    /// reminder dismiss itself.
+    StashPopped {
+        run_id: RunId,
+        stash_ref: String,
+    },
+    /// Phase 5 Step 2: `pop_stash` either conflicted on apply (stash
+    /// still in place) or the ref was missing. UI renders a pinned
+    /// banner with the ref so the user can resolve + drop manually.
+    StashPopFailed {
+        run_id: RunId,
+        stash_ref: String,
+        kind: crate::ipc::events::StashPopFailureKind,
+        error: String,
+    },
 }
 
 impl RunEvent {
@@ -170,7 +195,10 @@ impl RunEvent {
             | RunEvent::ReplanStarted { run_id, .. }
             | RunEvent::HumanEscalation { run_id, .. }
             | RunEvent::AutoApproved { run_id, .. }
-            | RunEvent::AutoApproveSuspended { run_id, .. } => run_id,
+            | RunEvent::AutoApproveSuspended { run_id, .. }
+            | RunEvent::StashCreated { run_id, .. }
+            | RunEvent::StashPopped { run_id, .. }
+            | RunEvent::StashPopFailed { run_id, .. } => run_id,
         }
     }
 }
@@ -323,6 +351,26 @@ impl EventSink for TauriEventSink {
                     &wire::AutoApproveSuspended { run_id, reason },
                 )
             }
+            RunEvent::StashCreated { run_id, stash_ref } => {
+                wire::emit_stash_created(&self.app, &wire::StashCreated { run_id, stash_ref })
+            }
+            RunEvent::StashPopped { run_id, stash_ref } => {
+                wire::emit_stash_popped(&self.app, &wire::StashPopped { run_id, stash_ref })
+            }
+            RunEvent::StashPopFailed {
+                run_id,
+                stash_ref,
+                kind,
+                error,
+            } => wire::emit_stash_pop_failed(
+                &self.app,
+                &wire::StashPopFailed {
+                    run_id,
+                    stash_ref,
+                    kind,
+                    error,
+                },
+            ),
         };
         if let Err(e) = result {
             eprintln!("[orchestrator] event emit failed: {e}");

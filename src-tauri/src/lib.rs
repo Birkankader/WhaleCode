@@ -87,6 +87,13 @@ pub fn run() {
             // — this stops exactly one subtask and leaves the rest of
             // the run running. Bypasses the retry ladder entirely.
             commands::cancel_subtask,
+            // Phase 5 Step 2: base-branch dirty helper. stash_and_retry_apply
+            // composes `git stash push -u` + the existing apply oneshot;
+            // pop_stash is user-initiated — no auto-pop after Apply because
+            // the stashed changes may conflict with the just-applied diffs
+            // and the user should see the state before the pop writes over it.
+            commands::stash_and_retry_apply,
+            commands::pop_stash,
             commands::update_subtask,
             commands::add_subtask,
             commands::remove_subtask,

@@ -218,3 +218,46 @@ describe('ErrorBanner', () => {
     expect(screen.getByText('Timed out after 2m')).toBeInTheDocument();
   });
 });
+
+describe('ErrorBanner — Phase 5 Step 2 stash & retry action', () => {
+  it('hides the Stash & retry button when baseBranchDirty is null', () => {
+    useGraphStore.setState({ currentError: 'Some other error' });
+    render(<ErrorBanner />);
+    expect(screen.queryByTestId('error-banner-stash-retry')).toBeNull();
+  });
+
+  it('shows the Stash & retry button when baseBranchDirty is set', () => {
+    useGraphStore.setState({
+      currentError: 'You have uncommitted changes in 1 file',
+      baseBranchDirty: { files: ['seed.txt'] },
+    });
+    render(<ErrorBanner />);
+    const btn = screen.getByTestId('error-banner-stash-retry');
+    expect(btn).toBeInTheDocument();
+    expect(btn.textContent).toMatch(/stash & retry apply/i);
+  });
+
+  it('calls stashAndRetryApply on click', () => {
+    const stashAndRetryApply = vi.fn(async () => undefined);
+    useGraphStore.setState({
+      currentError: 'You have uncommitted changes',
+      baseBranchDirty: { files: ['seed.txt'] },
+      stashAndRetryApply,
+    });
+    render(<ErrorBanner />);
+    fireEvent.click(screen.getByTestId('error-banner-stash-retry'));
+    expect(stashAndRetryApply).toHaveBeenCalled();
+  });
+
+  it('disables the button and renders "Stashing…" while stashInFlight is "stash-and-retry"', () => {
+    useGraphStore.setState({
+      currentError: 'You have uncommitted changes',
+      baseBranchDirty: { files: ['seed.txt'] },
+      stashInFlight: 'stash-and-retry',
+    });
+    render(<ErrorBanner />);
+    const btn = screen.getByTestId('error-banner-stash-retry');
+    expect(btn).toBeDisabled();
+    expect(btn.textContent).toMatch(/stashing/i);
+  });
+});

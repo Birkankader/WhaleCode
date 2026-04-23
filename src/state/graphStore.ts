@@ -37,6 +37,8 @@ import {
   approveSubtasks as approveSubtasksIpc,
   cancelRun as cancelRunIpc,
   cancelSubtask as cancelSubtaskIpc,
+  stashAndRetryApply as stashAndRetryApplyIpc,
+  popStash as popStashIpc,
   discardRun as discardRunIpc,
   manualFixSubtask as manualFixSubtaskIpc,
   markSubtaskFixed as markSubtaskFixedIpc,
@@ -62,6 +64,9 @@ import {
   type MergeConflict,
   type ReplanStarted,
   type RunStatus,
+  type StashCreated,
+  type StashPopFailed,
+  type StashPopped,
   type SkipResult,
   type StatusChanged,
   type SubtaskDiff,
@@ -362,6 +367,21 @@ export type GraphState = {
    */
   cancelSubtask: (subtaskId: SubtaskId) => Promise<void>;
   /**
+   * Phase 5 Step 2: stash the dirty base branch and retry Apply.
+   * Clears `baseBranchDirty` + `currentError` on success once the
+   * backend emits `StashCreated`. Backend rejection surfaces via
+   * `currentError`; the in-flight flag rolls back.
+   */
+  stashAndRetryApply: () => Promise<void>;
+  /**
+   * Phase 5 Step 2: pop the stash recorded by
+   * `stashAndRetryApply`. Backend confirms via `StashPopped`
+   * (happy path — stash cleared) or `StashPopFailed` (conflict
+   * preserved / missing cleared). Backend rejection surfaces via
+   * `currentError`; the in-flight flag rolls back.
+   */
+  popStash: () => Promise<void>;
+  /**
    * Phase 5 Step 1: ids of subtasks with a cancel_subtask IPC in
    * flight. The footer renders "Stopping…" while an id sits here.
    * Cleared on the backend's `SubtaskStateChanged { state: cancelled }`
@@ -369,6 +389,35 @@ export type GraphState = {
    * button becomes clickable again).
    */
   subtaskCancelInFlight: ReadonlySet<SubtaskId>;
+  /**
+   * Phase 5 Step 2: populated while a run is in `merging` and the
+   * last apply attempt surfaced `BaseBranchDirty`. The list of dirty
+   * files drives the "You have uncommitted changes …" banner + the
+   * one-click "Stash & retry apply" action. Cleared on any
+   * non-dirty state transition (Applied / Merging after a successful
+   * retry / Rejected / Cancelled).
+   */
+  baseBranchDirty: { files: string[] } | null;
+  /**
+   * Phase 5 Step 2: stash state tracked by the frontend across the
+   * `run:stash_*` event family. `ref` is the opaque SHA the backend
+   * emitted — the user can copy it for manual recovery. `popFailed`
+   * is populated when the most recent `pop_stash` attempt surfaced a
+   * conflict (stash preserved) or missing ref (stash cleared by the
+   * backend); unset on success / never attempted. Cleared on
+   * `reset()` so a new run starts without stale state.
+   */
+  stash: {
+    ref: string;
+    popFailed: { kind: 'conflict' | 'missing'; error: string } | null;
+  } | null;
+  /**
+   * Phase 5 Step 2: `true` between the moment the user clicks "Stash
+   * & retry" or "Pop stash" and the moment the backend confirms the
+   * resulting event. UI renders a disabled / busy affordance over
+   * the relevant control. Roll back on IPC rejection.
+   */
+  stashInFlight: 'stash-and-retry' | 'pop' | null;
   /**
    * Phase 3 plan-edit actions. Valid only while the run is in
    * `awaiting_approval`. None of these mutate the store directly —
@@ -548,6 +597,9 @@ const initial: Pick<
   | 'pendingCancel'
   | 'cancelInFlight'
   | 'subtaskCancelInFlight'
+  | 'baseBranchDirty'
+  | 'stash'
+  | 'stashInFlight'
 > = {
   runId: null,
   taskInput: '',
@@ -578,6 +630,9 @@ const initial: Pick<
   pendingCancel: false,
   cancelInFlight: false,
   subtaskCancelInFlight: new Set(),
+  baseBranchDirty: null,
+  stash: null,
+  stashInFlight: null,
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -1211,7 +1266,48 @@ export const useGraphStore = create<GraphState>((set, get) => {
       e.files.length === 1
         ? `You have uncommitted changes${where}: ${list}. Commit or stash it, then click Apply again.`
         : `You have uncommitted changes${where} in ${e.files.length} files (${list}). Commit or stash them, then click Apply again.`;
-    set({ currentError: msg });
+    // Phase 5 Step 2: also park the file list so the ErrorBanner can
+    // render an inline "Stash & retry apply" action button. The
+    // string `currentError` is kept for the existing banner copy —
+    // the new action reads `baseBranchDirty` directly.
+    set({ currentError: msg, baseBranchDirty: { files: [...e.files] } });
+  }
+
+  function handleStashCreated(e: StashCreated) {
+    if (e.runId !== get().runId) return;
+    // The backend already sent `ApplyDecision::Apply` after emitting
+    // this — clear the dirty banner + stash-in-flight marker so the
+    // UI transitions to "stash held" state while the merge runs.
+    set({
+      baseBranchDirty: null,
+      currentError: null,
+      stash: { ref: e.stashRef, popFailed: null },
+      stashInFlight: null,
+    });
+  }
+
+  function handleStashPopped(e: StashPopped) {
+    if (e.runId !== get().runId) return;
+    // Clean pop — clear the stash entry entirely. The "stash still
+    // held" post-apply prompt dismisses itself on this transition.
+    set({ stash: null, stashInFlight: null });
+  }
+
+  function handleStashPopFailed(e: StashPopFailed) {
+    if (e.runId !== get().runId) return;
+    // On `missing` the backend cleared the ref server-side; we
+    // mirror by dropping the stash entry. On `conflict` the ref
+    // persists so the user can resolve manually — we park the
+    // failure details in the same `stash` entry so the UI can
+    // render the pinned banner.
+    if (e.kind === 'missing') {
+      set({ stash: null, stashInFlight: null });
+    } else {
+      set({
+        stash: { ref: e.stashRef, popFailed: { kind: e.kind, error: e.error } },
+        stashInFlight: null,
+      });
+    }
   }
 
   function handleCompleted(e: Completed) {
@@ -1323,6 +1419,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskDiff: handleSubtaskDiff,
       onMergeConflict: handleMergeConflict,
       onBaseBranchDirty: handleBaseBranchDirty,
+      onStashCreated: handleStashCreated,
+      onStashPopped: handleStashPopped,
+      onStashPopFailed: handleStashPopFailed,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -1547,6 +1646,43 @@ export const useGraphStore = create<GraphState>((set, get) => {
         set({
           subtaskCancelInFlight: rolledBack,
           currentError: `Stop failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
+    async stashAndRetryApply() {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      if (get().stashInFlight) return;
+      set({ stashInFlight: 'stash-and-retry' });
+      try {
+        await stashAndRetryApplyIpc(runId);
+        // Success path: the transient flag clears when the backend
+        // emits `StashCreated` (see handleStashCreated). That keeps
+        // the "Stashing…" UI alive through the ~100ms stash + merge
+        // kickoff window.
+      } catch (err) {
+        set({
+          stashInFlight: null,
+          currentError: `Stash & retry failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
+    async popStash() {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      if (get().stashInFlight) return;
+      set({ stashInFlight: 'pop' });
+      try {
+        await popStashIpc(runId);
+        // Flag clears on StashPopped or StashPopFailed.
+      } catch (err) {
+        set({
+          stashInFlight: null,
+          currentError: `Pop stash failed: ${String(err)}`,
         });
         throw err;
       }
@@ -1784,6 +1920,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         humanEscalation: null,
         workerExpanded: new Set(),
         subtaskCancelInFlight: new Set(),
+        baseBranchDirty: null,
+        stash: null,
+        stashInFlight: null,
       });
     },
   };

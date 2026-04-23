@@ -42,6 +42,20 @@ pub const EVENT_APPLY_SUMMARY: &str = "run:apply_summary";
 pub const EVENT_FAILED: &str = "run:failed";
 pub const EVENT_MERGE_CONFLICT: &str = "run:merge_conflict";
 pub const EVENT_BASE_BRANCH_DIRTY: &str = "run:base_branch_dirty";
+/// Phase 5 Step 2: emitted when `stash_and_retry_apply` successfully
+/// captured the dirty base branch into `git stash`. Carries the SHA
+/// of the created stash entry so the frontend can offer a targeted
+/// post-apply pop rather than a blind `stash@{0}`.
+pub const EVENT_STASH_CREATED: &str = "run:stash_created";
+/// Phase 5 Step 2: `pop_stash` applied the stored stash cleanly; the
+/// run's recorded `stash_ref` has been cleared. Frontend dismisses
+/// the "stash still held" reminder.
+pub const EVENT_STASH_POPPED: &str = "run:stash_popped";
+/// Phase 5 Step 2: `pop_stash` applied with conflicts, or the ref
+/// was missing. `error` is a short sentence the UI surfaces in a
+/// pinned banner; the stash ref is preserved so the user can resolve
+/// manually and retry.
+pub const EVENT_STASH_POP_FAILED: &str = "run:stash_pop_failed";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -266,6 +280,47 @@ pub struct BaseBranchDirty {
     pub files: Vec<PathBuf>,
 }
 
+/// Phase 5 Step 2 wire payload for [`EVENT_STASH_CREATED`]. `stash_ref`
+/// is the immutable commit SHA returned by `git rev-parse stash@{0}`
+/// at push time — targeting the pop by SHA avoids the blind
+/// `stash@{0}` footgun if the user ran `git stash` manually between.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashCreated {
+    pub run_id: RunId,
+    pub stash_ref: String,
+}
+
+/// Phase 5 Step 2 wire payload for [`EVENT_STASH_POPPED`]. Fires on a
+/// clean pop; the run no longer holds a stash ref.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashPopped {
+    pub run_id: RunId,
+    pub stash_ref: String,
+}
+
+/// Phase 5 Step 2 wire payload for [`EVENT_STASH_POP_FAILED`]. `kind`
+/// discriminates conflict (user can resolve then drop manually) vs
+/// missing (the ref was gone — nothing to pop). Both cases leave the
+/// run's `stash_ref` in place so the UI can surface the ref for
+/// manual recovery.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashPopFailed {
+    pub run_id: RunId,
+    pub stash_ref: String,
+    pub kind: StashPopFailureKind,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StashPopFailureKind {
+    Conflict,
+    Missing,
+}
+
 /// Layer-2 replan just kicked off. The dispatcher escalated because a
 /// subtask exhausted its Layer-1 retry budget; the master is now being
 /// asked for a replacement plan. The frontend uses this to set the
@@ -369,6 +424,18 @@ pub fn emit_base_branch_dirty(
     payload: &BaseBranchDirty,
 ) -> tauri::Result<()> {
     app.emit(EVENT_BASE_BRANCH_DIRTY, payload)
+}
+
+pub fn emit_stash_created(app: &AppHandle, payload: &StashCreated) -> tauri::Result<()> {
+    app.emit(EVENT_STASH_CREATED, payload)
+}
+
+pub fn emit_stash_popped(app: &AppHandle, payload: &StashPopped) -> tauri::Result<()> {
+    app.emit(EVENT_STASH_POPPED, payload)
+}
+
+pub fn emit_stash_pop_failed(app: &AppHandle, payload: &StashPopFailed) -> tauri::Result<()> {
+    app.emit(EVENT_STASH_POP_FAILED, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

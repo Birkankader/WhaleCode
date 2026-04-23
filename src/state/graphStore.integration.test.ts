@@ -44,6 +44,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 import {
   EVENT_APPLY_SUMMARY,
   EVENT_BASE_BRANCH_DIRTY,
+  EVENT_STASH_CREATED,
+  EVENT_STASH_POP_FAILED,
+  EVENT_STASH_POPPED,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -106,6 +109,8 @@ beforeEach(() => {
   invokeHandlers.set('discard_run', async () => undefined);
   invokeHandlers.set('cancel_run', async () => undefined);
   invokeHandlers.set('cancel_subtask', async () => undefined);
+  invokeHandlers.set('stash_and_retry_apply', async () => undefined);
+  invokeHandlers.set('pop_stash', async () => undefined);
 });
 
 afterEach(() => {
@@ -2148,5 +2153,97 @@ describe('graphStore — Phase 5 Step 1 cancelSubtask', () => {
     });
     await state().cancelSubtask('whatever');
     expect(calls).toBe(0);
+  });
+});
+
+describe('graphStore — Phase 5 Step 2 stash & retry / pop', () => {
+  it('BaseBranchDirty populates baseBranchDirty; StashCreated clears it and stores the ref', async () => {
+    await state().submitTask('x');
+    emit(EVENT_BASE_BRANCH_DIRTY, {
+      runId: BACKEND_RUN_ID,
+      files: ['seed.txt'],
+    });
+    expect(state().baseBranchDirty?.files).toEqual(['seed.txt']);
+    expect(state().currentError).toMatch(/uncommitted changes/);
+
+    emit(EVENT_STASH_CREATED, {
+      runId: BACKEND_RUN_ID,
+      stashRef: '0123456789abcdef0123456789abcdef01234567',
+    });
+    expect(state().baseBranchDirty).toBeNull();
+    expect(state().currentError).toBeNull();
+    expect(state().stash?.ref).toBe(
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    expect(state().stashInFlight).toBeNull();
+  });
+
+  it('stashAndRetryApply sets in-flight and IPC rejection rolls back', async () => {
+    await state().submitTask('x');
+    emit(EVENT_BASE_BRANCH_DIRTY, {
+      runId: BACKEND_RUN_ID,
+      files: ['seed.txt'],
+    });
+    invokeHandlers.set('stash_and_retry_apply', async () => {
+      throw 'git stash failed';
+    });
+    await expect(state().stashAndRetryApply()).rejects.toBeDefined();
+    expect(state().stashInFlight).toBeNull();
+    expect(state().currentError).toMatch(/stash & retry failed/i);
+  });
+
+  it('StashPopped clears the stash entry entirely', async () => {
+    await state().submitTask('x');
+    emit(EVENT_STASH_CREATED, {
+      runId: BACKEND_RUN_ID,
+      stashRef: 'abc',
+    });
+    expect(state().stash?.ref).toBe('abc');
+    emit(EVENT_STASH_POPPED, {
+      runId: BACKEND_RUN_ID,
+      stashRef: 'abc',
+    });
+    expect(state().stash).toBeNull();
+    expect(state().stashInFlight).toBeNull();
+  });
+
+  it('StashPopFailed conflict preserves ref + records failure; missing clears the entry', async () => {
+    await state().submitTask('x');
+    emit(EVENT_STASH_CREATED, {
+      runId: BACKEND_RUN_ID,
+      stashRef: 'abc',
+    });
+    emit(EVENT_STASH_POP_FAILED, {
+      runId: BACKEND_RUN_ID,
+      stashRef: 'abc',
+      kind: 'conflict',
+      error: 'stash pop produced conflicts',
+    });
+    expect(state().stash?.popFailed?.kind).toBe('conflict');
+    expect(state().stash?.ref).toBe('abc');
+
+    emit(EVENT_STASH_POP_FAILED, {
+      runId: BACKEND_RUN_ID,
+      stashRef: 'abc',
+      kind: 'missing',
+      error: 'stash ref was missing; nothing to pop',
+    });
+    expect(state().stash).toBeNull();
+  });
+
+  it('no-op on pending_* runId (no real run yet)', async () => {
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let stashCalls = 0;
+    let popCalls = 0;
+    invokeHandlers.set('stash_and_retry_apply', async () => {
+      stashCalls += 1;
+    });
+    invokeHandlers.set('pop_stash', async () => {
+      popCalls += 1;
+    });
+    await state().stashAndRetryApply();
+    await state().popStash();
+    expect(stashCalls).toBe(0);
+    expect(popCalls).toBe(0);
   });
 });

@@ -233,6 +233,14 @@ export const EVENT_HUMAN_ESCALATION = 'run:human_escalation' as const;
 // approval for the remainder of its lifetime.
 export const EVENT_AUTO_APPROVED = 'run:auto_approved' as const;
 export const EVENT_AUTO_APPROVE_SUSPENDED = 'run:auto_approve_suspended' as const;
+// Phase 5 Step 2: base-branch dirty helper events. `stash_created`
+// fires when `stash_and_retry_apply` captured the dirty tree into
+// `git stash`; `stash_popped` on a clean pop; `stash_pop_failed`
+// when the pop conflicted (user resolves manually) or the ref was
+// missing (dropped externally).
+export const EVENT_STASH_CREATED = 'run:stash_created' as const;
+export const EVENT_STASH_POPPED = 'run:stash_popped' as const;
+export const EVENT_STASH_POP_FAILED = 'run:stash_pop_failed' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -372,6 +380,42 @@ export const baseBranchDirtySchema = z.object({
   files: z.array(z.string()),
 });
 export type BaseBranchDirty = z.infer<typeof baseBranchDirtySchema>;
+
+/**
+ * Phase 5 Step 2 payload for {@link EVENT_STASH_CREATED}. Fires
+ * exactly once per successful `stash_and_retry_apply` invocation,
+ * *before* the follow-up merge attempt starts. `stashRef` is the
+ * commit SHA of the stash entry — the frontend keeps it as an opaque
+ * identifier for the "Show stash ref" affordance on the post-apply
+ * prompt; the backend uses it to pop the right entry regardless of
+ * manual `git stash` invocations between push and pop.
+ */
+export const stashCreatedSchema = z.object({
+  runId: runIdSchema,
+  stashRef: z.string(),
+});
+export type StashCreated = z.infer<typeof stashCreatedSchema>;
+
+/** Phase 5 Step 2 payload for {@link EVENT_STASH_POPPED}. */
+export const stashPoppedSchema = z.object({
+  runId: runIdSchema,
+  stashRef: z.string(),
+});
+export type StashPopped = z.infer<typeof stashPoppedSchema>;
+
+/**
+ * Phase 5 Step 2 payload for {@link EVENT_STASH_POP_FAILED}.
+ * `kind` discriminates conflict (user resolves manually + drops) vs
+ * missing (ref was gone). Both carry `stashRef` so the UI can
+ * surface it in the pinned banner for manual recovery.
+ */
+export const stashPopFailedSchema = z.object({
+  runId: runIdSchema,
+  stashRef: z.string(),
+  kind: z.enum(['conflict', 'missing']),
+  error: z.string(),
+});
+export type StashPopFailed = z.infer<typeof stashPopFailedSchema>;
 
 /**
  * Emitted right before the orchestrator calls `AgentImpl::replan` on the
@@ -587,6 +631,30 @@ export async function cancelSubtask(
   subtaskId: SubtaskId,
 ): Promise<void> {
   await invoke('cancel_subtask', { runId, subtaskId });
+}
+
+/**
+ * Phase 5 Step 2: stash the dirty base branch and retry Apply. One-
+ * click remediation for the `BaseBranchDirty` banner — backend runs
+ * `git stash push -u -m "whalecode: before apply <run_id>"` and
+ * immediately re-sends the apply decision to the merge oneshot.
+ * Emits `run:stash_created` on success; merge may still produce a
+ * `run:merge_conflict` after — the stash entry persists across that
+ * and `pop_stash` targets the right commit regardless.
+ */
+export async function stashAndRetryApply(runId: RunId): Promise<void> {
+  await invoke('stash_and_retry_apply', { runId });
+}
+
+/**
+ * Phase 5 Step 2: pop the stash captured by `stash_and_retry_apply`.
+ * User-initiated (no auto-pop after Apply — the stashed changes may
+ * conflict with just-applied diffs and the user should see the state
+ * before deciding). Emits `run:stash_popped` on clean apply,
+ * `run:stash_pop_failed` on conflict or missing.
+ */
+export async function popStash(runId: RunId): Promise<void> {
+  await invoke('pop_stash', { runId });
 }
 
 // ---------- Phase 3 plan-edit commands ----------

@@ -195,6 +195,130 @@ pub fn parse_conflicted_files(porcelain: &str) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// Phase 5 Step 2 — outcome of a `git stash push -u`. `None` means
+/// the working tree was clean and git refused to create a stash
+/// (stdout "No local changes to save"). That shouldn't happen on the
+/// `stash_and_retry_apply` path because we've already observed
+/// `BaseBranchDirty`, but we surface it explicitly so the caller can
+/// treat a clean tree as a no-op rather than an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StashPushOutcome {
+    Created { stash_ref: String },
+    NothingToStash,
+}
+
+/// Phase 5 Step 2 — run `git stash push -u -m <message>` in
+/// `repo_root`. Captures untracked (`-u`) so files the workers-then-
+/// users left in the working tree round-trip cleanly. Returns the
+/// stash ref (e.g. `stash@{0}`) for the explicit `pop_stash` pairing;
+/// that avoids the classic "blind `git stash pop` hits someone else's
+/// stash" footgun.
+///
+/// Security: structured argv — no shell interpolation on the
+/// `message` argument. `message` is composed from fixed copy and a
+/// timestamp / run-id in the caller; no user input ever gets spliced
+/// into a shell string.
+pub async fn stash_push<P: AsRef<Path>>(
+    repo_root: P,
+    message: &str,
+) -> Result<StashPushOutcome, WorktreeError> {
+    let out = Command::new("git")
+        .args(["stash", "push", "-u", "-m", message])
+        .current_dir(repo_root.as_ref())
+        .output()
+        .await
+        .map_err(|e| WorktreeError::IoError {
+            cause: format!("spawning `git stash push` failed: {e}"),
+        })?;
+    if !out.status.success() {
+        return Err(WorktreeError::GitCommandFailed {
+            command: "git stash push".to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // `git stash push` prints "No local changes to save" on a clean
+    // tree and exits 0. Treat as no-op.
+    if stdout.contains("No local changes to save") {
+        return Ok(StashPushOutcome::NothingToStash);
+    }
+    // Resolve the stash ref via `git rev-parse stash@{0}` so we hold
+    // an *immutable* SHA rather than the position-dependent
+    // `stash@{0}` label — otherwise a manual `git stash` between
+    // create and pop would shift the index under us. We still log
+    // the label in the message for user debugging.
+    let rev = run_git(repo_root.as_ref(), &["rev-parse", "stash@{0}"]).await?;
+    let stash_ref = rev.trim().to_string();
+    Ok(StashPushOutcome::Created { stash_ref })
+}
+
+/// Phase 5 Step 2 — outcome of a `git stash pop <ref>`. `Applied`
+/// means the pop succeeded (no conflicts, stash entry removed).
+/// `Conflicted` means the pop applied but with merge conflicts; git
+/// *keeps* the stash entry in that case so the user can retry after
+/// resolving. `Missing` means the ref no longer exists (someone
+/// dropped the stash externally).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StashPopOutcome {
+    Applied,
+    Conflicted,
+    Missing,
+}
+
+/// Phase 5 Step 2 — run `git stash pop <ref>` in `repo_root`.
+/// Distinguishes the three outcomes above via exit code + stdout/
+/// stderr probing. `ref_sha` must be the SHA returned by
+/// [`stash_push`] — we take it as an argument rather than defaulting
+/// to `stash@{0}` so a manual `git stash` between create and pop
+/// doesn't target the wrong entry.
+pub async fn stash_pop<P: AsRef<Path>>(
+    repo_root: P,
+    ref_sha: &str,
+) -> Result<StashPopOutcome, WorktreeError> {
+    // `git stash pop <sha>` doesn't work — pop takes a symbolic
+    // `stash@{N}` index, not a raw SHA. Look up our entry by SHA in
+    // `git stash list --format=%H` and translate to the symbolic
+    // index before popping. This is what gives us the "target the
+    // right entry even if the user ran `git stash` between create
+    // and pop" guarantee — blind `stash@{0}` would hit the newest
+    // stash, not ours.
+    let list = run_git(repo_root.as_ref(), &["stash", "list", "--format=%H"]).await?;
+    let index = list
+        .lines()
+        .map(str::trim)
+        .enumerate()
+        .find(|(_, sha)| *sha == ref_sha)
+        .map(|(i, _)| i);
+    let Some(index) = index else {
+        return Ok(StashPopOutcome::Missing);
+    };
+    let symbolic = format!("stash@{{{index}}}");
+    let out = Command::new("git")
+        .args(["stash", "pop", &symbolic])
+        .current_dir(repo_root.as_ref())
+        .output()
+        .await
+        .map_err(|e| WorktreeError::IoError {
+            cause: format!("spawning `git stash pop` failed: {e}"),
+        })?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        return Ok(StashPopOutcome::Applied);
+    }
+    // Conflicts: stash entry is preserved, exit code is non-zero.
+    // Git's wording varies by version; we look for the two stable
+    // phrases.
+    let combined = format!("{stdout}\n{stderr}");
+    if combined.contains("CONFLICT") || combined.contains("conflict") {
+        return Ok(StashPopOutcome::Conflicted);
+    }
+    Err(WorktreeError::GitCommandFailed {
+        command: format!("git stash pop {symbolic}"),
+        stderr: stderr.trim().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

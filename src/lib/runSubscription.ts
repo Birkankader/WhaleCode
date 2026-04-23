@@ -37,6 +37,9 @@ import {
   EVENT_MASTER_LOG,
   EVENT_MERGE_CONFLICT,
   EVENT_REPLAN_STARTED,
+  EVENT_STASH_CREATED,
+  EVENT_STASH_POP_FAILED,
+  EVENT_STASH_POPPED,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_DIFF,
   EVENT_SUBTASK_LOG,
@@ -53,6 +56,9 @@ import {
   masterLogSchema,
   mergeConflictSchema,
   replanStartedSchema,
+  stashCreatedSchema,
+  stashPopFailedSchema,
+  stashPoppedSchema,
   statusChangedSchema,
   subtaskDiffSchema,
   subtaskLogSchema,
@@ -70,6 +76,9 @@ import {
   type MergeConflict,
   type ReplanStarted,
   type RunId,
+  type StashCreated,
+  type StashPopFailed,
+  type StashPopped,
   type StatusChanged,
   type SubtaskDiff,
   type SubtaskLog,
@@ -94,6 +103,9 @@ export type RunEventHandlers = {
   onHumanEscalation?: (event: HumanEscalation) => void;
   onAutoApproved?: (event: AutoApproved) => void;
   onAutoApproveSuspended?: (event: AutoApproveSuspended) => void;
+  onStashCreated?: (event: StashCreated) => void;
+  onStashPopped?: (event: StashPopped) => void;
+  onStashPopFailed?: (event: StashPopFailed) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -247,6 +259,21 @@ export class RunSubscription {
         event: EVENT_AUTO_APPROVE_SUSPENDED,
         schema: autoApproveSuspendedSchema,
         handler: this.handlers.onAutoApproveSuspended as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_STASH_CREATED,
+        schema: stashCreatedSchema,
+        handler: this.handlers.onStashCreated as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_STASH_POPPED,
+        schema: stashPoppedSchema,
+        handler: this.handlers.onStashPopped as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_STASH_POP_FAILED,
+        schema: stashPopFailedSchema,
+        handler: this.handlers.onStashPopFailed as ((e: unknown) => void) | undefined,
       },
     ];
   }

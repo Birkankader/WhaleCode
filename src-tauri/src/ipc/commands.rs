@@ -113,6 +113,31 @@ pub async fn cancel_subtask(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 5 Step 2: stash the dirty base branch and retry Apply.
+/// Composition of `git stash push -u` + the existing apply oneshot —
+/// the frontend offers this as a one-click remediation on the
+/// `BaseBranchDirty` banner.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn stash_and_retry_apply(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+) -> Result<(), String> {
+    orch.stash_and_retry_apply(&run_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Phase 5 Step 2: pop the stash captured by
+/// `stash_and_retry_apply`. No auto-pop — the user initiates this
+/// explicitly so they see the state before the pop writes over it.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn pop_stash(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+) -> Result<(), String> {
+    orch.pop_stash(&run_id).await.map_err(|e| e.to_string())
+}
+
 // -- Phase 3 plan-edit commands ---------------------------------------
 //
 // These three are only valid while a run is in `AwaitingApproval`

@@ -6,6 +6,7 @@ import { AgentSetupState } from './components/setup/AgentSetupState';
 import { AutoApproveSuspendedBanner } from './components/shell/AutoApproveSuspendedBanner';
 import { EmptyState } from './components/shell/EmptyState';
 import { ErrorBanner } from './components/shell/ErrorBanner';
+import { StashBanner } from './components/shell/StashBanner';
 import { Footer } from './components/shell/Footer';
 import { RepoPicker } from './components/shell/RepoPicker';
 import { ToastStack } from './components/shell/ToastStack';
@@ -130,6 +131,7 @@ export default function App() {
         <TopBar />
         <main className="relative flex flex-1 flex-col overflow-hidden">
           <ErrorBanner />
+          <StashBanner />
           <AutoApproveSuspendedBanner />
           <div className="relative flex-1 overflow-hidden">{body}</div>
           <ApprovalBar />

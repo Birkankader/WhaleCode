@@ -40,6 +40,10 @@ export function ErrorBanner({ variant = 'error' }: Props) {
   // flips on each update so a useMemo keyed on it is cheap.
   const subtaskErrorCategories = useGraphStore((s) => s.subtaskErrorCategories);
   const categoryDismissed = useGraphStore((s) => s.errorCategoryBannerDismissed);
+  // Phase 5 Step 2: one-click remediation for `BaseBranchDirty`.
+  const baseBranchDirty = useGraphStore((s) => s.baseBranchDirty);
+  const stashInFlight = useGraphStore((s) => s.stashInFlight);
+  const stashAndRetryApply = useGraphStore((s) => s.stashAndRetryApply);
   const [expanded, setExpanded] = useState(false);
 
   const unanimousCategory = useMemo(
@@ -97,6 +101,28 @@ export function ErrorBanner({ variant = 'error' }: Props) {
                 </button>
               ) : null}
             </div>
+            {baseBranchDirty !== null ? (
+              <button
+                type="button"
+                onClick={() => {
+                  // Don't await — the store sets `stashInFlight` before
+                  // the IPC fires, which flips our disabled state. The
+                  // promise resolves when the backend emits
+                  // `StashCreated` (clears baseBranchDirty) or rejects
+                  // (surfaced via currentError by the store).
+                  void stashAndRetryApply();
+                }}
+                disabled={stashInFlight === 'stash-and-retry'}
+                aria-label="Stash and retry apply"
+                data-testid="error-banner-stash-retry"
+                className="inline-flex flex-shrink-0 items-center rounded-sm border border-fg-secondary/40 px-2 py-0.5 text-meta font-medium text-fg-primary hover:border-fg-primary disabled:cursor-wait disabled:opacity-60"
+                style={{ color: accent.fg }}
+              >
+                {stashInFlight === 'stash-and-retry'
+                  ? 'Stashing…'
+                  : 'Stash & retry apply'}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => {

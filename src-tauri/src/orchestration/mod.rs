@@ -151,6 +151,25 @@ pub struct Orchestrator {
     /// (read-once semantics) — a second boot without new recovery
     /// work returns an empty Vec.
     pub(crate) recovery_report: Arc<Mutex<Vec<RecoveryEntry>>>,
+    /// Phase 5 Step 2: stash entries captured by
+    /// `stash_and_retry_apply`. Keyed by run id + stores the
+    /// immutable SHA returned by `git rev-parse stash@{0}` at push
+    /// time, plus the repo_root needed to run `git stash pop` after
+    /// the run's in-memory state has been torn down (Done /
+    /// Rejected / Cancelled clear the runs map but the stash itself
+    /// lives in the user's git repo and is still poppable). Cleared
+    /// on successful pop or on Missing; persists across conflict so
+    /// the user can resolve manually.
+    pub(crate) stashes: Arc<Mutex<HashMap<RunId, StashEntry>>>,
+}
+
+/// Phase 5 Step 2: one entry in the Orchestrator's stash registry.
+/// Lives outside the per-run `Run` struct so pop works after the run
+/// has been torn down (Done / Rejected / Cancelled).
+#[derive(Debug, Clone)]
+pub(crate) struct StashEntry {
+    pub stash_ref: String,
+    pub repo_root: PathBuf,
 }
 
 impl Orchestrator {
@@ -172,6 +191,7 @@ impl Orchestrator {
             resolution_senders: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_workers: MAX_CONCURRENT_WORKERS,
             apply_timeout: APPLY_TIMEOUT,
+            stashes: Arc::new(Mutex::new(HashMap::new())),
             recovery_report: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -453,6 +473,177 @@ impl Orchestrator {
                 expected: "merging",
             })?;
         Ok(())
+    }
+
+    /// Phase 5 Step 2: stash the dirty base-branch working tree, then
+    /// retry Apply. Composition of `git stash push -u` + the existing
+    /// `apply_run` oneshot send — no new merge plumbing.
+    ///
+    /// Preconditions:
+    /// - Run must be `Merging` (an apply oneshot is installed). Any
+    ///   other status returns `WrongState`.
+    /// - Run must not already hold a stash ref; double-stash would
+    ///   orphan the first one. Returns `InvalidEdit` if set.
+    ///
+    /// Steps, in order, with locking discipline matching the rest of
+    /// the module (no `await` inside the write lock):
+    /// 1. Acquire read lock to snapshot `repo_root` + confirm no
+    ///    existing `stash_ref`.
+    /// 2. Release lock; run `git stash push -u -m …` (long I/O).
+    /// 3. Re-acquire write lock; record `stash_ref` on the run if the
+    ///    push produced one.
+    /// 4. Emit `StashCreated`.
+    /// 5. Remove the apply sender from the map and send
+    ///    `ApplyDecision::Apply`. If the sender is gone (raced
+    ///    `discard_run`), return `WrongState` — the stash was saved
+    ///    and the user can pop it manually via `pop_stash` once the
+    ///    next run starts, but we fail loud rather than silently drop
+    ///    the retry.
+    pub async fn stash_and_retry_apply(
+        &self,
+        run_id: &RunId,
+    ) -> Result<(), OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let repo_root = {
+            let guard = run_arc.read().await;
+            if guard.status != RunStatus::Merging {
+                return Err(OrchestratorError::WrongState {
+                    run_id: run_id.clone(),
+                    state: guard.status,
+                    expected: "merging",
+                });
+            }
+            guard.repo_root.clone()
+        };
+        if self.stashes.lock().await.contains_key(run_id) {
+            return Err(OrchestratorError::InvalidEdit(
+                "run already holds a stash ref; pop it before stashing again".to_string(),
+            ));
+        }
+
+        let message = format!("whalecode: before apply {}", run_id);
+        let outcome = crate::worktree::git::stash_push(&repo_root, &message)
+            .await
+            .map_err(|e| OrchestratorError::InvalidEdit(format!("git stash push: {e}")))?;
+
+        let stash_ref_opt = match outcome {
+            crate::worktree::git::StashPushOutcome::Created { stash_ref } => Some(stash_ref),
+            crate::worktree::git::StashPushOutcome::NothingToStash => None,
+        };
+
+        if let Some(stash_ref) = stash_ref_opt.clone() {
+            self.stashes.lock().await.insert(
+                run_id.clone(),
+                StashEntry {
+                    stash_ref: stash_ref.clone(),
+                    repo_root: repo_root.clone(),
+                },
+            );
+            self.event_sink
+                .emit(RunEvent::StashCreated {
+                    run_id: run_id.clone(),
+                    stash_ref,
+                })
+                .await;
+        }
+
+        // Take the apply sender and send Apply. Mirrors `apply_run`'s
+        // shape so the lifecycle's merge loop sees exactly one click.
+        let sender = self
+            .apply_senders
+            .lock()
+            .await
+            .remove(run_id)
+            .ok_or_else(|| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::Merging,
+                expected: "merging",
+            })?;
+        sender
+            .send(ApplyDecision::Apply)
+            .map_err(|_| OrchestratorError::WrongState {
+                run_id: run_id.clone(),
+                state: RunStatus::Merging,
+                expected: "merging",
+            })?;
+        Ok(())
+    }
+
+    /// Phase 5 Step 2: pop the stash recorded by
+    /// [`Self::stash_and_retry_apply`]. User-initiated — we do not
+    /// auto-pop after Apply because the stash may conflict with the
+    /// just-applied diffs and the user should see the state before
+    /// deciding.
+    ///
+    /// Three outcomes:
+    /// - Applied → emit `StashPopped`, clear the ref on the run.
+    /// - Conflict → emit `StashPopFailed { kind: conflict }`, leave
+    ///   the ref in place; user resolves in their editor and runs
+    ///   `git stash drop` manually.
+    /// - Missing → emit `StashPopFailed { kind: missing }`, clear the
+    ///   ref (nothing to pop).
+    ///
+    /// Rejects with `InvalidEdit` when the run has no `stash_ref`
+    /// recorded. Run status is *not* validated — pop is meaningful
+    /// post-Done / post-Rejected too, as long as the run's in-memory
+    /// state still carries the ref.
+    pub async fn pop_stash(&self, run_id: &RunId) -> Result<(), OrchestratorError> {
+        let entry = self
+            .stashes
+            .lock()
+            .await
+            .get(run_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrchestratorError::InvalidEdit("no stash recorded for this run".to_string())
+            })?;
+
+        let outcome = crate::worktree::git::stash_pop(&entry.repo_root, &entry.stash_ref)
+            .await
+            .map_err(|e| OrchestratorError::InvalidEdit(format!("git stash pop: {e}")))?;
+
+        match outcome {
+            crate::worktree::git::StashPopOutcome::Applied => {
+                self.stashes.lock().await.remove(run_id);
+                self.event_sink
+                    .emit(RunEvent::StashPopped {
+                        run_id: run_id.clone(),
+                        stash_ref: entry.stash_ref,
+                    })
+                    .await;
+                Ok(())
+            }
+            crate::worktree::git::StashPopOutcome::Conflicted => {
+                // Keep the registry entry; user resolves + drops manually.
+                self.event_sink
+                    .emit(RunEvent::StashPopFailed {
+                        run_id: run_id.clone(),
+                        stash_ref: entry.stash_ref,
+                        kind: crate::ipc::events::StashPopFailureKind::Conflict,
+                        error:
+                            "stash pop produced conflicts; resolve in your editor and run \
+                             `git stash drop` when done"
+                                .to_string(),
+                    })
+                    .await;
+                Ok(())
+            }
+            crate::worktree::git::StashPopOutcome::Missing => {
+                self.stashes.lock().await.remove(run_id);
+                self.event_sink
+                    .emit(RunEvent::StashPopFailed {
+                        run_id: run_id.clone(),
+                        stash_ref: entry.stash_ref,
+                        kind: crate::ipc::events::StashPopFailureKind::Missing,
+                        error: "stash ref was missing; nothing to pop".to_string(),
+                    })
+                    .await;
+                Ok(())
+            }
+        }
     }
 
     /// User clicked Discard on the aggregated diff. Same plumbing as
