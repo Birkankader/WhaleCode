@@ -63,8 +63,11 @@ whalecode/
 │   ├── ux-flows.md              # User journeys, approval moment, fail handling
 │   ├── phase-1-spec.md          # Phase 1 (shipped)
 │   ├── phase-2-spec.md          # Phase 2 (shipped)
-│   ├── phase-3-spec.md          # Phase 3 (current)
+│   ├── phase-3-spec.md          # Phase 3 (shipped)
 │   ├── phase-3-spec-review.md   # Concerns flagged after Phase 2
+│   ├── phase-4-spec.md          # Phase 4 (shipped)
+│   ├── phase-4-verification.md  # Phase 4 goal-backward verification
+│   ├── phase-4-crash-diagnostic.md # Phase 4 Step 0 diagnostic output
 │   ├── KNOWN_ISSUES.md          # Debt ledger — deferred items + target phase + severity
 │   ├── retrospectives/          # Post-phase retros
 │   └── roadmap.md               # All 8 phases + v2.5/v3 track
@@ -125,18 +128,18 @@ whalecode/
 
 1. You already have this file. Don't re-read it unless I say so.
 2. For any specific area, read the matching `docs/` file. Don't read all of them.
-3. If the task is in a specific phase, read `docs/phase-3-spec.md` (current) first; cross-check with `docs/phase-3-spec-review.md` for known concerns.
+3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 4 is shipped — see `docs/phase-4-verification.md` and `docs/retrospectives/phase-4.md`; Phase 5 spec is not yet written).
 4. When in doubt about design decisions, check `docs/architecture.md` section 11.
 5. For UI specifics (colors, spacing, animation timing), check `docs/design-system.md`.
 6. Before starting work, skim `docs/KNOWN_ISSUES.md` so you don't re-open already-triaged debt.
 
 ## Current status
 
-**Active phase:** Phase 4 — kickoff pending (mono-repo awareness + conflict resolution UX)
-**Last shipped:** Phase 3.5 — usability patches (`a2be333`, 2026-04-21)
-**Target (Phase 4):** Merge conflict resolution UX, base-branch dirty stash helper, interactive agent Q&A channel, mono-repo dependency graph, plus the Gemini-as-master latency decision carried from Phase 3.5 (see KNOWN_ISSUES).
+**Active phase:** Phase 5 — spec unwritten (awaiting real-usage data from Phase 4 shipment)
+**Last shipped:** Phase 4 — build trust through visibility (`56f5925`, 2026-04-23)
+**Phase 5 candidates (not commitments):** merge conflict resolution UX, base-branch dirty stash helper, interactive agent Q&A channel, mono-repo dependency graph, programmatic visual regression. Spec writes after users run real work on the shipped Phase 4 surface.
 
-Phase 3.5 is closed: 7/8 observations fixed, 1 deferred with a written rationale (Gemini latency — benchmarked to ~230s TTFB with no 1-line fix available). Retro at `docs/retrospectives/phase-3.5.md`. Phase 3 retro remains at `docs/retrospectives/phase-3.md` (15/15 acceptance criteria). Open debt carried into Phase 4 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work. Phase 4 spec is still to be written.
+Phase 4 is closed: 6/6 goal-criteria PASS, 7/7 step acceptance PASS, frontend 630/630, Rust 325/325, typecheck/lint/clippy clean. Verification at `docs/phase-4-verification.md`; retro at `docs/retrospectives/phase-4.md`; six text visual observations under `docs/retrospectives/phase-4-visuals/`. Phase 3.5 retro remains at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 5 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
 
 ## Useful commands
 

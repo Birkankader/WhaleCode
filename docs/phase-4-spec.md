@@ -1,5 +1,7 @@
 # Phase 4: Build trust through visibility
 
+> **Phase 4 shipped 2026-04-23** at `56f5925 fix(phase-4): content-fit expanded worker card height`. See `docs/phase-4-verification.md` for goal-backward pass/fail and `docs/retrospectives/phase-4.md` for the retrospective.
+
 **Goal:** Make the run, after it ends, something the user can inspect — not a screen that vanishes behind a diff viewer. Every worker's output, every file it touched, every crashed subprocess, every worktree path should be reachable from the canvas in one click. The run graph stops being a progress animation and becomes a record.
 
 **Duration estimate:** 2 weeks
@@ -425,6 +427,8 @@ The biggest single piece, and the most visible payoff for the "trust through vis
 ---
 
 ### Step 7: Verification
+
+**Status:** shipped. See `docs/phase-4-verification.md` (goal-backward pass/fail), `docs/retrospectives/phase-4.md` (timing + bug clusters + lessons), and `docs/retrospectives/phase-4-visuals/` (six text visual observations).
 
 Matches the Phase 3 verification step pattern: run a real task end-to-end on each shipped step, record the full interaction, check each acceptance criterion by hand or by integration test.
 
