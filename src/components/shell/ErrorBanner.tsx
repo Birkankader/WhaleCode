@@ -44,6 +44,9 @@ export function ErrorBanner({ variant = 'error' }: Props) {
   const baseBranchDirty = useGraphStore((s) => s.baseBranchDirty);
   const stashInFlight = useGraphStore((s) => s.stashInFlight);
   const stashAndRetryApply = useGraphStore((s) => s.stashAndRetryApply);
+  // Phase 5 Step 3: resolver action for merge conflicts.
+  const mergeConflict = useGraphStore((s) => s.mergeConflict);
+  const setConflictResolverOpen = useGraphStore((s) => s.setConflictResolverOpen);
   const [expanded, setExpanded] = useState(false);
 
   const unanimousCategory = useMemo(
@@ -61,8 +64,24 @@ export function ErrorBanner({ variant = 'error' }: Props) {
   // free-form error string from the store or at least one classified
   // subtask failure that hasn't been dismissed. Pre-Step-5 backends
   // only populate `currentError`; Step-5+ backends can populate the
-  // category map alone.
-  const visible = currentError !== null || effectiveCategory !== null;
+  // category map alone. Phase 5 Step 3 adds mergeConflict as a third
+  // trigger — surfaces the "Open resolver" action even if the user
+  // dismissed the error text.
+  const visible =
+    currentError !== null ||
+    effectiveCategory !== null ||
+    mergeConflict !== null;
+
+  // Derive conflict-specific headline when no other signal dominates.
+  // `currentError` takes precedence (e.g., BaseBranchDirty → stash UI
+  // still has its copy); otherwise `mergeConflict` drives the text so
+  // the banner is never empty when the resolver is actionable.
+  const effectiveSummary =
+    currentError === null && effectiveCategory === null && mergeConflict
+      ? mergeConflict.retryAttempt > 0
+        ? `Still conflicted on ${mergeConflict.files.length} file${mergeConflict.files.length === 1 ? '' : 's'} (attempt ${mergeConflict.retryAttempt})`
+        : `Merge conflict on ${mergeConflict.files.length} file${mergeConflict.files.length === 1 ? '' : 's'}`
+      : summary;
 
   return (
     <AnimatePresence>
@@ -87,7 +106,7 @@ export function ErrorBanner({ variant = 'error' }: Props) {
             <AlertCircle size={16} style={{ color: accent.fg, flexShrink: 0, marginTop: 2 }} />
             <div className="flex flex-1 flex-col gap-1">
               <span className="text-body" data-testid="error-banner-summary">
-                {summary}
+                {effectiveSummary}
               </span>
               {details ? (
                 <button
@@ -101,6 +120,18 @@ export function ErrorBanner({ variant = 'error' }: Props) {
                 </button>
               ) : null}
             </div>
+            {mergeConflict !== null ? (
+              <button
+                type="button"
+                onClick={() => setConflictResolverOpen(true)}
+                aria-label="Open conflict resolver"
+                data-testid="error-banner-open-resolver"
+                className="inline-flex flex-shrink-0 items-center rounded-sm border border-fg-secondary/40 px-2 py-0.5 text-meta font-medium text-fg-primary hover:border-fg-primary"
+                style={{ color: accent.fg }}
+              >
+                Open resolver
+              </button>
+            ) : null}
             {baseBranchDirty !== null ? (
               <button
                 type="button"

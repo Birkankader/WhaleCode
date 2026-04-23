@@ -127,6 +127,21 @@ pub async fn stash_and_retry_apply(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 5 Step 3: retry a merge that just conflicted. Semantic
+/// alias for `apply_run` — the lifecycle re-installed the apply
+/// oneshot on the conflict branch, so this re-enters the merge
+/// attempt with whatever resolutions the user landed on the base
+/// branch. Rejects with `WrongState` if the oneshot was consumed
+/// (raced `discard_run` / `cancel_run`) — the UI toasts the error
+/// and the banner's "Open resolver" remains clickable.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn retry_apply(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+) -> Result<(), String> {
+    orch.retry_apply(&run_id).await.map_err(|e| e.to_string())
+}
+
 /// Phase 5 Step 2: pop the stash captured by
 /// `stash_and_retry_apply`. No auto-pop — the user initiates this
 /// explicitly so they see the state before the pop writes over it.

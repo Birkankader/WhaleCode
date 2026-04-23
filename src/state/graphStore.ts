@@ -39,6 +39,7 @@ import {
   cancelSubtask as cancelSubtaskIpc,
   stashAndRetryApply as stashAndRetryApplyIpc,
   popStash as popStashIpc,
+  retryApply as retryApplyIpc,
   discardRun as discardRunIpc,
   manualFixSubtask as manualFixSubtaskIpc,
   markSubtaskFixed as markSubtaskFixedIpc,
@@ -62,6 +63,7 @@ import {
   type HumanEscalation,
   type MasterLog,
   type MergeConflict,
+  type MergeRetryFailed,
   type ReplanStarted,
   type RunStatus,
   type StashCreated,
@@ -382,6 +384,16 @@ export type GraphState = {
    */
   popStash: () => Promise<void>;
   /**
+   * Phase 5 Step 3: re-attempt the merge after the user resolved the
+   * conflict externally. Semantic alias for apply_run — backend
+   * sends `ApplyDecision::Apply` to the re-installed oneshot.
+   * Backend rejection (stale state — oneshot already consumed)
+   * surfaces via `currentError` as a toast trigger.
+   */
+  retryApply: () => Promise<void>;
+  /** Phase 5 Step 3: open or close the conflict resolver popover. */
+  setConflictResolverOpen: (open: boolean) => void;
+  /**
    * Phase 5 Step 1: ids of subtasks with a cancel_subtask IPC in
    * flight. The footer renders "Stopping…" while an id sits here.
    * Cleared on the backend's `SubtaskStateChanged { state: cancelled }`
@@ -418,6 +430,32 @@ export type GraphState = {
    * the relevant control. Roll back on IPC rejection.
    */
   stashInFlight: 'stash-and-retry' | 'pop' | null;
+  /**
+   * Phase 5 Step 3: populated while a run is in `merging` with an
+   * unresolved conflict. `files` is the conflicted path list from the
+   * latest `MergeConflict` / `MergeRetryFailed` event. `retryAttempt`
+   * starts at 0 on the initial conflict and increments with each
+   * post-retry failure — the UI flips banner copy from "Merge
+   * conflict" to "Still conflicted (attempt N)". Cleared on
+   * applied / discarded / cancelled / reset.
+   */
+  mergeConflict: { files: string[]; retryAttempt: number } | null;
+  /**
+   * Phase 5 Step 3: `true` between the moment the user clicks "Retry
+   * apply" and the moment the backend confirms the outcome (Applied /
+   * MergeRetryFailed / cancelled). Disables the button + surfaces
+   * "Retrying…" copy while set. Cleared on every terminal outcome
+   * event and on IPC rejection.
+   */
+  retryApplyInFlight: boolean;
+  /**
+   * Phase 5 Step 3: whether the conflict resolver popover is open.
+   * Auto-set to `true` on every `MergeConflict` / `MergeRetryFailed`
+   * event so the user never misses an attempt. User can dismiss via
+   * Escape / backdrop; the ErrorBanner's "Open resolver" action
+   * flips it back to true.
+   */
+  conflictResolverOpen: boolean;
   /**
    * Phase 3 plan-edit actions. Valid only while the run is in
    * `awaiting_approval`. None of these mutate the store directly —
@@ -600,6 +638,9 @@ const initial: Pick<
   | 'baseBranchDirty'
   | 'stash'
   | 'stashInFlight'
+  | 'mergeConflict'
+  | 'retryApplyInFlight'
+  | 'conflictResolverOpen'
 > = {
   runId: null,
   taskInput: '',
@@ -633,6 +674,9 @@ const initial: Pick<
   baseBranchDirty: null,
   stash: null,
   stashInFlight: null,
+  mergeConflict: null,
+  retryApplyInFlight: false,
+  conflictResolverOpen: false,
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -921,6 +965,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
       // but the result is the same: run is over).
       if (get().cancelInFlight) {
         set({ cancelInFlight: false });
+      }
+      // Phase 5 Step 3: clear any parked conflict payload + transient
+      // retry flag so a subsequent run starts without the resolver
+      // action lingering from the prior life.
+      if (
+        get().mergeConflict !== null ||
+        get().retryApplyInFlight ||
+        get().conflictResolverOpen
+      ) {
+        set({
+          mergeConflict: null,
+          retryApplyInFlight: false,
+          conflictResolverOpen: false,
+        });
       }
     } else if (mapped === 'done') {
       // Same indicator-clearing semantics as the other terminals, just
@@ -1234,15 +1292,33 @@ export const useGraphStore = create<GraphState>((set, get) => {
   function handleMergeConflict(e: MergeConflict) {
     if (e.runId !== get().runId) return;
     ensureFinalNode();
-    set((state) => {
-      if (!state.finalNode) return state;
-      return {
-        finalNode: {
-          ...state.finalNode,
-          conflictFiles: [...e.files],
-        },
-      };
-    });
+    set((state) => ({
+      finalNode: state.finalNode
+        ? { ...state.finalNode, conflictFiles: [...e.files] }
+        : state.finalNode,
+      // Phase 5 Step 3: park the conflict payload so the ErrorBanner
+      // can render an "Open resolver" action and the popover can
+      // cross-reference the file list with `subtaskDiffs` for
+      // per-worker attribution. Initial conflict is `retryAttempt: 0`.
+      mergeConflict: { files: [...e.files], retryAttempt: 0 },
+      retryApplyInFlight: false,
+      // Auto-open the resolver on the first conflict so the user
+      // sees the action surface without hunting for the banner.
+      conflictResolverOpen: true,
+    }));
+  }
+
+  function handleMergeRetryFailed(e: MergeRetryFailed) {
+    if (e.runId !== get().runId) return;
+    ensureFinalNode();
+    set((state) => ({
+      finalNode: state.finalNode
+        ? { ...state.finalNode, conflictFiles: [...e.files] }
+        : state.finalNode,
+      mergeConflict: { files: [...e.files], retryAttempt: e.retryAttempt },
+      retryApplyInFlight: false,
+      conflictResolverOpen: true,
+    }));
   }
 
   function handleBaseBranchDirty(e: BaseBranchDirty) {
@@ -1326,6 +1402,12 @@ export const useGraphStore = create<GraphState>((set, get) => {
       finalNode: state.finalNode
         ? { ...state.finalNode, conflictFiles: null }
         : state.finalNode,
+      // Phase 5 Step 3: clear the conflict payload on success so a
+      // subsequent Applied doesn't leave a stale banner action
+      // around when the user reaches for a new task.
+      mergeConflict: null,
+      retryApplyInFlight: false,
+      conflictResolverOpen: false,
     }));
     // Land the final actor in its terminal `done` state. No-op if Apply
     // was never clicked (actor still at idle/proposed/approved), which
@@ -1418,6 +1500,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onDiffReady: handleDiffReady,
       onSubtaskDiff: handleSubtaskDiff,
       onMergeConflict: handleMergeConflict,
+      onMergeRetryFailed: handleMergeRetryFailed,
       onBaseBranchDirty: handleBaseBranchDirty,
       onStashCreated: handleStashCreated,
       onStashPopped: handleStashPopped,
@@ -1688,6 +1771,29 @@ export const useGraphStore = create<GraphState>((set, get) => {
       }
     },
 
+    setConflictResolverOpen(open) {
+      set({ conflictResolverOpen: open });
+    },
+
+    async retryApply() {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      if (get().retryApplyInFlight) return;
+      set({ retryApplyInFlight: true });
+      try {
+        await retryApplyIpc(runId);
+        // Flag clears on `handleMergeConflict` / `handleMergeRetryFailed`
+        // (another conflict), `handleCompleted` (success), or
+        // `handleStatusChanged` (cancel / failed terminal).
+      } catch (err) {
+        set({
+          retryApplyInFlight: false,
+          currentError: `Retry apply failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
     async cancelRun() {
       const runId = get().runId;
       if (!runId) return;
@@ -1923,6 +2029,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         baseBranchDirty: null,
         stash: null,
         stashInFlight: null,
+        mergeConflict: null,
+        retryApplyInFlight: false,
+        conflictResolverOpen: false,
       });
     },
   };

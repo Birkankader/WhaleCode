@@ -172,6 +172,19 @@ pub enum RunEvent {
         kind: crate::ipc::events::StashPopFailureKind,
         error: String,
     },
+    /// Phase 5 Step 3: the user clicked "Retry apply" after resolving
+    /// a merge conflict, but the re-attempted merge hit a conflict
+    /// again. Same file-set payload as `MergeConflict`, plus a
+    /// counter that starts at 1 on the first retry failure and
+    /// increments on each subsequent one. The UI uses this counter
+    /// to switch banner copy from "Merge conflict" to "Still
+    /// conflicted (attempt N)" without breaking the initial-conflict
+    /// event contract.
+    MergeRetryFailed {
+        run_id: RunId,
+        files: Vec<PathBuf>,
+        retry_attempt: u32,
+    },
 }
 
 impl RunEvent {
@@ -198,7 +211,8 @@ impl RunEvent {
             | RunEvent::AutoApproveSuspended { run_id, .. }
             | RunEvent::StashCreated { run_id, .. }
             | RunEvent::StashPopped { run_id, .. }
-            | RunEvent::StashPopFailed { run_id, .. } => run_id,
+            | RunEvent::StashPopFailed { run_id, .. }
+            | RunEvent::MergeRetryFailed { run_id, .. } => run_id,
         }
     }
 }
@@ -369,6 +383,18 @@ impl EventSink for TauriEventSink {
                     stash_ref,
                     kind,
                     error,
+                },
+            ),
+            RunEvent::MergeRetryFailed {
+                run_id,
+                files,
+                retry_attempt,
+            } => wire::emit_merge_retry_failed(
+                &self.app,
+                &wire::MergeRetryFailed {
+                    run_id,
+                    files,
+                    retry_attempt,
                 },
             ),
         };

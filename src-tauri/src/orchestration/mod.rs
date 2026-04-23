@@ -475,6 +475,20 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Phase 5 Step 3: retry a merge that just conflicted. Semantic
+    /// alias for [`Self::apply_run`] — the lifecycle has already
+    /// reinstalled a fresh `ApplyDecision` oneshot on the
+    /// `MergeConflict` branch (see `lifecycle.rs` merge_phase Retry
+    /// path), so sending `Apply` here re-enters the merge attempt
+    /// with whatever resolutions the user just landed on the base
+    /// branch. Rejects with `WrongState` if the oneshot was already
+    /// consumed (e.g. a raced `discard_run` / `cancel_run`) — this
+    /// is the "stale conflict" fall-through the UI renders as a
+    /// toast.
+    pub async fn retry_apply(&self, run_id: &RunId) -> Result<(), OrchestratorError> {
+        self.apply_run(run_id).await
+    }
+
     /// Phase 5 Step 2: stash the dirty base-branch working tree, then
     /// retry Apply. Composition of `git stash push -u` + the existing
     /// `apply_run` oneshot send — no new merge plumbing.

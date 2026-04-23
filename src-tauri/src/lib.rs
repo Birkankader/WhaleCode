@@ -94,6 +94,12 @@ pub fn run() {
             // and the user should see the state before the pop writes over it.
             commands::stash_and_retry_apply,
             commands::pop_stash,
+            // Phase 5 Step 3: merge conflict resolver. retry_apply is
+            // a semantic alias for apply_run — the lifecycle already
+            // re-installs the apply oneshot on MergeConflict, so
+            // retry just re-enters the merge attempt with whatever
+            // resolutions the user landed externally.
+            commands::retry_apply,
             commands::update_subtask,
             commands::add_subtask,
             commands::remove_subtask,

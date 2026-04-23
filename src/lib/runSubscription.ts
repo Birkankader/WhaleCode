@@ -37,6 +37,7 @@ import {
   EVENT_MASTER_LOG,
   EVENT_MERGE_CONFLICT,
   EVENT_REPLAN_STARTED,
+  EVENT_MERGE_RETRY_FAILED,
   EVENT_STASH_CREATED,
   EVENT_STASH_POP_FAILED,
   EVENT_STASH_POPPED,
@@ -56,6 +57,7 @@ import {
   masterLogSchema,
   mergeConflictSchema,
   replanStartedSchema,
+  mergeRetryFailedSchema,
   stashCreatedSchema,
   stashPopFailedSchema,
   stashPoppedSchema,
@@ -76,6 +78,7 @@ import {
   type MergeConflict,
   type ReplanStarted,
   type RunId,
+  type MergeRetryFailed,
   type StashCreated,
   type StashPopFailed,
   type StashPopped,
@@ -106,6 +109,7 @@ export type RunEventHandlers = {
   onStashCreated?: (event: StashCreated) => void;
   onStashPopped?: (event: StashPopped) => void;
   onStashPopFailed?: (event: StashPopFailed) => void;
+  onMergeRetryFailed?: (event: MergeRetryFailed) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -274,6 +278,11 @@ export class RunSubscription {
         event: EVENT_STASH_POP_FAILED,
         schema: stashPopFailedSchema,
         handler: this.handlers.onStashPopFailed as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_MERGE_RETRY_FAILED,
+        schema: mergeRetryFailedSchema,
+        handler: this.handlers.onMergeRetryFailed as ((e: unknown) => void) | undefined,
       },
     ];
   }

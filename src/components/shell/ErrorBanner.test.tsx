@@ -261,3 +261,53 @@ describe('ErrorBanner — Phase 5 Step 2 stash & retry action', () => {
     expect(btn.textContent).toMatch(/stashing/i);
   });
 });
+
+describe('ErrorBanner — Phase 5 Step 3 merge conflict resolver action', () => {
+  it('hides the Open resolver button when mergeConflict is null', () => {
+    useGraphStore.setState({ currentError: 'unrelated error' });
+    render(<ErrorBanner />);
+    expect(screen.queryByTestId('error-banner-open-resolver')).toBeNull();
+  });
+
+  it('shows the Open resolver button when mergeConflict is set', () => {
+    useGraphStore.setState({
+      mergeConflict: { files: ['x.txt', 'y.rs'], retryAttempt: 0 },
+    });
+    render(<ErrorBanner />);
+    const btn = screen.getByTestId('error-banner-open-resolver');
+    expect(btn).toBeInTheDocument();
+    expect(btn.textContent).toMatch(/open resolver/i);
+  });
+
+  it('derives conflict summary copy when no other error signal dominates', () => {
+    useGraphStore.setState({
+      currentError: null,
+      mergeConflict: { files: ['x.txt', 'y.rs'], retryAttempt: 0 },
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByTestId('error-banner-summary').textContent).toMatch(
+      /merge conflict on 2 files/i,
+    );
+  });
+
+  it('swaps copy to "Still conflicted (attempt N)" after a retry failure', () => {
+    useGraphStore.setState({
+      currentError: null,
+      mergeConflict: { files: ['x.txt'], retryAttempt: 2 },
+    });
+    render(<ErrorBanner />);
+    expect(screen.getByTestId('error-banner-summary').textContent).toMatch(
+      /still conflicted on 1 file \(attempt 2\)/i,
+    );
+  });
+
+  it('click fires setConflictResolverOpen(true)', () => {
+    useGraphStore.setState({
+      mergeConflict: { files: ['x.txt'], retryAttempt: 0 },
+      conflictResolverOpen: false,
+    });
+    render(<ErrorBanner />);
+    fireEvent.click(screen.getByTestId('error-banner-open-resolver'));
+    expect(useGraphStore.getState().conflictResolverOpen).toBe(true);
+  });
+});

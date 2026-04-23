@@ -53,6 +53,7 @@ import {
   EVENT_HUMAN_ESCALATION,
   EVENT_MASTER_LOG,
   EVENT_MERGE_CONFLICT,
+  EVENT_MERGE_RETRY_FAILED,
   EVENT_REPLAN_STARTED,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_DIFF,
@@ -111,6 +112,7 @@ beforeEach(() => {
   invokeHandlers.set('cancel_subtask', async () => undefined);
   invokeHandlers.set('stash_and_retry_apply', async () => undefined);
   invokeHandlers.set('pop_stash', async () => undefined);
+  invokeHandlers.set('retry_apply', async () => undefined);
 });
 
 afterEach(() => {
@@ -2245,5 +2247,95 @@ describe('graphStore — Phase 5 Step 2 stash & retry / pop', () => {
     await state().popStash();
     expect(stashCalls).toBe(0);
     expect(popCalls).toBe(0);
+  });
+});
+
+describe('graphStore — Phase 5 Step 3 merge conflict resolver', () => {
+  it('MergeConflict populates mergeConflict with retryAttempt 0 and auto-opens resolver', async () => {
+    await state().submitTask('x');
+    emit(EVENT_MERGE_CONFLICT, {
+      runId: BACKEND_RUN_ID,
+      files: ['shared.txt'],
+    });
+    expect(state().mergeConflict).toEqual({
+      files: ['shared.txt'],
+      retryAttempt: 0,
+    });
+    expect(state().conflictResolverOpen).toBe(true);
+  });
+
+  it('MergeRetryFailed updates retryAttempt and re-opens resolver', async () => {
+    await state().submitTask('x');
+    emit(EVENT_MERGE_CONFLICT, {
+      runId: BACKEND_RUN_ID,
+      files: ['shared.txt'],
+    });
+    useGraphStore.setState({ conflictResolverOpen: false });
+    emit(EVENT_MERGE_RETRY_FAILED, {
+      runId: BACKEND_RUN_ID,
+      files: ['shared.txt'],
+      retryAttempt: 2,
+    });
+    expect(state().mergeConflict).toEqual({
+      files: ['shared.txt'],
+      retryAttempt: 2,
+    });
+    expect(state().conflictResolverOpen).toBe(true);
+  });
+
+  it('retryApply sets in-flight and IPC rejection rolls back', async () => {
+    await state().submitTask('x');
+    emit(EVENT_MERGE_CONFLICT, {
+      runId: BACKEND_RUN_ID,
+      files: ['x.txt'],
+    });
+    invokeHandlers.set('retry_apply', async () => {
+      throw 'wrong state';
+    });
+    await expect(state().retryApply()).rejects.toBeDefined();
+    expect(state().retryApplyInFlight).toBe(false);
+    expect(state().currentError).toMatch(/retry apply failed/i);
+  });
+
+  it('Completed clears mergeConflict + conflictResolverOpen', async () => {
+    await state().submitTask('x');
+    emit(EVENT_MERGE_CONFLICT, {
+      runId: BACKEND_RUN_ID,
+      files: ['x.txt'],
+    });
+    expect(state().mergeConflict).not.toBeNull();
+    emit('run:completed' as string, {
+      runId: BACKEND_RUN_ID,
+      summary: {
+        runId: BACKEND_RUN_ID,
+        subtaskCount: 1,
+        filesChanged: 1,
+        durationSecs: 1,
+        commitsCreated: 1,
+      },
+    });
+    expect(state().mergeConflict).toBeNull();
+    expect(state().conflictResolverOpen).toBe(false);
+  });
+
+  it('rejected status clears mergeConflict + conflictResolverOpen', async () => {
+    await state().submitTask('x');
+    emit(EVENT_MERGE_CONFLICT, {
+      runId: BACKEND_RUN_ID,
+      files: ['x.txt'],
+    });
+    emit(EVENT_STATUS_CHANGED, { runId: BACKEND_RUN_ID, status: 'rejected' });
+    expect(state().mergeConflict).toBeNull();
+    expect(state().conflictResolverOpen).toBe(false);
+  });
+
+  it('no-op on pending_* runId', async () => {
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let calls = 0;
+    invokeHandlers.set('retry_apply', async () => {
+      calls += 1;
+    });
+    await state().retryApply();
+    expect(calls).toBe(0);
   });
 });

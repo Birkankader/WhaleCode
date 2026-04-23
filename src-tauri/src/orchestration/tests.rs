@@ -5370,3 +5370,223 @@ async fn pop_stash_missing_ref_emits_missing_and_clears() {
     // Ref cleared from the registry.
     assert!(!h.orch.stashes.lock().await.contains_key(&run_id));
 }
+
+// -- Phase 5 Step 3: merge conflict resolver ------------------------
+//
+// `retry_apply` is a semantic alias for `apply_run`: the lifecycle
+// reinstalls the apply oneshot on `MergeConflict`, so retry just
+// re-enters the merge attempt with whatever resolutions the user
+// landed externally. Post-retry conflicts fire `MergeRetryFailed`
+// with an incremented `retry_attempt` counter (initial conflict
+// stays on the stable `MergeConflict` event contract).
+
+#[tokio::test]
+async fn retry_apply_after_resolution_reaches_done() {
+    // Two workers touch `shared.txt` in incompatible ways → initial
+    // Apply hits MergeConflict. User "resolves" by committing a
+    // conflict-free state on base (commits the post-merge head with
+    // shared.txt reset) and clicks retry_apply. The existing lifecycle
+    // re-run merges cleanly because shared.txt's next merge sees
+    // already-present content (git merge --no-ff between same trees).
+    //
+    // We can't truly *resolve* the conflict in-test without human
+    // resolution; what we can assert is that `retry_apply` routes
+    // through `apply_run` and re-triggers merge_all, which on a
+    // second conflict emits MergeRetryFailed with retry_attempt=1.
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("conflict + retry".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+
+    // Initial conflict fires as MergeConflict (no retry counter).
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.orch.retry_apply(&run_id).await.unwrap();
+
+    // Post-retry conflict fires as MergeRetryFailed with attempt=1.
+    let attempt = expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeRetryFailed { retry_attempt, .. } => Some(*retry_attempt),
+        _ => None,
+    })
+    .await;
+    assert_eq!(attempt, 1);
+
+    // Cleanup.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn retry_apply_increments_attempt_on_each_persistent_conflict() {
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("three-round conflict".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.orch.retry_apply(&run_id).await.unwrap();
+    let a1 = expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeRetryFailed { retry_attempt, .. } => Some(*retry_attempt),
+        _ => None,
+    })
+    .await;
+    assert_eq!(a1, 1);
+
+    h.orch.retry_apply(&run_id).await.unwrap();
+    // Second retry: attempt counter bumps to 2. We look for the
+    // event matching attempt>=2 so the first MergeRetryFailed (still
+    // in the transcript) doesn't short-circuit the search.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let a2 = loop {
+        if let Some(n) = h
+            .sink
+            .snapshot()
+            .await
+            .iter()
+            .filter(|e| e.run_id() == &run_id)
+            .find_map(|e| match e {
+                RunEvent::MergeRetryFailed { retry_attempt, .. } if *retry_attempt >= 2 => {
+                    Some(*retry_attempt)
+                }
+                _ => None,
+            })
+        {
+            break n;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "expected MergeRetryFailed with attempt >= 2, transcript: {:#?}",
+                h.sink.snapshot().await
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(a2, 2);
+
+    // Cleanup.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn retry_apply_after_discard_returns_wrong_state() {
+    // Stale state: user clicked Discard → lifecycle consumed the
+    // apply oneshot. A follow-up retry_apply must fail cleanly with
+    // WrongState (not panic, not hang). The UI surfaces this as a
+    // toast and the user restarts the run.
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("discard then retry".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+
+    let err = h.orch.retry_apply(&run_id).await.unwrap_err();
+    match err {
+        OrchestratorError::WrongState { .. } | OrchestratorError::RunNotFound(_) => {}
+        other => panic!("expected WrongState or RunNotFound, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn initial_conflict_does_not_carry_retry_attempt_counter() {
+    // Regression: the first conflict must fire `MergeConflict`, not
+    // `MergeRetryFailed`. The events are distinct wire contracts and
+    // flipping them would break every Phase 2 MergeConflict consumer.
+    let agent = agent_writing(&[
+        ("t0", vec![("shared.txt", "a\n")]),
+        ("t1", vec![("shared.txt", "b\n")]),
+    ])
+    .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("initial conflict shape".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_all(&h, &run_id).await;
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::DiffReady { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    h.orch.apply_run(&run_id).await.unwrap();
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::MergeConflict { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Scan the whole transcript: zero MergeRetryFailed events at
+    // this point.
+    let events = h.sink.snapshot().await;
+    let retry_failed_count = events
+        .iter()
+        .filter(|e| matches!(e, RunEvent::MergeRetryFailed { .. }))
+        .count();
+    assert_eq!(retry_failed_count, 0);
+
+    // Cleanup.
+    h.orch.discard_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}

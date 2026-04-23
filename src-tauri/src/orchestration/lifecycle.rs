@@ -572,9 +572,24 @@ enum MergeStepOutcome {
     Discarded,
     Cancelled,
     Failed(String),
-    /// Apply hit a conflict; worktrees and notes preserved, apply
-    /// oneshot reinstalled. Loop again to wait for the next click.
-    Retry,
+    /// Apply hit a recoverable error; worktrees + notes preserved,
+    /// apply oneshot reinstalled, loop again to wait for the next
+    /// click. `reason` drives the retry-attempt counter: only
+    /// conflict retries bump it (base-branch dirty retries are a
+    /// pre-condition failure, not a merge conflict, and shouldn't
+    /// count toward the "still conflicted on attempt N" banner).
+    Retry(RetryReason),
+}
+
+/// Phase 5 Step 3: why the merge loop needs to wait for the user
+/// again. Only [`RetryReason::Conflict`] increments the counter
+/// surfaced to the UI as `MergeRetryFailed.retry_attempt`; dirty
+/// base-branch retries are a separate user flow (Step 2's
+/// `stash_and_retry_apply`) and leave the counter alone.
+#[derive(Debug)]
+enum RetryReason {
+    Conflict,
+    DirtyBase,
 }
 
 /// Drive the run from `Merging` to its terminal state.
@@ -682,7 +697,14 @@ async fn merge_phase(
 
     // -- Wait loop. On MergeConflict we reinstall a fresh oneshot ----
     // and wait again for the user's next click.
+    //
+    // Phase 5 Step 3: `retry_attempts` counts how many *retries* the
+    // user has burned after the initial conflict. First conflict fires
+    // `MergeConflict` (attempt=0 implicit); every subsequent conflict
+    // fires `MergeRetryFailed` with the incremented counter so the
+    // frontend can render "Still conflicted on N files (attempt K)".
     let mut current_rx = apply_rx;
+    let mut retry_attempts: u32 = 0;
     loop {
         let decision = tokio::select! {
             d = &mut current_rx => match d {
@@ -724,7 +746,7 @@ async fn merge_phase(
                 return;
             }
             ApplyDecision::Apply => {
-                match apply_step(deps, run, &run_id, &worktree_mgr).await {
+                match apply_step(deps, run, &run_id, &worktree_mgr, retry_attempts).await {
                     MergeStepOutcome::Applied(res) => {
                         finalize_applied(
                             deps,
@@ -753,17 +775,24 @@ async fn merge_phase(
                         finalize_cancelled(deps, run, CancelReason::UserCancelled).await;
                         return;
                     }
-                    MergeStepOutcome::Retry => {
-                        // Conflict: reinstall a fresh oneshot sender
-                        // into the shared map so the UI's next click
-                        // has somewhere to land. `apply_senders` is
-                        // on the Orchestrator, which we don't hold a
-                        // handle to — but `submit_task` already stored
-                        // one for us; that sender was consumed when
-                        // the user clicked Apply. Reinstall.
+                    MergeStepOutcome::Retry(reason) => {
+                        // Conflict / dirty base: reinstall a fresh
+                        // oneshot sender into the shared map so the
+                        // UI's next click has somewhere to land.
+                        // `apply_senders` is on the Orchestrator,
+                        // which we don't hold a handle to — but
+                        // `submit_task` already stored one for us;
+                        // that sender was consumed when the user
+                        // clicked Apply. Reinstall.
                         let (new_tx, new_rx) = oneshot::channel();
                         install_apply_sender(deps, &run_id, new_tx).await;
                         current_rx = new_rx;
+                        // Phase 5 Step 3: only conflict retries bump
+                        // the counter (dirty-base is a separate UI
+                        // flow — Step 2's stash_and_retry).
+                        if matches!(reason, RetryReason::Conflict) {
+                            retry_attempts = retry_attempts.saturating_add(1);
+                        }
                         // Loop back to wait on the new receiver.
                         continue;
                     }
@@ -787,6 +816,7 @@ async fn apply_step(
     run: &Arc<RwLock<Run>>,
     run_id: &RunId,
     worktree_mgr: &Arc<WorktreeManager>,
+    retry_attempt: u32,
 ) -> MergeStepOutcome {
     // Collect ids + dep graph of the Done subtasks.
     let (ids, graph) = build_merge_inputs(run).await;
@@ -816,13 +846,29 @@ async fn apply_step(
             {
                 eprintln!("[orchestrator] update_run_error(conflict) failed: {e}");
             }
-            deps.event_sink
-                .emit(RunEvent::MergeConflict {
-                    run_id: run_id.clone(),
-                    files,
-                })
-                .await;
-            MergeStepOutcome::Retry
+            // Phase 5 Step 3: distinguish first conflict from
+            // subsequent retry failures. First conflict fires
+            // `MergeConflict` (stable Phase 2 event). Subsequent
+            // conflicts after a user `retry_apply` fire
+            // `MergeRetryFailed` with the attempt counter so the UI
+            // can render "Still conflicted (attempt N)".
+            if retry_attempt == 0 {
+                deps.event_sink
+                    .emit(RunEvent::MergeConflict {
+                        run_id: run_id.clone(),
+                        files,
+                    })
+                    .await;
+            } else {
+                deps.event_sink
+                    .emit(RunEvent::MergeRetryFailed {
+                        run_id: run_id.clone(),
+                        files,
+                        retry_attempt,
+                    })
+                    .await;
+            }
+            MergeStepOutcome::Retry(RetryReason::Conflict)
         }
         Err(WorktreeError::BaseBranchDirty { files }) => {
             // User's base branch has tracked WIP; `git merge` would
@@ -845,7 +891,7 @@ async fn apply_step(
                     files,
                 })
                 .await;
-            MergeStepOutcome::Retry
+            MergeStepOutcome::Retry(RetryReason::DirtyBase)
         }
         Err(e) => MergeStepOutcome::Failed(format!("merge_all: {e}")),
     }

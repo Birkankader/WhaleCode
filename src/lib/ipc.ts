@@ -241,6 +241,11 @@ export const EVENT_AUTO_APPROVE_SUSPENDED = 'run:auto_approve_suspended' as cons
 export const EVENT_STASH_CREATED = 'run:stash_created' as const;
 export const EVENT_STASH_POPPED = 'run:stash_popped' as const;
 export const EVENT_STASH_POP_FAILED = 'run:stash_pop_failed' as const;
+// Phase 5 Step 3: subsequent merge conflict after a user `retry_apply`.
+// Distinct from `run:merge_conflict` (stable Phase 2 contract) so the
+// frontend can key "Still conflicted (attempt N)" copy off the
+// retry counter without breaking existing consumers.
+export const EVENT_MERGE_RETRY_FAILED = 'run:merge_retry_failed' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -416,6 +421,19 @@ export const stashPopFailedSchema = z.object({
   error: z.string(),
 });
 export type StashPopFailed = z.infer<typeof stashPopFailedSchema>;
+
+/**
+ * Phase 5 Step 3 payload for {@link EVENT_MERGE_RETRY_FAILED}. Same
+ * file-set as {@link mergeConflictSchema}; `retryAttempt` starts at
+ * 1 on the first retry failure (initial conflict carries implicit
+ * attempt 0 and fires as `MergeConflict`).
+ */
+export const mergeRetryFailedSchema = z.object({
+  runId: runIdSchema,
+  files: z.array(z.string()),
+  retryAttempt: z.number().int().nonnegative(),
+});
+export type MergeRetryFailed = z.infer<typeof mergeRetryFailedSchema>;
 
 /**
  * Emitted right before the orchestrator calls `AgentImpl::replan` on the
@@ -655,6 +673,19 @@ export async function stashAndRetryApply(runId: RunId): Promise<void> {
  */
 export async function popStash(runId: RunId): Promise<void> {
   await invoke('pop_stash', { runId });
+}
+
+/**
+ * Phase 5 Step 3: retry a merge that just conflicted. Semantic
+ * alias for `apply_run` — the lifecycle has already re-installed the
+ * apply oneshot on the MergeConflict branch, so this re-enters the
+ * merge attempt with whatever resolutions the user landed externally
+ * on the base branch. Rejects with `WrongState` / `RunNotFound` if
+ * the oneshot was consumed (e.g. the user raced a discard / cancel
+ * click); UI toasts the error.
+ */
+export async function retryApply(runId: RunId): Promise<void> {
+  await invoke('retry_apply', { runId });
 }
 
 // ---------- Phase 3 plan-edit commands ----------

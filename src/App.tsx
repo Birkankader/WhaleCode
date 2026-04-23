@@ -5,6 +5,7 @@ import { GraphCanvas } from './components/graph/GraphCanvas';
 import { AgentSetupState } from './components/setup/AgentSetupState';
 import { AutoApproveSuspendedBanner } from './components/shell/AutoApproveSuspendedBanner';
 import { EmptyState } from './components/shell/EmptyState';
+import { ConflictResolverPopover } from './components/shell/ConflictResolverPopover';
 import { ErrorBanner } from './components/shell/ErrorBanner';
 import { StashBanner } from './components/shell/StashBanner';
 import { Footer } from './components/shell/Footer';
@@ -138,6 +139,7 @@ export default function App() {
         </main>
         <Footer />
         <ToastStack />
+        <ConflictResolverPopover />
       </div>
     </WindowTooSmall>
   );

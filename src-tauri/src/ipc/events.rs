@@ -56,6 +56,11 @@ pub const EVENT_STASH_POPPED: &str = "run:stash_popped";
 /// pinned banner; the stash ref is preserved so the user can resolve
 /// manually and retry.
 pub const EVENT_STASH_POP_FAILED: &str = "run:stash_pop_failed";
+/// Phase 5 Step 3: subsequent conflict after a user `retry_apply`.
+/// Same file-set payload as [`EVENT_MERGE_CONFLICT`]; distinguished
+/// so the frontend can toggle banner copy to "Still conflicted
+/// (attempt N)" without breaking the initial-conflict contract.
+pub const EVENT_MERGE_RETRY_FAILED: &str = "run:merge_retry_failed";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -321,6 +326,18 @@ pub enum StashPopFailureKind {
     Missing,
 }
 
+/// Phase 5 Step 3 wire payload for [`EVENT_MERGE_RETRY_FAILED`].
+/// Same file-set payload as [`MergeConflict`]. `retry_attempt` starts
+/// at 1 on the first retry failure (the initial conflict carries
+/// implicit attempt 0 and fires as `MergeConflict`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeRetryFailed {
+    pub run_id: RunId,
+    pub files: Vec<PathBuf>,
+    pub retry_attempt: u32,
+}
+
 /// Layer-2 replan just kicked off. The dispatcher escalated because a
 /// subtask exhausted its Layer-1 retry budget; the master is now being
 /// asked for a replacement plan. The frontend uses this to set the
@@ -436,6 +453,10 @@ pub fn emit_stash_popped(app: &AppHandle, payload: &StashPopped) -> tauri::Resul
 
 pub fn emit_stash_pop_failed(app: &AppHandle, payload: &StashPopFailed) -> tauri::Result<()> {
     app.emit(EVENT_STASH_POP_FAILED, payload)
+}
+
+pub fn emit_merge_retry_failed(app: &AppHandle, payload: &MergeRetryFailed) -> tauri::Result<()> {
+    app.emit(EVENT_MERGE_RETRY_FAILED, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {
