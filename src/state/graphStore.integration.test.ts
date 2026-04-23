@@ -105,6 +105,7 @@ beforeEach(() => {
   invokeHandlers.set('apply_run', async () => undefined);
   invokeHandlers.set('discard_run', async () => undefined);
   invokeHandlers.set('cancel_run', async () => undefined);
+  invokeHandlers.set('cancel_subtask', async () => undefined);
 });
 
 afterEach(() => {
@@ -2036,5 +2037,116 @@ describe('graphStore — edit/add provenance (Phase 3 Step 2)', () => {
     expect(s.originalSubtasks.size).toBe(0);
     expect(s.userAddedSubtaskIds.size).toBe(0);
     expect(s.lastAddedSubtaskId).toBeNull();
+  });
+});
+
+// Phase 5 Step 1 — per-worker stop.
+describe('graphStore — Phase 5 Step 1 cancelSubtask', () => {
+  it('sets subtaskCancelInFlight on click and clears it on SubtaskStateChanged(cancelled)', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'one',
+          title: 'First',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'running',
+    });
+
+    await state().cancelSubtask('one');
+    // After IPC resolves but before the backend emits cancelled, the
+    // flag is still set (the UI renders "Stopping…").
+    expect(state().subtaskCancelInFlight.has('one')).toBe(true);
+
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'cancelled',
+    });
+    expect(state().subtaskCancelInFlight.has('one')).toBe(false);
+    expect(snap('one')?.value).toBe('cancelled');
+  });
+
+  it('surfaces IPC rejection as currentError and rolls back in-flight flag', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'one',
+          title: 'First',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'done',
+    });
+
+    invokeHandlers.set('cancel_subtask', async () => {
+      throw 'subtask 01... is in state Done, expected running | retrying | waiting';
+    });
+
+    await expect(state().cancelSubtask('one')).rejects.toBeDefined();
+    expect(state().subtaskCancelInFlight.has('one')).toBe(false);
+    expect(state().currentError).toMatch(/Stop failed/);
+  });
+
+  it('clears subtaskCancelInFlight if the subtask races to done before cancel confirms', async () => {
+    // Edge case the spec calls out: cancel_subtask in flight, backend
+    // emits `done` first (worker finished before kill signal landed).
+    // The transient UI must roll back so the card doesn't stick on
+    // "Stopping…" forever.
+    await state().submitTask('x');
+    emit(EVENT_SUBTASKS_PROPOSED, {
+      runId: BACKEND_RUN_ID,
+      subtasks: [
+        {
+          id: 'one',
+          title: 'First',
+          why: null,
+          assignedWorker: 'claude',
+          dependencies: [],
+        },
+      ],
+    });
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'running',
+    });
+
+    await state().cancelSubtask('one');
+    emit(EVENT_SUBTASK_STATE_CHANGED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      state: 'done',
+    });
+    expect(state().subtaskCancelInFlight.has('one')).toBe(false);
+  });
+
+  it('no-op on pending_* runId (no real run yet)', async () => {
+    // Explicit optimistic-id path — cancel_subtask must not fire IPC
+    // with a pending_* id the backend doesn't recognise.
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let calls = 0;
+    invokeHandlers.set('cancel_subtask', async () => {
+      calls += 1;
+    });
+    await state().cancelSubtask('whatever');
+    expect(calls).toBe(0);
   });
 });

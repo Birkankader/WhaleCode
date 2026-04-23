@@ -1312,6 +1312,53 @@ describe('WorkerNode — worktree-actions folder icon (Phase 4 Step 4)', () => {
   });
 });
 
+describe('WorkerNode — Stop button (Phase 5 Step 1)', () => {
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'running',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  // Phase 5 Step 1: Stop appears on running / retrying / waiting —
+  // disjoint from INSPECTABLE_STATES. Regression guard: these two
+  // tests pin both ends of the matrix so a slip (Stop on Done, or no
+  // Stop on Waiting) fails loudly.
+
+  it.each(['running', 'retrying', 'waiting'] as const)(
+    'renders the Stop button on %s state',
+    (state) => {
+      renderNode('sub-a', baseData({ state }));
+      expect(
+        screen.getByRole('button', { name: /stop this worker/i }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    'proposed',
+    'done',
+    'failed',
+    'skipped',
+    'escalating',
+    'human_escalation',
+    'cancelled',
+  ] as const)('hides the Stop button on %s state', (state) => {
+    renderNode('sub-a', baseData({ state }));
+    expect(
+      screen.queryByRole('button', { name: /stop this worker/i }),
+    ).toBeNull();
+  });
+});
+
 describe('WorkerNode — inline error-category chip (Phase 4 Step 5)', () => {
   function baseData(
     overrides: Partial<WorkerNodeData> = {},

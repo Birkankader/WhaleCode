@@ -489,6 +489,66 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Phase 5 Step 1: user-initiated per-worker stop.
+    ///
+    /// Sets `manual_cancel = true` on the subtask's runtime row and
+    /// fires its per-subtask `cancel_token`. The dispatcher's worker
+    /// task is listening on that token via `tokio::select!`; on fire
+    /// the worker's subprocess is killed via the existing process-group
+    /// path in `agents/process.rs`. When the dispatcher observes the
+    /// exit, the `manual_cancel` flag routes the outcome through
+    /// `WorkerOutcome::UserCancelled` (Phase 5 addition) — bypassing
+    /// Layer 1 retry, Layer 2 replan, and Layer 3 escalation entirely.
+    /// Dependents cascade to `Skipped` via the existing cascade path.
+    ///
+    /// Rejects with `WrongSubtaskState` when the subtask is not in
+    /// Running / Retrying / Waiting. Proposed / Done / Failed / Skipped
+    /// / Cancelled all return an error the UI surfaces as a toast:
+    /// "cannot stop a subtask that has already reached a terminal
+    /// state" (Failed during an in-flight Layer 2 replan lands in this
+    /// branch naturally — spec Step 1 "Stop during an active Layer 2
+    /// replan fails gracefully").
+    ///
+    /// Idempotency: firing an already-cancelled token a second time
+    /// is a no-op in tokio; the method returns `Ok(())` on the second
+    /// call only if the subtask is still in a cancellable state,
+    /// otherwise `WrongSubtaskState`.
+    pub async fn cancel_subtask(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let (token, wake) = {
+            let mut guard = run_arc.write().await;
+            let wake = guard.subtask_cancel_wake.clone();
+            let sub = guard
+                .find_subtask_mut(subtask_id)
+                .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+            if !matches!(
+                sub.state,
+                SubtaskState::Running | SubtaskState::Retrying | SubtaskState::Waiting
+            ) {
+                return Err(OrchestratorError::WrongSubtaskState {
+                    subtask_id: subtask_id.clone(),
+                    state: sub.state,
+                    expected: "running | retrying | waiting",
+                });
+            }
+            sub.manual_cancel = true;
+            (sub.cancel_token.clone(), wake)
+        };
+        token.cancel();
+        // Wake the dispatcher for the Waiting-state case (no worker
+        // running to observe the token). Idempotent — extra wakes are
+        // no-ops when the main loop is already awake.
+        wake.notify_one();
+        Ok(())
+    }
+
     // -- Phase 3 edit commands ------------------------------------------
     //
     // Locking discipline: each of the three methods acquires the run's

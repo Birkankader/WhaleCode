@@ -137,6 +137,7 @@ pub(super) fn subtask_state_to_str(s: SubtaskState) -> &'static str {
         SubtaskState::Done => "done",
         SubtaskState::Failed => "failed",
         SubtaskState::Skipped => "skipped",
+        SubtaskState::Cancelled => "cancelled",
     }
 }
 
@@ -149,6 +150,7 @@ pub(super) fn subtask_state_from_str(s: &str) -> StorageResult<SubtaskState> {
         "done" => Ok(SubtaskState::Done),
         "failed" => Ok(SubtaskState::Failed),
         "skipped" => Ok(SubtaskState::Skipped),
+        "cancelled" => Ok(SubtaskState::Cancelled),
         other => Err(StorageError::Invalid(format!(
             "unknown subtask state: {other}"
         ))),

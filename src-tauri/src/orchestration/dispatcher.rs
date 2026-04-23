@@ -113,7 +113,20 @@ enum WorkerOutcome {
     /// (setup error, panic, commit failure after a successful
     /// execute). Run should transition to Failed.
     Failed(String),
+    /// Run-wide cancellation (the user clicked "Cancel run"). The
+    /// dispatcher drains remaining work as Skipped and returns
+    /// `DispatchOutcome::Cancelled`, which the lifecycle finalizes as
+    /// `RunStatus::Cancelled`.
     Cancelled,
+    /// Phase 5 Step 1: user-initiated per-worker stop. Distinct from
+    /// `Cancelled` (run-wide): the dispatcher marks *this* subtask
+    /// `Cancelled` (terminal, user-intent), cascades dependents to
+    /// `Skipped`, and keeps the loop alive so sibling workers finish.
+    /// Bypasses Layer 1 retry, Layer 2 replan, Layer 3 escalation —
+    /// the worker exit's `EscalateToMaster::UserCancelled` signal is
+    /// rewritten to this variant when `SubtaskRuntime::manual_cancel`
+    /// is set at observation time.
+    UserCancelled,
     /// Layer-1 retry is exhausted or the failure was deterministic —
     /// carries the original `EscalateToMaster` so the main loop can
     /// return `DispatchOutcome::NeedsReplan` and the lifecycle can
@@ -314,13 +327,14 @@ pub async fn run_dispatcher(
     master: Arc<dyn AgentImpl>,
     max_concurrent: usize,
 ) -> DispatchOutcome {
-    let (run_id, cancel, worktree_mgr, notes) = {
+    let (run_id, cancel, worktree_mgr, notes, sub_cancel_wake) = {
         let r = run.read().await;
         (
             r.id.clone(),
             r.cancel_token.clone(),
             r.worktree_mgr.clone(),
             r.notes.clone(),
+            r.subtask_cancel_wake.clone(),
         )
     };
 
@@ -345,6 +359,15 @@ pub async fn run_dispatcher(
     let mut in_flight: HashSet<SubtaskId> = HashSet::new();
 
     loop {
+        // Phase 5 Step 1: sweep `Waiting` subtasks that were cancelled
+        // before they ever reached `Running`. `cancel_subtask` on a
+        // `Waiting` row sets `manual_cancel` + fires the per-subtask
+        // token, but no worker is running to observe the token — so
+        // this pass converts them to `Cancelled` before pick_ready
+        // would otherwise promote them. Runs before cascade_skip so
+        // dependents of a preemptively-cancelled subtask cascade in
+        // the same loop iteration.
+        sweep_preemptively_cancelled(deps, &run, &run_id).await;
         cascade_skip(deps, &run, &run_id).await;
 
         let (all_terminal, ready) = {
@@ -412,6 +435,16 @@ pub async fn run_dispatcher(
         }
 
         tokio::select! {
+            // Phase 5 Step 1: per-subtask cancel wake. Wakes the loop
+            // without making progress on `join_next` — next iteration
+            // re-runs `sweep_preemptively_cancelled` + `cascade_skip`
+            // so a cancelled `Waiting` subtask transitions to
+            // `Cancelled` and its dependents cascade to `Skipped`.
+            // Idempotent against spurious wakes: if nothing needs
+            // doing, the next loop iteration is a cheap no-op.
+            _ = sub_cancel_wake.notified() => {
+                continue;
+            }
             Some(joined) = join_set.join_next() => {
                 let (sub_id, outcome) = match joined {
                     Ok(pair) => pair,
@@ -451,6 +484,16 @@ pub async fn run_dispatcher(
                         mark_skipped(deps, &run, &run_id, &sub_id).await;
                         drain_as_skipped(deps, &run, &run_id, &mut join_set, &mut in_flight).await;
                         return DispatchOutcome::Cancelled;
+                    }
+                    WorkerOutcome::UserCancelled => {
+                        // Phase 5 Step 1: per-worker stop. Mark *this*
+                        // subtask Cancelled (terminal, user-intent),
+                        // leave siblings alive, continue the loop. The
+                        // next cascade_skip iteration propagates to
+                        // dependents as Skipped.
+                        mark_user_cancelled(deps, &run, &run_id, &sub_id).await;
+                        // Do NOT drain, do NOT return — sibling workers
+                        // continue and the loop re-enters pick_ready.
                     }
                     WorkerOutcome::Escalate(kind) => {
                         // Mark the failing subtask as Failed with the
@@ -551,7 +594,11 @@ async fn cascade_skip(deps: &DispatcherDeps, run: &Arc<RwLock<Run>>, run_id: &Ru
                     s.dependency_ids.iter().any(|d| {
                         matches!(
                             state_of.get(d).copied(),
-                            Some(SubtaskState::Skipped | SubtaskState::Failed)
+                            Some(
+                                SubtaskState::Skipped
+                                    | SubtaskState::Failed
+                                    | SubtaskState::Cancelled
+                            )
                         )
                     })
                 })
@@ -564,6 +611,31 @@ async fn cascade_skip(deps: &DispatcherDeps, run: &Arc<RwLock<Run>>, run_id: &Ru
         for id in to_skip {
             mark_skipped(deps, run, run_id, &id).await;
         }
+    }
+}
+
+/// Phase 5 Step 1: find `Waiting` subtasks with `manual_cancel = true`
+/// (user clicked Stop before the subtask ever started running) and mark
+/// them `Cancelled` directly. No worker to kill — the token fired into
+/// the void — so this pass owns the terminal transition. Runs before
+/// `cascade_skip` each loop iteration so dependents propagate in the
+/// same tick.
+async fn sweep_preemptively_cancelled(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+) {
+    let ids: Vec<SubtaskId> = {
+        let guard = run.read().await;
+        guard
+            .subtasks
+            .iter()
+            .filter(|s| matches!(s.state, SubtaskState::Waiting) && s.manual_cancel)
+            .map(|s| s.id.clone())
+            .collect()
+    };
+    for id in ids {
+        mark_user_cancelled(deps, run, run_id, &id).await;
     }
 }
 
@@ -624,13 +696,17 @@ async fn dispatch_one(
         .await
         .map_err(|e| format!("worktree create: {e}"))?;
 
-    let (subtask_row, worker_kind) = {
+    let (subtask_row, worker_kind, sub_cancel_token) = {
         let mut guard = run.write().await;
         let s = guard
             .find_subtask_mut(sub_id)
             .ok_or_else(|| "subtask vanished mid-dispatch".to_string())?;
         s.mark_running(worktree_path.clone());
-        (to_storage_subtask(s, run_id), s.data.assigned_worker)
+        (
+            to_storage_subtask(s, run_id),
+            s.data.assigned_worker,
+            s.cancel_token.clone(),
+        )
     };
 
     deps.storage
@@ -661,11 +737,29 @@ async fn dispatch_one(
         log_rx,
     ));
 
-    let sub_cancel = cancel.clone();
+    // Phase 5 Step 1: per-worker cancel composes with run-wide cancel.
+    // The worker task selects on a token that fires on *either* signal,
+    // so `cancel_run` still stops every worker and `cancel_subtask`
+    // stops only this one. The manual-cancel flag (read post-exit) is
+    // what distinguishes the two at the outcome-mapping layer.
+    let sub_cancel = {
+        let composite = CancellationToken::new();
+        let run_cancel = cancel.clone();
+        let per_sub = sub_cancel_token.clone();
+        let composite_fire = composite.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = run_cancel.cancelled() => composite_fire.cancel(),
+                _ = per_sub.cancelled() => composite_fire.cancel(),
+            }
+        });
+        composite
+    };
     let sub_id_owned = sub_id.clone();
     let run_id_owned = run_id.clone();
     let storage = deps.storage.clone();
     let event_sink = deps.event_sink.clone();
+    let run_for_cancel_check = run.clone();
     join_set.spawn(async move {
         // Phase 3 Step 3b: route through the Layer-1 retry ladder
         // instead of calling `execute` directly. `execute_subtask_with_retry`
@@ -714,7 +808,24 @@ async fn dispatch_one(
                 }
                 Err(e) => WorkerOutcome::Failed(format!("commit failed: {e}")),
             },
-            Err(EscalateToMaster::UserCancelled) => WorkerOutcome::Cancelled,
+            Err(EscalateToMaster::UserCancelled) => {
+                // Phase 5 Step 1: distinguish per-worker stop from
+                // run-wide cancel. Read the manual_cancel flag *after*
+                // the worker observed Cancellation so the ordering is
+                // deterministic (the orchestrator method sets the flag
+                // before firing the token).
+                let manual = {
+                    let r = run_for_cancel_check.read().await;
+                    r.find_subtask(&sub_id_owned)
+                        .map(|s| s.manual_cancel)
+                        .unwrap_or(false)
+                };
+                if manual {
+                    WorkerOutcome::UserCancelled
+                } else {
+                    WorkerOutcome::Cancelled
+                }
+            }
             // Preserve the variant through to the main loop so the
             // lifecycle can pattern-match on `Deterministic` vs
             // `Exhausted` when building the replan prompt (the retry
@@ -1011,6 +1122,13 @@ async fn await_in_flight_naturally(
             WorkerOutcome::Cancelled => {
                 mark_skipped(deps, run, run_id, &sub_id).await;
             }
+            WorkerOutcome::UserCancelled => {
+                // Phase 5 Step 1: per-worker stop during an
+                // await-in-flight drain. Same treatment as the main
+                // loop — mark Cancelled (user-intent terminal),
+                // cascade to dependents on next `cascade_skip`.
+                mark_user_cancelled(deps, run, run_id, &sub_id).await;
+            }
             WorkerOutcome::Escalate(kind) => {
                 // A second in-flight worker also escalated while we
                 // were draining. Mark it Failed too; the lifecycle
@@ -1024,6 +1142,49 @@ async fn await_in_flight_naturally(
             }
         }
     }
+}
+
+/// Phase 5 Step 1: mark a subtask as user-cancelled (terminal,
+/// user-intent). Parallel to [`mark_skipped`] but distinct wire state
+/// so the frontend can render the "stopped" badge distinct from the
+/// cascade-skipped variant. Caller is responsible for ensuring the
+/// `manual_cancel` flag is already set (the orchestrator method sets it
+/// before firing the per-subtask token, so by the time the worker exit
+/// is observed the flag has always won the race).
+async fn mark_user_cancelled(
+    deps: &DispatcherDeps,
+    run: &Arc<RwLock<Run>>,
+    run_id: &RunId,
+    sub_id: &SubtaskId,
+) {
+    let changed = {
+        let mut guard = run.write().await;
+        match guard.find_subtask_mut(sub_id) {
+            Some(s) if !s.is_terminal() => {
+                s.mark_cancelled();
+                true
+            }
+            _ => false,
+        }
+    };
+    if !changed {
+        return;
+    }
+    if let Err(e) = deps
+        .storage
+        .update_subtask_state(sub_id, SubtaskState::Cancelled, None)
+        .await
+    {
+        eprintln!("[dispatcher] update_subtask_state(cancelled, {sub_id}) failed: {e}");
+    }
+    deps.event_sink
+        .emit(RunEvent::SubtaskStateChanged {
+            run_id: run_id.clone(),
+            subtask_id: sub_id.clone(),
+            state: SubtaskState::Cancelled,
+            error_category: None,
+        })
+        .await;
 }
 
 async fn drain_as_skipped(

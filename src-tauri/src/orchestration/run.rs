@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::PlannedSubtask;
@@ -57,6 +58,23 @@ pub struct SubtaskRuntime {
     /// produced as Layer-2 replacements. The lifecycle stamps this at
     /// insertion time and also persists an edge to `subtask_replans`.
     pub replaces: Vec<SubtaskId>,
+    /// Phase 5 Step 1: per-subtask cancellation token. A child of the
+    /// run's `cancel_token` so run-wide cancel still fires here, but
+    /// with an independent trigger: `Orchestrator::cancel_subtask`
+    /// fires *only* this token, leaving sibling workers alive. Created
+    /// at construction time so it's always live — the dispatcher
+    /// clones it for the worker `tokio::select!` branch.
+    pub cancel_token: CancellationToken,
+    /// Phase 5 Step 1: set by `Orchestrator::cancel_subtask` before it
+    /// fires [`Self::cancel_token`]. The dispatcher checks this flag
+    /// after a worker exits; when set, the exit is routed through
+    /// `WorkerOutcome::UserCancelled` and the subtask is marked
+    /// `Cancelled` (user-intent, terminal) rather than being folded
+    /// into Layer 1 retry / Layer 2 replan / Layer 3 escalation. Not
+    /// persisted — on restart, active runs are swept to `Failed` per
+    /// the existing `recover_active_runs` invariant and the flag has
+    /// no lingering meaning.
+    pub manual_cancel: bool,
 }
 
 impl SubtaskRuntime {
@@ -74,6 +92,8 @@ impl SubtaskRuntime {
             finished_at: None,
             error: None,
             replaces: Vec::new(),
+            cancel_token: CancellationToken::new(),
+            manual_cancel: false,
         }
     }
 
@@ -99,7 +119,10 @@ impl SubtaskRuntime {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.state,
-            SubtaskState::Done | SubtaskState::Failed | SubtaskState::Skipped
+            SubtaskState::Done
+                | SubtaskState::Failed
+                | SubtaskState::Skipped
+                | SubtaskState::Cancelled
         )
     }
 
@@ -132,6 +155,15 @@ impl SubtaskRuntime {
 
     pub fn mark_skipped(&mut self) {
         self.state = SubtaskState::Skipped;
+        self.finished_at = Some(Utc::now());
+    }
+
+    /// Phase 5 Step 1: user-initiated per-worker stop. Terminal,
+    /// user-intent. `finished_at` stamped like every other terminal
+    /// transition. Called by the dispatcher's `WorkerOutcome::UserCancelled`
+    /// path after it observes `manual_cancel` on the runtime row.
+    pub fn mark_cancelled(&mut self) {
+        self.state = SubtaskState::Cancelled;
         self.finished_at = Some(Utc::now());
     }
 
@@ -215,6 +247,14 @@ pub struct Run {
     /// without re-emitting `AutoApproveSuspended`. Stays `false` for
     /// runs where auto-approve was never enabled.
     pub auto_approve_suspended: bool,
+    /// Phase 5 Step 1: wake-up signal for the dispatcher's main loop
+    /// when `cancel_subtask` targets a `Waiting` subtask. No worker is
+    /// running for a Waiting row — firing the per-subtask token goes
+    /// into the void — so the main loop needs an independent nudge to
+    /// re-enter its top-of-loop sweep and convert the row to
+    /// `Cancelled`. The dispatcher `select!`s on this alongside
+    /// `join_next()` and the run cancel token.
+    pub subtask_cancel_wake: Arc<Notify>,
 }
 
 impl Run {
@@ -241,6 +281,7 @@ impl Run {
             escalated_subtask_ids: Vec::new(),
             auto_approved_count: 0,
             auto_approve_suspended: false,
+            subtask_cancel_wake: Arc::new(Notify::new()),
         }
     }
 

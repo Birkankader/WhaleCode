@@ -343,7 +343,10 @@ impl Storage {
         let now = now_iso8601();
         let (set_started, set_finished) = match state {
             SubtaskState::Running => (true, false),
-            SubtaskState::Done | SubtaskState::Failed | SubtaskState::Skipped => (false, true),
+            SubtaskState::Done
+            | SubtaskState::Failed
+            | SubtaskState::Skipped
+            | SubtaskState::Cancelled => (false, true),
             _ => (false, false),
         };
 

@@ -4657,3 +4657,366 @@ async fn non_failed_state_changes_never_carry_error_category() {
 
     h.orch.discard_run(&run_id).await.unwrap();
 }
+
+// -- Phase 5 Step 1: per-worker stop ---------------------------------
+//
+// `cancel_subtask` stops exactly one subtask and leaves the rest of
+// the run running. Bypasses the retry ladder entirely: no Layer 1
+// retry, no Layer 2 replan, no Layer 3 escalation. Distinct from
+// run-wide `cancel_run` (which drains every worker and terminates the
+// run). The subtask transitions to `Cancelled` — user-intent terminal,
+// new in Phase 5.
+
+async fn await_subtask_state(
+    h: &Harness,
+    run_id: &RunId,
+    subtask_id: &SubtaskId,
+    target: SubtaskState,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let subs = h.storage.list_subtasks_for_run(run_id).await.unwrap();
+        if let Some(s) = subs.iter().find(|s| &s.id == subtask_id) {
+            if s.state == target {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let subs = h.storage.list_subtasks_for_run(run_id).await.unwrap();
+            panic!(
+                "timed out waiting for subtask {subtask_id} to reach {target:?}. Current: {subs:#?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn await_all_subtasks_terminal_or_cancelled(h: &Harness, run_id: &RunId) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let subs = h.storage.list_subtasks_for_run(run_id).await.unwrap();
+        if !subs.is_empty()
+            && subs.iter().all(|s| {
+                matches!(
+                    s.state,
+                    SubtaskState::Done
+                        | SubtaskState::Failed
+                        | SubtaskState::Skipped
+                        | SubtaskState::Cancelled
+                )
+            })
+        {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("subtasks not all terminal: {subs:#?}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn cancel_subtask_marks_cancelled_and_run_continues() {
+    // 3 workers: t0 completes quickly, t1 blocks (we cancel it), t2
+    // completes quickly. After cancel_subtask(t1), run must still
+    // reach Merging with t0 + t2 Done and t1 Cancelled.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(3)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::OkWrite {
+                summary: "t0 done".into(),
+                files: vec![(PathBuf::from("a.txt"), "aaa".into())],
+            },
+        )
+        .await
+        .with_execute("t1", ExecuteScript::Block)
+        .await
+        .with_execute(
+            "t2",
+            ExecuteScript::OkWrite {
+                summary: "t2 done".into(),
+                files: vec![(PathBuf::from("c.txt"), "ccc".into())],
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("three-workers".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    let t1_id = subs
+        .iter()
+        .find(|s| s.title == "t1")
+        .map(|s| s.id.clone())
+        .unwrap();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+
+    // Let t1 reach Running before firing cancel_subtask.
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Running).await;
+
+    h.orch.cancel_subtask(&run_id, &t1_id).await.unwrap();
+
+    // t1 must land on Cancelled (user-intent terminal).
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Cancelled).await;
+
+    // Run must still reach Merging — other workers' diffs are applied.
+    h.await_status(&run_id, RunStatus::Merging).await;
+}
+
+#[tokio::test]
+async fn cancel_subtask_bypasses_layer_1_retry() {
+    // A cancelled subtask must NOT emit any Retrying state event —
+    // that's the Layer 1 retry path, which is explicitly bypassed by
+    // manual cancel. We also assert no ReplanStarted fires (Layer 2).
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("solo".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    let t0_id = ids[0].clone();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Running).await;
+
+    h.orch.cancel_subtask(&run_id, &t0_id).await.unwrap();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Cancelled).await;
+
+    let events = h.sink.snapshot().await;
+    let retrying_for_t0 = events.iter().any(|e| {
+        matches!(
+            e,
+            RunEvent::SubtaskStateChanged {
+                subtask_id,
+                state: SubtaskState::Retrying,
+                ..
+            } if subtask_id == &t0_id
+        )
+    });
+    assert!(!retrying_for_t0, "manual cancel must not trigger Layer 1 retry");
+
+    let replan_started = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ReplanStarted { .. }));
+    assert!(!replan_started, "manual cancel must not trigger Layer 2 replan");
+}
+
+#[tokio::test]
+async fn cancel_subtask_cascades_dependents_to_skipped() {
+    // t0 is blocked + cancelled; t1 depends on t0. t1 must transition
+    // to Skipped (cascade), not Cancelled — Cancelled is reserved for
+    // user-intent; cascade is orchestrator-intent.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&[("t0", &[]), ("t1", &[0])])))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await
+        .with_execute(
+            "t1",
+            ExecuteScript::Ok {
+                summary: "never runs".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("cascade".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs.iter().find(|s| s.title == "t0").unwrap().id.clone();
+    let t1_id = subs.iter().find(|s| s.title == "t1").unwrap().id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Running).await;
+
+    h.orch.cancel_subtask(&run_id, &t0_id).await.unwrap();
+
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Cancelled).await;
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Skipped).await;
+    await_all_subtasks_terminal_or_cancelled(&h, &run_id).await;
+}
+
+#[tokio::test]
+async fn cancel_subtask_on_waiting_marks_cancelled_preemptively() {
+    // t1 depends on a blocked t0. Cancel t1 (Waiting state, no worker
+    // ever spawned) → t1 transitions to Cancelled without running.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&[("t0", &[]), ("t1", &[0])])))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await
+        .with_execute(
+            "t1",
+            ExecuteScript::Ok {
+                summary: "would run".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("wait-cancel".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs.iter().find(|s| s.title == "t0").unwrap().id.clone();
+    let t1_id = subs.iter().find(|s| s.title == "t1").unwrap().id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    h.await_status(&run_id, RunStatus::Running).await;
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Waiting).await;
+
+    h.orch.cancel_subtask(&run_id, &t1_id).await.unwrap();
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Cancelled).await;
+
+    // Cleanup: cancel run so t0 stops blocking.
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+    let _ = t0_id;
+}
+
+#[tokio::test]
+async fn cancel_subtask_on_done_returns_wrong_state() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "done".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("done-cancel".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Done).await;
+
+    let err = h.orch.cancel_subtask(&run_id, &t0_id).await.unwrap_err();
+    match err {
+        OrchestratorError::WrongSubtaskState { state, .. } => {
+            assert_eq!(state, SubtaskState::Done);
+        }
+        e => panic!("expected WrongSubtaskState, got {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn cancel_subtask_on_failed_returns_wrong_state_during_replan_race() {
+    // Mid-replan race: subtask is Failed while Layer 2 master replan is
+    // in flight. Per spec, cancel must fail gracefully with
+    // WrongSubtaskState — no double-terminal.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom1".into()))
+        .await
+        .with_execute("t0", ExecuteScript::Fail("boom2".into()))
+        .await
+        .with_replan(ReplanScript::Empty)
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("replan-race".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Failed).await;
+
+    let err = h.orch.cancel_subtask(&run_id, &t0_id).await.unwrap_err();
+    match err {
+        OrchestratorError::WrongSubtaskState { state, .. } => {
+            assert_eq!(state, SubtaskState::Failed);
+        }
+        e => panic!("expected WrongSubtaskState, got {e:?}"),
+    }
+
+    // Let escalation park so the run doesn't hang.
+    h.await_status(&run_id, RunStatus::AwaitingHumanFix).await;
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+#[tokio::test]
+async fn cancel_subtask_on_unknown_run_returns_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .cancel_subtask(&"ghost".to_string(), &"ghost-sub".to_string())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}
+
+#[tokio::test]
+async fn cancel_subtask_on_unknown_subtask_returns_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("unknown-sub".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+
+    let err = h
+        .orch
+        .cancel_subtask(&run_id, &"nosuch".to_string())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::SubtaskNotFound(_)));
+
+    // Cleanup.
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}

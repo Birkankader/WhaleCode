@@ -29,6 +29,7 @@ import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
 import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
+import { StopButton } from './StopButton';
 import { WorktreeActions } from './WorktreeActions';
 
 export type WorkerNodeData = {
@@ -136,6 +137,20 @@ const INSPECTABLE_STATES: ReadonlySet<NodeState> = new Set([
 ]);
 
 /**
+ * Phase 5 Step 1: states that expose the per-worker Stop affordance.
+ * The worker must be in a state the backend's `cancel_subtask`
+ * accepts — running / retrying / waiting. Proposed is pre-dispatch
+ * (handled via remove-from-plan in the approval bar); all terminal
+ * states reject. Disjoint from `INSPECTABLE_STATES`, so Stop and
+ * WorktreeActions never coexist in the footer.
+ */
+const STOPPABLE_STATES: ReadonlySet<NodeState> = new Set([
+  'running',
+  'retrying',
+  'waiting',
+]);
+
+/**
  * Phase 4 Step 3: render-window cap for the expanded LogBlock. The
  * store keeps every line it receives; the expanded view shows only
  * the most recent `LOG_RENDER_WINDOW` by default, with a "Load N
@@ -178,6 +193,7 @@ export function WorkerNode({ id, data }: NodeProps) {
   const strikeTitle = d.state === 'escalating' || d.state === 'skipped';
   const showLogs = LOG_VISIBLE_STATES.has(d.state);
   const isInspectable = INSPECTABLE_STATES.has(d.state);
+  const isStoppable = STOPPABLE_STATES.has(d.state);
 
   const isSelected = useGraphStore((s) => s.selectedSubtaskIds.has(id));
   const toggle = useGraphStore((s) => s.toggleSubtaskSelection);
@@ -377,6 +393,13 @@ export function WorkerNode({ id, data }: NodeProps) {
       ) : null}
 
       <footer className="mt-auto flex items-center justify-end gap-1">
+        {/* Phase 5 Step 1: per-worker Stop. Rendered on running /
+            retrying / waiting — disjoint from INSPECTABLE_STATES, so
+            Stop and WorktreeActions never coexist. Bypasses the retry
+            ladder entirely; subtask transitions to `cancelled`
+            (user-intent terminal) without triggering Layer 1 retry,
+            Layer 2 replan, or Layer 3 escalation. */}
+        {isStoppable ? <StopButton subtaskId={id} /> : null}
         {/* Phase 4 Step 4: worktree inspection affordance. Rendered
             only on inspectable states (done / failed / human_escalation
             / cancelled) — running workers must not be poked at mid-

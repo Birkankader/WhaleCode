@@ -142,6 +142,13 @@ pub enum SubtaskState {
     Done,
     Failed,
     Skipped,
+    /// Phase 5 Step 1: user-initiated per-worker stop. Terminal,
+    /// user-intent (distinct from orchestrator-intent `Failed` /
+    /// `Skipped`). Dispatcher skips Layer 1 retry, Layer 2 replan, and
+    /// Layer 3 escalation entirely for subtasks that land here via the
+    /// `manual_cancel` flag set on the runtime row. Dependents cascade
+    /// to `Skipped` via the same path `Failed` takes.
+    Cancelled,
 }
 
 #[allow(dead_code)]

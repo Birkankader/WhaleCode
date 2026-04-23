@@ -94,6 +94,25 @@ pub async fn cancel_run(
     orch.cancel_run(&run_id).await.map_err(|e| e.to_string())
 }
 
+/// Phase 5 Step 1: per-worker stop. Distinct from `cancel_run` (which
+/// terminates the whole run) — cancels exactly one subtask and leaves
+/// the rest of the run running. Bypasses the retry ladder entirely
+/// (no Layer 1 retry, no Layer 2 replan, no Layer 3 escalation) so the
+/// UI's "Stop" affordance is a deliberate terminal action, not a
+/// failure the orchestrator tries to rescue. Wrong-state errors (stop
+/// on a Done/Failed/Skipped/Cancelled subtask) surface as strings the
+/// frontend renders as a toast.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn cancel_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.cancel_subtask(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // -- Phase 3 plan-edit commands ---------------------------------------
 //
 // These three are only valid while a run is in `AwaitingApproval`

@@ -83,6 +83,10 @@ pub fn run() {
             commands::apply_run,
             commands::discard_run,
             commands::cancel_run,
+            // Phase 5 Step 1: per-worker stop. Distinct from cancel_run
+            // — this stops exactly one subtask and leaves the rest of
+            // the run running. Bypasses the retry ladder entirely.
+            commands::cancel_subtask,
             commands::update_subtask,
             commands::add_subtask,
             commands::remove_subtask,

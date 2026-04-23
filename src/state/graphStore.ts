@@ -36,6 +36,7 @@ import {
   applyRun as applyRunIpc,
   approveSubtasks as approveSubtasksIpc,
   cancelRun as cancelRunIpc,
+  cancelSubtask as cancelSubtaskIpc,
   discardRun as discardRunIpc,
   manualFixSubtask as manualFixSubtaskIpc,
   markSubtaskFixed as markSubtaskFixedIpc,
@@ -353,6 +354,22 @@ export type GraphState = {
   discardRun: () => Promise<void>;
   cancelRun: () => Promise<void>;
   /**
+   * Phase 5 Step 1: per-worker stop. Cancels exactly one subtask
+   * without cancelling the run. Backend rejects with a string error
+   * if the subtask is not in `running` / `retrying` / `waiting`;
+   * callers render the rejection as a toast (e.g. `SubtaskActionsMenu`)
+   * and the transient `subtaskCancelInFlight` flag rolls back.
+   */
+  cancelSubtask: (subtaskId: SubtaskId) => Promise<void>;
+  /**
+   * Phase 5 Step 1: ids of subtasks with a cancel_subtask IPC in
+   * flight. The footer renders "Stopping…" while an id sits here.
+   * Cleared on the backend's `SubtaskStateChanged { state: cancelled }`
+   * event, or on IPC rejection (the backend refused; roll back so the
+   * button becomes clickable again).
+   */
+  subtaskCancelInFlight: ReadonlySet<SubtaskId>;
+  /**
    * Phase 3 plan-edit actions. Valid only while the run is in
    * `awaiting_approval`. None of these mutate the store directly —
    * on success the backend re-emits `run:subtasks_proposed` with the
@@ -530,6 +547,7 @@ const initial: Pick<
   | 'workerExpanded'
   | 'pendingCancel'
   | 'cancelInFlight'
+  | 'subtaskCancelInFlight'
 > = {
   runId: null,
   taskInput: '',
@@ -559,6 +577,7 @@ const initial: Pick<
   workerExpanded: new Set(),
   pendingCancel: false,
   cancelInFlight: false,
+  subtaskCancelInFlight: new Set(),
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -659,6 +678,12 @@ function eventsForSubtaskState(
       // the actor where it is — the terminal run status already conveys
       // "run ended" visually via the muted graph.
       return ['SKIP'];
+    case 'cancelled':
+      // Phase 5 Step 1: user-initiated per-worker stop (distinct from
+      // run-wide cancel, which is driven through `handleStatusChanged`).
+      // The node machine accepts CANCEL from every non-final state, so
+      // a single dispatch is enough regardless of where the actor sits.
+      return ['CANCEL'];
   }
 }
 
@@ -1082,6 +1107,26 @@ export const useGraphStore = create<GraphState>((set, get) => {
     for (const type of events) {
       sendTo(e.subtaskId, { type });
     }
+
+    // Phase 5 Step 1: clear the per-subtask cancel-in-flight marker
+    // once the backend confirms a terminal transition. `cancelled` is
+    // the happy path (the cancel IPC worked); the other terminals
+    // cover the race where the subtask reached `done`/`failed`/`skipped`
+    // before the kill signal landed — roll back the transient UI
+    // either way so the "Stopping…" badge doesn't stick.
+    if (
+      (e.state === 'cancelled' ||
+        e.state === 'done' ||
+        e.state === 'failed' ||
+        e.state === 'skipped') &&
+      get().subtaskCancelInFlight.has(e.subtaskId)
+    ) {
+      set((state) => {
+        const next = new Set(state.subtaskCancelInFlight);
+        next.delete(e.subtaskId);
+        return { subtaskCancelInFlight: next };
+      });
+    }
   }
 
   function handleSubtaskLog(e: SubtaskLog) {
@@ -1471,6 +1516,42 @@ export const useGraphStore = create<GraphState>((set, get) => {
       get().reset();
     },
 
+    async cancelSubtask(subtaskId) {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) {
+        // Same rationale as cancelRun: an optimistic pending id can't
+        // be cancelled server-side. Per-subtask cancel has no pending
+        // equivalent (the UI surface only appears on running/retrying/
+        // waiting cards, which exist only after real-id submit), so
+        // silently no-op.
+        return;
+      }
+      const prev = get().subtaskCancelInFlight;
+      if (prev.has(subtaskId)) return;
+      const nextInFlight = new Set(prev);
+      nextInFlight.add(subtaskId);
+      set({ subtaskCancelInFlight: nextInFlight });
+      try {
+        await cancelSubtaskIpc(runId, subtaskId);
+        // Success path: the transient flag clears when the backend
+        // emits `SubtaskStateChanged { state: 'cancelled' }` — see
+        // `handleSubtaskStateChanged`. That keeps the "Stopping…"
+        // UI alive through the ~subsecond worker-kill window.
+      } catch (err) {
+        // Backend rejected (wrong state, unknown subtask, etc.). Roll
+        // back the in-flight flag so the button becomes clickable
+        // again and surface the error string so the card's toast
+        // wiring can render it.
+        const rolledBack = new Set(get().subtaskCancelInFlight);
+        rolledBack.delete(subtaskId);
+        set({
+          subtaskCancelInFlight: rolledBack,
+          currentError: `Stop failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
     async cancelRun() {
       const runId = get().runId;
       if (!runId) return;
@@ -1702,6 +1783,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         replanningSubtaskId: null,
         humanEscalation: null,
         workerExpanded: new Set(),
+        subtaskCancelInFlight: new Set(),
       });
     },
   };

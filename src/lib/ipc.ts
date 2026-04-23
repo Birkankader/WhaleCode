@@ -91,6 +91,11 @@ export const subtaskStateSchema = z.enum([
   'done',
   'failed',
   'skipped',
+  // Phase 5 Step 1: user-initiated per-worker stop. Terminal. Distinct
+  // from `skipped` (orchestrator cascade) and `failed` (orchestrator
+  // retry-exhausted) — users stopped this worker intentionally. Store
+  // bridge dispatches CANCEL to the node machine.
+  'cancelled',
 ]);
 export type SubtaskState = z.infer<typeof subtaskStateSchema>;
 
@@ -564,6 +569,24 @@ export async function discardRun(runId: RunId): Promise<void> {
 
 export async function cancelRun(runId: RunId): Promise<void> {
   await invoke('cancel_run', { runId });
+}
+
+/**
+ * Phase 5 Step 1: per-worker stop.
+ *
+ * Cancels exactly one subtask while leaving the rest of the run
+ * running. Bypasses the retry ladder entirely (Layer 1 / Layer 2 /
+ * Layer 3). Backend rejects with `WrongSubtaskState` string error if
+ * the subtask is not in `running` / `retrying` / `waiting` — the UI
+ * surfaces the rejection as a toast. Idempotent: firing twice on the
+ * same subtask returns `Ok(())` the first time and `WrongSubtaskState`
+ * the second (the first fire moved it to `cancelled`).
+ */
+export async function cancelSubtask(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<void> {
+  await invoke('cancel_subtask', { runId, subtaskId });
 }
 
 // ---------- Phase 3 plan-edit commands ----------
