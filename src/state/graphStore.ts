@@ -400,6 +400,14 @@ export type GraphState = {
   /** Phase 5 Step 3: open or close the conflict resolver popover. */
   setConflictResolverOpen: (open: boolean) => void;
   /**
+   * Phase 6 Step 3: toggle the "Show thinking" panel on a worker
+   * card. No-op for workers whose adapter doesn't expose thinking
+   * (Codex / Gemini per `THINKING_CAPABLE_AGENTS`); the UI gates
+   * the affordance independently so the action never fires for
+   * those workers in practice.
+   */
+  toggleWorkerThinking: (subtaskId: SubtaskId) => void;
+  /**
    * Phase 5 Step 4: deliver the user's answer to a parked question.
    * Sets `questionAnswerInFlight` while the IPC is out; the store
    * clears it on the backend's next `SubtaskStateChanged(Running)`
@@ -497,6 +505,15 @@ export type GraphState = {
    * and Gemini emit no events into this map.
    */
   subtaskThinking: ReadonlyMap<SubtaskId, ReadonlyArray<{ chunk: string; timestampMs: number }>>;
+  /**
+   * Phase 6 Step 3 — per-worker "Show thinking" toggle. Default off
+   * (thinking is verbose; opt-in for users who want depth).
+   * Membership in this set means the panel is visible for that
+   * subtask; absent means hidden. Per-worker independent — toggling
+   * one card doesn't affect siblings. Cleared on `reset` so a new
+   * run starts clean.
+   */
+  workerThinkingVisible: ReadonlySet<SubtaskId>;
   pendingQuestions: ReadonlyMap<SubtaskId, { question: string }>;
   /**
    * Phase 5 Step 4: transient per-subtask flag for "the answer /
@@ -694,6 +711,7 @@ const initial: Pick<
   | 'questionAnswerInFlight'
   | 'subtaskActivities'
   | 'subtaskThinking'
+  | 'workerThinkingVisible'
 > = {
   runId: null,
   taskInput: '',
@@ -734,6 +752,7 @@ const initial: Pick<
   questionAnswerInFlight: new Set(),
   subtaskActivities: new Map(),
   subtaskThinking: new Map(),
+  workerThinkingVisible: new Set(),
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -2210,6 +2229,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
       });
     },
 
+    toggleWorkerThinking(subtaskId) {
+      set((state) => {
+        const next = new Set(state.workerThinkingVisible);
+        if (next.has(subtaskId)) next.delete(subtaskId);
+        else next.add(subtaskId);
+        return { workerThinkingVisible: next };
+      });
+    },
+
     reset() {
       detachActiveSubscription();
       for (const actor of get().nodeActors.values()) actor.stop();
@@ -2238,6 +2266,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         questionAnswerInFlight: new Set(),
         subtaskActivities: new Map(),
         subtaskThinking: new Map(),
+        workerThinkingVisible: new Set(),
       });
     },
   };

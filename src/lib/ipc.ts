@@ -38,6 +38,21 @@ export function isMasterCapable(kind: AgentKind): boolean {
   return (MASTER_CAPABLE_AGENTS as readonly AgentKind[]).includes(kind);
 }
 
+/**
+ * Phase 6 Step 3 — agents whose worker output exposes
+ * reasoning / thinking blocks the dispatcher's parser tee can
+ * extract. Step 0 diagnostic confirmed Claude is the only
+ * adapter today; Codex (`exec --json`) and Gemini (text mode)
+ * emit no equivalent. The thinking-toggle UI greys out for
+ * non-supported workers with a tooltip pointing at this list.
+ */
+export const THINKING_CAPABLE_AGENTS: readonly AgentKind[] = ['claude'] as const;
+
+/** See {@link THINKING_CAPABLE_AGENTS}. */
+export function supportsThinking(kind: AgentKind): boolean {
+  return (THINKING_CAPABLE_AGENTS as readonly AgentKind[]).includes(kind);
+}
+
 export const agentStatusSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('available'),

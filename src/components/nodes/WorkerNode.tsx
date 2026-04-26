@@ -31,7 +31,9 @@ import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
 import { ActivityChipStack } from './ActivityChipStack';
 import { QuestionInput } from './QuestionInput';
+import { ShowThinkingToggle } from './ShowThinkingToggle';
 import { StopButton } from './StopButton';
+import { ThinkingPanel } from './ThinkingPanel';
 import { WorktreeActions } from './WorktreeActions';
 
 export type WorkerNodeData = {
@@ -215,6 +217,9 @@ export function WorkerNode({ id, data }: NodeProps) {
   // Phase 5 Step 4: subscribe to this subtask's pending question
   // entry only. Identity-stable across sibling updates.
   const pendingQuestion = useGraphStore((s) => s.pendingQuestions.get(id));
+  // Phase 6 Step 3: per-worker thinking-panel visibility. Membership
+  // is the toggle state. Identity-stable across sibling toggles.
+  const showThinking = useGraphStore((s) => s.workerThinkingVisible.has(id));
   const toggleExpanded = useGraphStore((s) => s.toggleWorkerExpanded);
   const canExpand = EXPANDABLE_STATES.has(d.state);
   // Phase 3.5 Item 6: per-subtask diff — available once the backend has
@@ -385,6 +390,14 @@ export function WorkerNode({ id, data }: NodeProps) {
           underlying event store. */}
       {showLogs ? <ActivityChipStack subtaskId={id} /> : null}
 
+      {/* Phase 6 Step 3: agent reasoning / thinking panel. Mounts
+          only when the per-card toggle is on AND the card is in a
+          log-visible state. Capability gating lives on the toggle
+          itself (greyed out for Codex / Gemini); the panel will
+          render an empty state for those workers if the toggle
+          somehow flipped on, which is a defensive no-op. */}
+      {showLogs && showThinking ? <ThinkingPanel subtaskId={id} /> : null}
+
       {showLogs ? (
         isExpanded && canExpand ? (
           <ExpandedLogBlock
@@ -427,6 +440,14 @@ export function WorkerNode({ id, data }: NodeProps) {
             (user-intent terminal) without triggering Layer 1 retry,
             Layer 2 replan, or Layer 3 escalation. */}
         {isStoppable ? <StopButton subtaskId={id} /> : null}
+        {/* Phase 6 Step 3: per-card "Show thinking" toggle. Visible
+            on log-visible states; capability-gated (Claude only —
+            Codex / Gemini greyed out per Step 0 diagnostic findings).
+            Toggling drives `workerThinkingVisible` membership; the
+            panel mounts above the log tail when on. */}
+        {showLogs ? (
+          <ShowThinkingToggle subtaskId={id} agent={d.agent} />
+        ) : null}
         {/* Phase 4 Step 4: worktree inspection affordance. Rendered
             only on inspectable states (done / failed / human_escalation
             / cancelled) — running workers must not be poked at mid-
