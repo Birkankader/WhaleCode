@@ -19,3 +19,10 @@ mod crash_shapes;
 // behavior. See docs/phase-5-qa-diagnostic.md.
 #[cfg(test)]
 mod question_shapes;
+
+// Phase 6 Step 0 tool-use parsing diagnostic — asserts current
+// output formats of Claude (stream-json), Codex (exec --json
+// JSONL), and Gemini (text/prose). Tests-only; production parser
+// lands in Step 2. See docs/phase-6-toolparsing-diagnostic.md.
+#[cfg(test)]
+mod tool_event_shapes;
