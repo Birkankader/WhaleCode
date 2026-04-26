@@ -43,6 +43,7 @@ import {
   EVENT_STASH_POPPED,
   EVENT_SUBTASK_ACTIVITY,
   EVENT_SUBTASK_ANSWER_RECEIVED,
+  EVENT_SUBTASK_HINT_RECEIVED,
   EVENT_SUBTASK_QUESTION_ASKED,
   EVENT_SUBTASK_THINKING,
   EVENT_STATUS_CHANGED,
@@ -67,6 +68,7 @@ import {
   stashPoppedSchema,
   subtaskActivitySchema,
   subtaskAnswerReceivedSchema,
+  subtaskHintReceivedSchema,
   subtaskQuestionAskedSchema,
   subtaskThinkingSchema,
   statusChangedSchema,
@@ -92,6 +94,7 @@ import {
   type StashPopped,
   type SubtaskActivity,
   type SubtaskAnswerReceived,
+  type SubtaskHintReceived,
   type SubtaskQuestionAsked,
   type SubtaskThinking,
   type StatusChanged,
@@ -126,6 +129,7 @@ export type RunEventHandlers = {
   onSubtaskAnswerReceived?: (event: SubtaskAnswerReceived) => void;
   onSubtaskActivity?: (event: SubtaskActivity) => void;
   onSubtaskThinking?: (event: SubtaskThinking) => void;
+  onSubtaskHintReceived?: (event: SubtaskHintReceived) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -319,6 +323,11 @@ export class RunSubscription {
         event: EVENT_SUBTASK_THINKING,
         schema: subtaskThinkingSchema,
         handler: this.handlers.onSubtaskThinking as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_SUBTASK_HINT_RECEIVED,
+        schema: subtaskHintReceivedSchema,
+        handler: this.handlers.onSubtaskHintReceived as ((e: unknown) => void) | undefined,
       },
     ];
   }

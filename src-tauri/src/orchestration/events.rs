@@ -217,6 +217,17 @@ pub enum RunEvent {
         chunk: String,
         timestamp_ms: u64,
     },
+    /// Phase 6 Step 4: user injected a hint into a running worker.
+    /// Backend has already fired the cancel + parked the hint for
+    /// the worker task's restart loop to consume. UI uses this
+    /// confirmation to clear the per-card "Sending…" indicator and
+    /// flip to "Restarting with your hint…" copy.
+    SubtaskHintReceived {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        hint: String,
+        timestamp_ms: u64,
+    },
     /// Phase 5 Step 3: the user clicked "Retry apply" after resolving
     /// a merge conflict, but the re-attempted merge hit a conflict
     /// again. Same file-set payload as `MergeConflict`, plus a
@@ -261,7 +272,8 @@ impl RunEvent {
             | RunEvent::SubtaskQuestionAsked { run_id, .. }
             | RunEvent::SubtaskAnswerReceived { run_id, .. }
             | RunEvent::SubtaskActivity { run_id, .. }
-            | RunEvent::SubtaskThinking { run_id, .. } => run_id,
+            | RunEvent::SubtaskThinking { run_id, .. }
+            | RunEvent::SubtaskHintReceived { run_id, .. } => run_id,
         }
     }
 }
@@ -491,6 +503,20 @@ impl EventSink for TauriEventSink {
                     run_id,
                     subtask_id,
                     chunk,
+                    timestamp_ms,
+                },
+            ),
+            RunEvent::SubtaskHintReceived {
+                run_id,
+                subtask_id,
+                hint,
+                timestamp_ms,
+            } => wire::emit_subtask_hint_received(
+                &self.app,
+                &wire::SubtaskHintReceived {
+                    run_id,
+                    subtask_id,
+                    hint,
                     timestamp_ms,
                 },
             ),

@@ -106,6 +106,10 @@ pub fn run() {
             // is the false-positive escape hatch.
             commands::answer_subtask_question,
             commands::skip_subtask_question,
+            // Phase 6 Step 4: mid-execution hint injection. Reuses
+            // Phase 5 cancel + restart-with-extra mechanism; hint
+            // restart bypasses Layer 1 retry budget.
+            commands::hint_subtask,
             commands::update_subtask,
             commands::add_subtask,
             commands::remove_subtask,

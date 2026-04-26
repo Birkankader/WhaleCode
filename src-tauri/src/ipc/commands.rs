@@ -157,6 +157,23 @@ pub async fn skip_subtask_question(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 6 Step 4: inject a mid-execution hint into a running
+/// worker. Worker stops gracefully (Phase 5 Step 1 cancel) and
+/// re-dispatches with the hint appended to its prompt. Bypasses
+/// Layer 1 retry budget. Concurrent-hint guard rejects with
+/// `InvalidEdit` if a previous hint is still pending.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn hint_subtask(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+    hint: String,
+) -> Result<(), String> {
+    orch.hint_subtask(&run_id, &subtask_id, hint)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Phase 5 Step 3: retry a merge that just conflicted. Semantic
 /// alias for `apply_run` — the lifecycle re-installed the apply
 /// oneshot on the conflict branch, so this re-enters the merge

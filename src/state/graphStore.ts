@@ -42,6 +42,7 @@ import {
   retryApply as retryApplyIpc,
   answerSubtaskQuestion as answerSubtaskQuestionIpc,
   skipSubtaskQuestion as skipSubtaskQuestionIpc,
+  hintSubtask as hintSubtaskIpc,
   discardRun as discardRunIpc,
   manualFixSubtask as manualFixSubtaskIpc,
   markSubtaskFixed as markSubtaskFixedIpc,
@@ -73,6 +74,7 @@ import {
   type StashPopped,
   type SubtaskActivity,
   type SubtaskAnswerReceived,
+  type SubtaskHintReceived,
   type SubtaskQuestionAsked,
   type SubtaskThinking,
   type SkipResult,
@@ -408,6 +410,14 @@ export type GraphState = {
    */
   toggleWorkerThinking: (subtaskId: SubtaskId) => void;
   /**
+   * Phase 6 Step 4: inject a mid-execution hint into a running
+   * worker. Sets `hintInFlight` membership while the IPC is out;
+   * the store clears it on the backend's
+   * `SubtaskHintReceived` confirmation. Backend rejection
+   * surfaces via `currentError` and rolls back the flag.
+   */
+  hintSubtask: (subtaskId: SubtaskId, hint: string) => Promise<void>;
+  /**
    * Phase 5 Step 4: deliver the user's answer to a parked question.
    * Sets `questionAnswerInFlight` while the IPC is out; the store
    * clears it on the backend's next `SubtaskStateChanged(Running)`
@@ -514,6 +524,15 @@ export type GraphState = {
    * run starts clean.
    */
   workerThinkingVisible: ReadonlySet<SubtaskId>;
+  /**
+   * Phase 6 Step 4 — ids of subtasks with a `hint_subtask` IPC in
+   * flight. Set on click; cleared on `SubtaskHintReceived` (backend
+   * confirmed dispatch) OR `SubtaskStateChanged(running)` (worker
+   * re-entered running with the hint absorbed) OR IPC rejection.
+   * Disables the inline input + flips copy to "Restarting with
+   * your hint…" while membership.
+   */
+  hintInFlight: ReadonlySet<SubtaskId>;
   pendingQuestions: ReadonlyMap<SubtaskId, { question: string }>;
   /**
    * Phase 5 Step 4: transient per-subtask flag for "the answer /
@@ -712,6 +731,7 @@ const initial: Pick<
   | 'subtaskActivities'
   | 'subtaskThinking'
   | 'workerThinkingVisible'
+  | 'hintInFlight'
 > = {
   runId: null,
   taskInput: '',
@@ -753,6 +773,7 @@ const initial: Pick<
   subtaskActivities: new Map(),
   subtaskThinking: new Map(),
   workerThinkingVisible: new Set(),
+  hintInFlight: new Set(),
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -1415,6 +1436,19 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleSubtaskHintReceived(e: SubtaskHintReceived) {
+    if (e.runId !== get().runId) return;
+    // Backend has parked the hint + fired cancel. UI flips per-card
+    // copy from "Sending…" to "Restarting with your hint…" via the
+    // hintInFlight membership clearing.
+    if (!get().hintInFlight.has(e.subtaskId)) return;
+    set((state) => {
+      const next = new Set(state.hintInFlight);
+      next.delete(e.subtaskId);
+      return { hintInFlight: next };
+    });
+  }
+
   function handleSubtaskLog(e: SubtaskLog) {
     if (e.runId !== get().runId) return;
     appendLog(e.subtaskId, e.line);
@@ -1682,6 +1716,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskAnswerReceived: handleSubtaskAnswerReceived,
       onSubtaskActivity: handleSubtaskActivity,
       onSubtaskThinking: handleSubtaskThinking,
+      onSubtaskHintReceived: handleSubtaskHintReceived,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -2238,6 +2273,28 @@ export const useGraphStore = create<GraphState>((set, get) => {
       });
     },
 
+    async hintSubtask(subtaskId, hint) {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      if (get().hintInFlight.has(subtaskId)) return;
+      const next = new Set(get().hintInFlight);
+      next.add(subtaskId);
+      set({ hintInFlight: next });
+      try {
+        await hintSubtaskIpc(runId, subtaskId, hint);
+        // Clears on `handleSubtaskHintReceived` (backend confirms
+        // the hint was parked + cancel fired).
+      } catch (err) {
+        const rolledBack = new Set(get().hintInFlight);
+        rolledBack.delete(subtaskId);
+        set({
+          hintInFlight: rolledBack,
+          currentError: `Hint failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
     reset() {
       detachActiveSubscription();
       for (const actor of get().nodeActors.values()) actor.stop();
@@ -2267,6 +2324,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         subtaskActivities: new Map(),
         subtaskThinking: new Map(),
         workerThinkingVisible: new Set(),
+        hintInFlight: new Set(),
       });
     },
   };

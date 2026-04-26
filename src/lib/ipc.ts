@@ -278,6 +278,10 @@ export const EVENT_SUBTASK_ACTIVITY = 'run:subtask_activity' as const;
 // Phase 6 Step 3: agent reasoning / thinking block. Currently
 // Claude-only.
 export const EVENT_SUBTASK_THINKING = 'run:subtask_thinking' as const;
+// Phase 6 Step 4: backend confirmation that a user-injected hint
+// has been parked + cancel fired. UI flips per-card indicator
+// from "Sending…" to "Restarting with your hint…".
+export const EVENT_SUBTASK_HINT_RECEIVED = 'run:subtask_hint_received' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -533,6 +537,15 @@ export const subtaskThinkingSchema = z.object({
   timestampMs: z.number().int().nonnegative(),
 });
 export type SubtaskThinking = z.infer<typeof subtaskThinkingSchema>;
+
+/** Phase 6 Step 4 payload for {@link EVENT_SUBTASK_HINT_RECEIVED}. */
+export const subtaskHintReceivedSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  hint: z.string(),
+  timestampMs: z.number().int().nonnegative(),
+});
+export type SubtaskHintReceived = z.infer<typeof subtaskHintReceivedSchema>;
 
 /** Phase 5 Step 4 payload for {@link EVENT_SUBTASK_ANSWER_RECEIVED}. */
 export const subtaskAnswerReceivedSchema = z.object({
@@ -818,6 +831,21 @@ export async function skipSubtaskQuestion(
   subtaskId: SubtaskId,
 ): Promise<void> {
   await invoke('skip_subtask_question', { runId, subtaskId });
+}
+
+/**
+ * Phase 6 Step 4: inject a mid-execution hint into a running
+ * worker. Worker stops gracefully (Phase 5 cancel mechanism) and
+ * re-dispatches with the hint appended to its prompt. Bypasses
+ * Layer 1 retry budget. Concurrent-hint guard rejects with
+ * `WrongSubtaskState` if a previous hint is still pending.
+ */
+export async function hintSubtask(
+  runId: RunId,
+  subtaskId: SubtaskId,
+  hint: string,
+): Promise<void> {
+  await invoke('hint_subtask', { runId, subtaskId, hint });
 }
 
 // ---------- Phase 3 plan-edit commands ----------

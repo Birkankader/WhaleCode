@@ -75,6 +75,13 @@ pub struct SubtaskRuntime {
     /// the existing `recover_active_runs` invariant and the flag has
     /// no lingering meaning.
     pub manual_cancel: bool,
+    /// Phase 6 Step 4: pending hint queued by `hint_subtask`. When
+    /// `Some`, the worker task's hint loop reads + clears the value
+    /// after the cancel-driven restart, formats it as `extra_context`,
+    /// and re-runs `agent.execute`. Cleared by the worker task on
+    /// re-entry to Running. Concurrent-hint guard rejects the
+    /// orchestrator method when this is already `Some`.
+    pub hint_pending: Option<String>,
 }
 
 impl SubtaskRuntime {
@@ -94,6 +101,7 @@ impl SubtaskRuntime {
             replaces: Vec::new(),
             cancel_token: CancellationToken::new(),
             manual_cancel: false,
+            hint_pending: None,
         }
     }
 

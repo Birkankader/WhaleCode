@@ -76,6 +76,10 @@ pub const EVENT_SUBTASK_ACTIVITY: &str = "run:subtask_activity";
 /// Phase 6 Step 3: agent reasoning / thinking block parsed from
 /// the worker's output. Currently Claude-only.
 pub const EVENT_SUBTASK_THINKING: &str = "run:subtask_thinking";
+/// Phase 6 Step 4: user injected a hint into a running worker.
+/// Backend confirms by emitting this; UI flips per-card
+/// indicator from "Sending…" to "Restarting with your hint…".
+pub const EVENT_SUBTASK_HINT_RECEIVED: &str = "run:subtask_hint_received";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -397,6 +401,18 @@ pub struct SubtaskThinking {
     pub timestamp_ms: u64,
 }
 
+/// Phase 6 Step 4 wire payload for [`EVENT_SUBTASK_HINT_RECEIVED`].
+/// `hint` echoed back so the UI can render a brief "Restarting
+/// with: <hint>" confirmation post-submit.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskHintReceived {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+    pub hint: String,
+    pub timestamp_ms: u64,
+}
+
 /// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_ANSWER_RECEIVED`].
 /// Fires immediately before the subtask transitions back to
 /// `Running`. No answer text on the wire — the reply is ephemeral
@@ -549,6 +565,13 @@ pub fn emit_subtask_activity(app: &AppHandle, payload: &SubtaskActivity) -> taur
 
 pub fn emit_subtask_thinking(app: &AppHandle, payload: &SubtaskThinking) -> tauri::Result<()> {
     app.emit(EVENT_SUBTASK_THINKING, payload)
+}
+
+pub fn emit_subtask_hint_received(
+    app: &AppHandle,
+    payload: &SubtaskHintReceived,
+) -> tauri::Result<()> {
+    app.emit(EVENT_SUBTASK_HINT_RECEIVED, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

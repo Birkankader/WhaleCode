@@ -927,17 +927,13 @@ async fn dispatch_one(
         .await
         .map_err(|e| format!("worktree create: {e}"))?;
 
-    let (subtask_row, worker_kind, sub_cancel_token) = {
+    let (subtask_row, worker_kind) = {
         let mut guard = run.write().await;
         let s = guard
             .find_subtask_mut(sub_id)
             .ok_or_else(|| "subtask vanished mid-dispatch".to_string())?;
         s.mark_running(worktree_path.clone());
-        (
-            to_storage_subtask(s, run_id),
-            s.data.assigned_worker,
-            s.cancel_token.clone(),
-        )
+        (to_storage_subtask(s, run_id), s.data.assigned_worker)
     };
 
     deps.storage
@@ -974,128 +970,201 @@ async fn dispatch_one(
     // so `cancel_run` still stops every worker and `cancel_subtask`
     // stops only this one. The manual-cancel flag (read post-exit) is
     // what distinguishes the two at the outcome-mapping layer.
-    let sub_cancel = {
-        let composite = CancellationToken::new();
-        let run_cancel = cancel.clone();
-        let per_sub = sub_cancel_token.clone();
-        let composite_fire = composite.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = run_cancel.cancelled() => composite_fire.cancel(),
-                _ = per_sub.cancelled() => composite_fire.cancel(),
-            }
-        });
-        composite
-    };
+    // Phase 6 Step 4: composite cancel token is built per-
+    // iteration *inside* the worker task's hint loop (see below)
+    // because hint restart resets the per-subtask token to a fresh
+    // CancellationToken. The Phase 5 Step 1 outer-build version
+    // would have inherited the fired state across iterations.
+    // The loop snapshots the *current* per-subtask token from the
+    // runtime row each iteration so it picks up the reset.
     let sub_id_owned = sub_id.clone();
     let run_id_owned = run_id.clone();
     let storage = deps.storage.clone();
     let event_sink = deps.event_sink.clone();
     let run_for_cancel_check = run.clone();
     let pending_answers = deps.pending_answers.clone();
+    let run_cancel_token = cancel.clone();
     join_set.spawn(async move {
-        // Phase 3 Step 3b: route through the Layer-1 retry ladder
-        // instead of calling `execute` directly. `execute_subtask_with_retry`
-        // owns the Retrying/Running transitions and log separator; on
-        // success (first attempt or recovered retry) it returns the
-        // same `ExecutionResult` the direct call used to. On escalation
-        // it maps onto `WorkerOutcome::Failed` so Phase 2's fail-fast
-        // dispatcher behaviour is preserved until Step 4 adds Layer 2.
-        let first_attempt = execute_subtask_with_retry(
-            storage.as_ref(),
-            event_sink.as_ref(),
-            &run_id_owned,
-            &subtask_row,
-            worker.as_ref(),
-            &worktree_path,
-            &notes_snapshot,
-            log_tx.clone(),
-            sub_cancel.clone(),
-        )
-        .await;
+        // Phase 6 Step 4: hint loop wraps the existing execute →
+        // Q&A → commit chain. The first iteration runs the full
+        // Phase 3 retry ladder; subsequent iterations (post-hint
+        // restart) call `agent.execute` directly so the user-
+        // driven continuation doesn't burn retry budget. Cancel
+        // routing inside the loop:
+        //   manual_cancel == true   → WorkerOutcome::UserCancelled
+        //                              (Stop wins; pending hint dropped)
+        //   hint_pending == Some(_) → restart with hint extra_context
+        //   else                    → WorkerOutcome::Cancelled
+        let mut current_extra: Option<String> = None;
+        let outcome = 'outer: loop {
+            // Snapshot the current per-subtask cancel token. Reset
+            // on hint restart so the next iteration's composite
+            // doesn't see the previous Cancelled signal.
+            let per_sub_now = {
+                let r = run_for_cancel_check.read().await;
+                r.find_subtask(&sub_id_owned).map(|s| s.cancel_token.clone())
+            };
+            let Some(per_sub_now) = per_sub_now else {
+                break 'outer WorkerOutcome::Failed("subtask vanished mid-hint".into());
+            };
 
-        // Phase 5 Step 4: Q&A loop. If the adapter's output ends in
-        // `?` (heuristic), park the subtask in `AwaitingInput` and
-        // wait for the user's decision. Answer → re-execute with
-        // augmented prompt (skipping the retry ladder, since this
-        // isn't a failure). Skip / Timeout → finalize with the
-        // current output. On each round, the detection re-runs.
-        // Bounded to MAX_QA_ROUNDS so a pathological adapter can't
-        // loop forever on `?`-ended output.
-        let execute_result = resolve_qa_loop(
-            first_attempt,
-            RunCtx {
-                storage: storage.as_ref(),
-                event_sink: event_sink.as_ref(),
-                pending_answers: &pending_answers,
-                run_id: &run_id_owned,
-                subtask_id: &sub_id_owned,
-                subtask_row: &subtask_row,
-                worker: worker.as_ref(),
-                worktree_path: &worktree_path,
-                notes_snapshot: &notes_snapshot,
-                log_tx: &log_tx,
-                cancel: &sub_cancel,
-            },
-        )
-        .await;
-
-        let outcome = match execute_result {
-            // Real-world CLI agents rarely commit their own work — the
-            // worktree is an implementation detail and we don't want to
-            // rely on prompt discipline across three different CLIs. So
-            // the orchestrator owns commit semantics: after a successful
-            // execute we stage + commit whatever the worker left behind.
-            // A clean worktree (agent decided nothing needed doing) is a
-            // legitimate outcome; only a failing commit fails the run.
-            Ok(r) => match commit_worker_changes(
-                &worktree_path,
-                &subtask_row.title,
-                subtask_row.why.as_deref(),
-                worker_kind,
-                &run_id_owned,
-            )
-            .await
+            // Phase 5 Step 1: composite cancel — fires on either
+            // per-subtask token (cancel_subtask / hint_subtask) or
+            // run-wide cancel. Rebuilt per iteration since the
+            // per-sub token is reset by the hint flow.
+            let iter_cancel = CancellationToken::new();
             {
-                Ok(true) => WorkerOutcome::Done(r),
-                Ok(false) => {
-                    eprintln!(
-                        "[dispatcher] worker {sub_id_owned} left worktree {} clean; marking done with no changes",
-                        worktree_path.display()
-                    );
-                    WorkerOutcome::Done(r)
-                }
-                Err(e) => WorkerOutcome::Failed(format!("commit failed: {e}")),
-            },
-            Err(EscalateToMaster::UserCancelled) => {
-                // Phase 5 Step 1: distinguish per-worker stop from
-                // run-wide cancel. Read the manual_cancel flag *after*
-                // the worker observed Cancellation so the ordering is
-                // deterministic (the orchestrator method sets the flag
-                // before firing the token).
-                let manual = {
-                    let r = run_for_cancel_check.read().await;
-                    r.find_subtask(&sub_id_owned)
-                        .map(|s| s.manual_cancel)
-                        .unwrap_or(false)
-                };
-                if manual {
-                    WorkerOutcome::UserCancelled
-                } else {
-                    WorkerOutcome::Cancelled
-                }
+                let cf = iter_cancel.clone();
+                let rc = run_cancel_token.clone();
+                let ps = per_sub_now.clone();
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = rc.cancelled() => cf.cancel(),
+                        _ = ps.cancelled() => cf.cancel(),
+                    }
+                });
             }
-            // Preserve the variant through to the main loop so the
-            // lifecycle can pattern-match on `Deterministic` vs
-            // `Exhausted` when building the replan prompt (the retry
-            // count surfaces differently) rather than parsing strings.
-            Err(kind @ (EscalateToMaster::Deterministic(_) | EscalateToMaster::Exhausted(_))) => {
-                WorkerOutcome::Escalate(kind)
+
+            let first_attempt = if let Some(extra) = current_extra.as_deref() {
+                // Hint restart path: bypass Layer 1 retry ladder —
+                // the user already asked for this re-run, no point
+                // burning the retry budget on it. Maps adapter
+                // errors onto the EscalateToMaster variants the
+                // dispatcher main loop already handles.
+                match worker
+                    .execute(
+                        &subtask_row,
+                        &worktree_path,
+                        &notes_snapshot,
+                        Some(extra),
+                        log_tx.clone(),
+                        iter_cancel.clone(),
+                    )
+                    .await
+                {
+                    Ok(r) => Ok(r),
+                    Err(AgentError::Cancelled) => Err(EscalateToMaster::UserCancelled),
+                    Err(e @ AgentError::SpawnFailed { .. }) => {
+                        Err(EscalateToMaster::Deterministic(e))
+                    }
+                    Err(e) => Err(EscalateToMaster::Exhausted(e)),
+                }
+            } else {
+                // First iteration: full Phase 3 retry ladder.
+                execute_subtask_with_retry(
+                    storage.as_ref(),
+                    event_sink.as_ref(),
+                    &run_id_owned,
+                    &subtask_row,
+                    worker.as_ref(),
+                    &worktree_path,
+                    &notes_snapshot,
+                    log_tx.clone(),
+                    iter_cancel.clone(),
+                )
+                .await
+            };
+
+            // Phase 5 Step 4: Q&A loop wraps the execute result.
+            // Detects question in summary, parks AwaitingInput,
+            // re-executes on Answer, finalizes on Skip/Timeout.
+            let execute_result = resolve_qa_loop(
+                first_attempt,
+                RunCtx {
+                    storage: storage.as_ref(),
+                    event_sink: event_sink.as_ref(),
+                    pending_answers: &pending_answers,
+                    run_id: &run_id_owned,
+                    subtask_id: &sub_id_owned,
+                    subtask_row: &subtask_row,
+                    worker: worker.as_ref(),
+                    worktree_path: &worktree_path,
+                    notes_snapshot: &notes_snapshot,
+                    log_tx: &log_tx,
+                    cancel: &iter_cancel,
+                },
+            )
+            .await;
+
+            match execute_result {
+                Ok(r) => {
+                    break 'outer match commit_worker_changes(
+                        &worktree_path,
+                        &subtask_row.title,
+                        subtask_row.why.as_deref(),
+                        worker_kind,
+                        &run_id_owned,
+                    )
+                    .await
+                    {
+                        Ok(true) => WorkerOutcome::Done(r),
+                        Ok(false) => {
+                            eprintln!(
+                                "[dispatcher] worker {sub_id_owned} left worktree {} clean; marking done with no changes",
+                                worktree_path.display()
+                            );
+                            WorkerOutcome::Done(r)
+                        }
+                        Err(e) => WorkerOutcome::Failed(format!("commit failed: {e}")),
+                    };
+                }
+                Err(EscalateToMaster::UserCancelled) => {
+                    // Phase 6 Step 4: check flags atomically.
+                    // manual_cancel takes priority over hint_pending
+                    // (Stop wins, pending hint dropped). If neither,
+                    // fall through to run-wide Cancelled.
+                    let decision = {
+                        let mut guard = run_for_cancel_check.write().await;
+                        let Some(s) = guard.find_subtask_mut(&sub_id_owned) else {
+                            break 'outer WorkerOutcome::Cancelled;
+                        };
+                        if s.manual_cancel {
+                            // Stop wins. Drop any pending hint.
+                            s.hint_pending = None;
+                            CancelDecision::ManualCancel
+                        } else if let Some(hint) = s.hint_pending.take() {
+                            // Phase 6 Step 4: hint restart. Reset
+                            // per-subtask cancel token so the next
+                            // iteration starts with a fresh signal.
+                            s.cancel_token = tokio_util::sync::CancellationToken::new();
+                            CancelDecision::HintRestart(hint)
+                        } else {
+                            CancelDecision::RunWideCancel
+                        }
+                    };
+                    match decision {
+                        CancelDecision::ManualCancel => {
+                            break 'outer WorkerOutcome::UserCancelled;
+                        }
+                        CancelDecision::HintRestart(hint) => {
+                            current_extra = Some(format!(
+                                "# User hint (mid-execution interjection)\n\n{}",
+                                hint.trim()
+                            ));
+                            continue 'outer;
+                        }
+                        CancelDecision::RunWideCancel => {
+                            break 'outer WorkerOutcome::Cancelled;
+                        }
+                    }
+                }
+                Err(kind @ (EscalateToMaster::Deterministic(_) | EscalateToMaster::Exhausted(_))) => {
+                    break 'outer WorkerOutcome::Escalate(kind);
+                }
             }
         };
         (sub_id_owned, outcome)
     });
     Ok(())
+}
+
+/// Phase 6 Step 4: post-cancel routing decision inside the worker
+/// task's hint loop. Local to this scope; the main dispatch loop
+/// only sees the final `WorkerOutcome`.
+enum CancelDecision {
+    ManualCancel,
+    HintRestart(String),
+    RunWideCancel,
 }
 
 /// Stage and commit everything the worker left in its worktree.

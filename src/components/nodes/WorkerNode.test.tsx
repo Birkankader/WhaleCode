@@ -1359,6 +1359,54 @@ describe('WorkerNode — Stop button (Phase 5 Step 1)', () => {
   });
 });
 
+describe('WorkerNode — HintInput gating (Phase 6 Step 4)', () => {
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'running',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  it('renders HintInput on running state', () => {
+    renderNode('sub-a', baseData({ state: 'running' }));
+    expect(screen.getByTestId('hint-input-sub-a')).toBeInTheDocument();
+  });
+
+  it.each([
+    'proposed',
+    'waiting',
+    'approved',
+    'retrying',
+    'awaiting_input',
+    'done',
+    'failed',
+    'skipped',
+    'cancelled',
+    'human_escalation',
+    'escalating',
+  ] as const)('hides HintInput on %s state', (state) => {
+    renderNode('sub-a', baseData({ state }));
+    expect(screen.queryByTestId('hint-input-sub-a')).toBeNull();
+  });
+
+  it('does not render HintInput when awaiting_input (Q&A precedence)', () => {
+    useGraphStore.setState({
+      pendingQuestions: new Map([['sub-a', { question: '?' }]]),
+    });
+    renderNode('sub-a', baseData({ state: 'awaiting_input' }));
+    expect(screen.queryByTestId('hint-input-sub-a')).toBeNull();
+    expect(screen.getByTestId('question-input-sub-a')).toBeInTheDocument();
+  });
+});
+
 describe('WorkerNode — AwaitingInput + QuestionInput (Phase 5 Step 4)', () => {
   function baseData(
     overrides: Partial<WorkerNodeData> = {},

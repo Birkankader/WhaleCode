@@ -5963,3 +5963,242 @@ async fn two_workers_in_awaiting_input_handled_independently() {
 
     h.await_status(&run_id, RunStatus::Merging).await;
 }
+
+// -- Phase 6 Step 4: mid-execution hint injection --------------------
+//
+// `hint_subtask` reuses Phase 5 Step 1's per-subtask cancel mechanism
+// but parks a hint on the runtime row that the worker task's hint
+// loop reads after observing Cancelled. Worker re-runs `agent.execute`
+// directly (bypasses Layer 1 retry budget) with the hint appended to
+// extra_context. Stop wins over Hint (manual_cancel takes priority).
+
+#[tokio::test]
+async fn hint_subtask_restarts_worker_with_appended_extra_context() {
+    // First execute blocks; user fires hint mid-execution; worker
+    // observes cancel, picks hint, re-executes. Second execute is
+    // a clean Ok with a non-question summary so the run finishes.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute_sequence(
+            "t0",
+            vec![
+                ExecuteScript::Block,
+                ExecuteScript::Ok {
+                    summary: "Done after hint.".into(),
+                    delay: Duration::from_millis(0),
+                },
+            ],
+        )
+        .await;
+    let h = Harness::new(agent.clone()).await;
+
+    let run_id = h
+        .orch
+        .submit_task("hint flow".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Running).await;
+
+    h.orch
+        .hint_subtask(&run_id, &t0_id, "use approach B instead".into())
+        .await
+        .unwrap();
+
+    // SubtaskHintReceived fires immediately; ApplySummary down the line.
+    expect_event(&h, &run_id, |e| match e {
+        RunEvent::SubtaskHintReceived { hint, .. } => Some(hint.clone()),
+        _ => None,
+    })
+    .await;
+
+    // Worker re-executes; run reaches Merging.
+    h.await_status(&run_id, RunStatus::Merging).await;
+
+    // Second execute call saw the hint as extra_context.
+    let calls = agent.extra_context_calls().await;
+    assert!(
+        calls.iter().any(|c| {
+            c.as_ref()
+                .map(|s| s.contains("use approach B"))
+                .unwrap_or(false)
+        }),
+        "expected one execute call with hint extra_context, got {calls:?}"
+    );
+
+    // No Retrying events fired — hint bypasses Layer 1 retry budget.
+    let events = h.sink.snapshot().await;
+    let retrying = events.iter().any(|e| {
+        matches!(
+            e,
+            RunEvent::SubtaskStateChanged {
+                state: SubtaskState::Retrying,
+                ..
+            }
+        )
+    });
+    assert!(!retrying, "hint restart must not fire Retrying state");
+}
+
+#[tokio::test]
+async fn hint_subtask_concurrent_guard_rejects_second_hint() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("double hint".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Running).await;
+
+    h.orch
+        .hint_subtask(&run_id, &t0_id, "first".into())
+        .await
+        .unwrap();
+
+    // Second hint while the first is still pending → InvalidEdit.
+    let err = h
+        .orch
+        .hint_subtask(&run_id, &t0_id, "second".into())
+        .await
+        .unwrap_err();
+    match err {
+        OrchestratorError::InvalidEdit(msg) => {
+            assert!(msg.contains("hint"));
+        }
+        e => panic!("expected InvalidEdit, got {e:?}"),
+    }
+
+    // Cleanup so the test doesn't hang on the still-blocked worker.
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}
+
+#[tokio::test]
+async fn hint_subtask_on_done_returns_wrong_state() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::Ok {
+                summary: "done".into(),
+                delay: Duration::from_millis(0),
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("done then hint".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Done).await;
+
+    let err = h
+        .orch
+        .hint_subtask(&run_id, &t0_id, "late hint".into())
+        .await
+        .unwrap_err();
+    match err {
+        OrchestratorError::WrongSubtaskState { state, .. } => {
+            assert_eq!(state, SubtaskState::Done);
+        }
+        e => panic!("expected WrongSubtaskState, got {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hint_subtask_on_unknown_run_returns_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .hint_subtask(&"ghost".into(), &"ghost-sub".into(), "hi".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}
+
+#[tokio::test]
+async fn stop_during_hint_takes_priority_over_pending_hint() {
+    // Fire hint, then immediately fire stop. The worker observes
+    // cancel, the hint loop reads flags: manual_cancel=true wins,
+    // pending_hint dropped, subtask goes Cancelled (terminal).
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent.clone()).await;
+    let run_id = h
+        .orch
+        .submit_task("stop wins".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Running).await;
+
+    // Fire hint (parks the hint, fires cancel token). Worker is
+    // blocked on stdin; observes cancel.
+    h.orch
+        .hint_subtask(&run_id, &t0_id, "go with B".into())
+        .await
+        .unwrap();
+    // Immediately fire stop — must reach the runtime row before
+    // the worker task's hint-loop reads the flags.
+    h.orch.cancel_subtask(&run_id, &t0_id).await.unwrap();
+
+    // Worker terminates as Cancelled (user-intent). Hint dropped.
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Cancelled).await;
+
+    // Subtask reached Cancelled in storage.
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    assert_eq!(subs[0].state, SubtaskState::Cancelled);
+}
+
+#[tokio::test]
+async fn hint_with_run_cancel_terminates_run() {
+    // Fire hint, then run-wide cancel. Hint and stop reach via the
+    // same composite cancel token. Run-wide cancel triggers
+    // run-level finalization regardless of hint pending.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("hint then cancel run".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    approve_only(&h, &run_id).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Running).await;
+
+    h.orch
+        .hint_subtask(&run_id, &t0_id, "ignore me".into())
+        .await
+        .unwrap();
+    h.orch.cancel_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Cancelled).await;
+}

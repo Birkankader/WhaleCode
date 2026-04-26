@@ -828,6 +828,75 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Phase 6 Step 4: inject a hint into a running worker. Reuses
+    /// Phase 5 Step 1's per-subtask cancel mechanism (fires the
+    /// token + wakes the loop), but parks the hint text on the
+    /// runtime row so the worker task's hint loop reads it after
+    /// observing Cancelled and re-runs `agent.execute` with the
+    /// hint appended to `extra_context`.
+    ///
+    /// Bypasses Layer 1 retry budget — this is user-driven
+    /// continuation, not failure retry. The first call to
+    /// `agent.execute` on the post-hint iteration runs with the
+    /// hint extra; if it fails, the standard retry ladder fires
+    /// from there with the hint already absorbed into the prompt.
+    ///
+    /// Rejects with `WrongSubtaskState` outside `Running`. Concurrent-
+    /// hint guard: rejects with `InvalidEdit` when a previous
+    /// hint is still pending (worker hasn't observed the cancel
+    /// yet). The flag is cleared by the worker task when it picks
+    /// the hint up.
+    pub async fn hint_subtask(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+        hint: String,
+    ) -> Result<(), OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+        let (token, wake) = {
+            let mut guard = run_arc.write().await;
+            let wake = guard.subtask_cancel_wake.clone();
+            let sub = guard
+                .find_subtask_mut(subtask_id)
+                .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+            if sub.state != SubtaskState::Running {
+                return Err(OrchestratorError::WrongSubtaskState {
+                    subtask_id: subtask_id.clone(),
+                    state: sub.state,
+                    expected: "running",
+                });
+            }
+            if sub.hint_pending.is_some() {
+                return Err(OrchestratorError::InvalidEdit(
+                    "hint already in flight; wait for restart".to_string(),
+                ));
+            }
+            sub.hint_pending = Some(hint.clone());
+            (sub.cancel_token.clone(), wake)
+        };
+        // Fire the worker's cancel so the running execute() bails;
+        // the worker task's hint loop picks the hint off the
+        // runtime row and re-enters with augmented prompt.
+        token.cancel();
+        wake.notify_one();
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.event_sink
+            .emit(RunEvent::SubtaskHintReceived {
+                run_id: run_id.clone(),
+                subtask_id: subtask_id.clone(),
+                hint,
+                timestamp_ms,
+            })
+            .await;
+        Ok(())
+    }
+
     // -- Phase 3 edit commands ------------------------------------------
     //
     // Locking discipline: each of the three methods acquires the run's

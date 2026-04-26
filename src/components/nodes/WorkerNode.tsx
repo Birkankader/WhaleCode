@@ -30,6 +30,7 @@ import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
 import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
 import { ActivityChipStack } from './ActivityChipStack';
+import { HintInput } from './HintInput';
 import { QuestionInput } from './QuestionInput';
 import { ShowThinkingToggle } from './ShowThinkingToggle';
 import { StopButton } from './StopButton';
@@ -397,6 +398,14 @@ export function WorkerNode({ id, data }: NodeProps) {
           render an empty state for those workers if the toggle
           somehow flipped on, which is a defensive no-op. */}
       {showLogs && showThinking ? <ThinkingPanel subtaskId={id} /> : null}
+
+      {/* Phase 6 Step 4: mid-execution hint input. Visible only on
+          `running` state — `awaiting_input` shows QuestionInput
+          (Q&A is worker-initiated, hint is user-initiated;
+          rendering both would confuse). Other log-visible states
+          (retrying, escalating) are transient + carry their own
+          UX, hint stays hidden. */}
+      {d.state === 'running' ? <HintInput subtaskId={id} /> : null}
 
       {showLogs ? (
         isExpanded && canExpand ? (

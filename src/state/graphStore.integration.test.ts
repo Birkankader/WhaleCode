@@ -49,6 +49,7 @@ import {
   EVENT_STASH_POPPED,
   EVENT_SUBTASK_ACTIVITY,
   EVENT_SUBTASK_ANSWER_RECEIVED,
+  EVENT_SUBTASK_HINT_RECEIVED,
   EVENT_SUBTASK_QUESTION_ASKED,
   EVENT_SUBTASK_THINKING,
   EVENT_COMPLETED,
@@ -119,6 +120,7 @@ beforeEach(() => {
   invokeHandlers.set('retry_apply', async () => undefined);
   invokeHandlers.set('answer_subtask_question', async () => undefined);
   invokeHandlers.set('skip_subtask_question', async () => undefined);
+  invokeHandlers.set('hint_subtask', async () => undefined);
 });
 
 afterEach(() => {
@@ -2530,5 +2532,56 @@ describe('graphStore — Phase 6 Step 3 thinking stream', () => {
     expect(stored).toHaveLength(500);
     expect(stored?.[0].chunk).toBe('chunk-10');
     expect(stored?.[499].chunk).toBe('chunk-509');
+  });
+});
+
+describe('graphStore — Phase 6 Step 4 hint injection', () => {
+  it('hintSubtask sets hintInFlight membership and clears on SubtaskHintReceived', async () => {
+    await state().submitTask('x');
+    await state().hintSubtask('one', 'use approach B');
+    expect(state().hintInFlight.has('one')).toBe(true);
+
+    emit(EVENT_SUBTASK_HINT_RECEIVED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      hint: 'use approach B',
+      timestampMs: 1000,
+    });
+    expect(state().hintInFlight.has('one')).toBe(false);
+  });
+
+  it('hintSubtask rejection rolls back in-flight + surfaces currentError', async () => {
+    await state().submitTask('x');
+    invokeHandlers.set('hint_subtask', async () => {
+      throw 'hint already in flight';
+    });
+    await expect(state().hintSubtask('one', 'h')).rejects.toBeDefined();
+    expect(state().hintInFlight.has('one')).toBe(false);
+    expect(state().currentError).toMatch(/hint failed/i);
+  });
+
+  it('concurrent hint dedup — second call while in flight is no-op', async () => {
+    await state().submitTask('x');
+    let calls = 0;
+    invokeHandlers.set('hint_subtask', async () => {
+      calls += 1;
+      // Hold the IPC pending so second call lands while first is
+      // still in flight.
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    const first = state().hintSubtask('one', 'a');
+    const second = state().hintSubtask('one', 'b');
+    await Promise.all([first, second]);
+    expect(calls).toBe(1);
+  });
+
+  it('no-op on pending_* runId', async () => {
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let calls = 0;
+    invokeHandlers.set('hint_subtask', async () => {
+      calls += 1;
+    });
+    await state().hintSubtask('one', 'h');
+    expect(calls).toBe(0);
   });
 });
