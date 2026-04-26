@@ -32,7 +32,100 @@ use super::process::{
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
 use super::prompts::{MASTER_GEMINI, REPLAN_GEMINI};
+use super::tool_event::ToolEvent;
 use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext, ReplanContext};
+
+/// Phase 6 Step 2 — heuristic regex matchers over Gemini's prose
+/// output. Gemini text mode emits no structured tool events
+/// (Step 0 diagnostic findings), so the matcher keys on stable
+/// verb-prefix patterns observed in real CLI output:
+///
+///   "Reading <path>"            → ToolEvent::FileRead
+///   "Edited <path>" / "Editing" → ToolEvent::FileEdit
+///   "Running: <command>"        → ToolEvent::Bash
+///   "Searching for '<query>'"   → ToolEvent::Search
+///
+/// Conservative on path matching — `Reading the spec carefully` does
+/// NOT trigger because the token after the verb isn't path-shaped
+/// (no `/` or `.` and contains spaces). False negatives are
+/// acceptable: log tail is still authoritative.
+pub fn parse_tool_events(line: &str) -> Vec<ToolEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return vec![];
+    }
+    if let Some(rest) = trimmed.strip_prefix("Reading ") {
+        if let Some(path) = extract_path_token(rest) {
+            return vec![ToolEvent::FileRead {
+                path: PathBuf::from(path),
+                lines: None,
+            }];
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("Edited ") {
+        if let Some(path) = extract_path_token(rest) {
+            return vec![ToolEvent::FileEdit {
+                path: PathBuf::from(path),
+                summary: rest_after(rest).unwrap_or_else(|| "edited".to_string()),
+            }];
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("Editing ") {
+        if let Some(path) = extract_path_token(rest) {
+            return vec![ToolEvent::FileEdit {
+                path: PathBuf::from(path),
+                summary: "editing".to_string(),
+            }];
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("Running: ") {
+        return vec![ToolEvent::Bash {
+            command: rest.trim().to_string(),
+        }];
+    }
+    if let Some(rest) = trimmed.strip_prefix("Searching for ") {
+        let q = rest.trim().trim_matches(|c| c == '\'' || c == '"').to_string();
+        return vec![ToolEvent::Search {
+            query: q.split_whitespace().next().unwrap_or("").to_string(),
+            paths: vec![],
+        }];
+    }
+    vec![]
+}
+
+/// Extract the first whitespace-delimited token from `rest` if it
+/// looks like a path (contains `/` or `.`, optionally quoted).
+/// Returns None when the next token is plain prose ("the", "a",
+/// "carefully") — guards against the verb-collision case the Step 0
+/// edge fixture flags.
+fn extract_path_token(rest: &str) -> Option<String> {
+    let token = rest.split_whitespace().next()?;
+    // Trim quotes, commas, and a trailing colon ("Edited foo.ts:
+    // <summary>" is a common Gemini pattern; the colon belongs to
+    // the prose, not the path).
+    let stripped = token.trim_matches(|c: char| {
+        c == '\'' || c == '"' || c == ',' || c == ':'
+    });
+    if stripped.is_empty() {
+        return None;
+    }
+    if stripped.contains('/') || stripped.contains('.') {
+        Some(stripped.to_string())
+    } else {
+        None
+    }
+}
+
+fn rest_after(rest: &str) -> Option<String> {
+    let mut parts = rest.splitn(2, ':');
+    let _path = parts.next()?;
+    let detail = parts.next()?.trim();
+    if detail.is_empty() {
+        None
+    } else {
+        Some(detail.to_string())
+    }
+}
 
 /// If the prompt grows past this, Gemini's API tends to slow down or
 /// reject with 413. We shrink the directory tree first (cheapest

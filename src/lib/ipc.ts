@@ -254,6 +254,15 @@ export const EVENT_MERGE_RETRY_FAILED = 'run:merge_retry_failed' as const;
 // Phase 5 Step 4: worker paused pending user answer.
 export const EVENT_SUBTASK_QUESTION_ASKED = 'run:subtask_question_asked' as const;
 export const EVENT_SUBTASK_ANSWER_RECEIVED = 'run:subtask_answer_received' as const;
+// Phase 6 Step 2: structured tool-use event parsed from worker
+// output. Tee'd alongside subtask_log — log is authoritative;
+// activity is a re-projection rendered as chips on the running
+// card. Emitted once per parsed event; Codex apply_patch with N
+// files emits N activity events.
+export const EVENT_SUBTASK_ACTIVITY = 'run:subtask_activity' as const;
+// Phase 6 Step 3: agent reasoning / thinking block. Currently
+// Claude-only.
+export const EVENT_SUBTASK_THINKING = 'run:subtask_thinking' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -457,6 +466,58 @@ export const subtaskQuestionAskedSchema = z.object({
   detectionMethod: z.enum(['heuristic-trailing-question-mark']),
 });
 export type SubtaskQuestionAsked = z.infer<typeof subtaskQuestionAskedSchema>;
+
+/**
+ * Phase 6 Step 2 — discriminated union mirroring the Rust
+ * `ToolEvent` enum. Wire shape: `{kind: "...", ...fields}`. UI
+ * renders a chip per variant; `Other` is the escape hatch for
+ * unmodeled tools / format drift.
+ */
+export const toolEventSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('file-read'),
+    path: z.string(),
+    lines: z.tuple([z.number().int(), z.number().int()]).optional(),
+  }),
+  z.object({
+    kind: z.literal('file-edit'),
+    path: z.string(),
+    summary: z.string(),
+  }),
+  z.object({
+    kind: z.literal('bash'),
+    command: z.string(),
+  }),
+  z.object({
+    kind: z.literal('search'),
+    query: z.string(),
+    paths: z.array(z.string()).default([]),
+  }),
+  z.object({
+    kind: z.literal('other'),
+    toolName: z.string(),
+    detail: z.string(),
+  }),
+]);
+export type ToolEvent = z.infer<typeof toolEventSchema>;
+
+/** Phase 6 Step 2 payload for {@link EVENT_SUBTASK_ACTIVITY}. */
+export const subtaskActivitySchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  event: toolEventSchema,
+  timestampMs: z.number().int().nonnegative(),
+});
+export type SubtaskActivity = z.infer<typeof subtaskActivitySchema>;
+
+/** Phase 6 Step 3 payload for {@link EVENT_SUBTASK_THINKING}. */
+export const subtaskThinkingSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  chunk: z.string(),
+  timestampMs: z.number().int().nonnegative(),
+});
+export type SubtaskThinking = z.infer<typeof subtaskThinkingSchema>;
 
 /** Phase 5 Step 4 payload for {@link EVENT_SUBTASK_ANSWER_RECEIVED}. */
 export const subtaskAnswerReceivedSchema = z.object({

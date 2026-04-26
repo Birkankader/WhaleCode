@@ -28,6 +28,7 @@ use super::process::{
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
 use super::prompts::{MASTER_CLAUDE, REPLAN_CLAUDE};
+use super::tool_event::ToolEvent;
 use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext, ReplanContext};
 
 pub struct ClaudeAdapter {
@@ -173,8 +174,20 @@ impl AgentImpl for ClaudeAdapter {
         cancel: CancellationToken,
     ) -> Result<ExecutionResult, AgentError> {
         let prompt = Self::build_execute_prompt(subtask, worktree_path, shared_notes, extra_context);
+        // Phase 6 Step 2: switch from `--print` plain text to
+        // `--print --output-format stream-json --verbose` so the
+        // dispatcher's parser tee can extract structured tool_use
+        // events. `--verbose` is required when stream-json is set
+        // (Claude CLI rejects the combo otherwise). Q&A detection
+        // (Phase 5 Step 4) keys on `ExecutionResult.summary`; the
+        // new envelope handler extracts the model's final text
+        // reply from the `result` event so detection still fires
+        // when the agent ends in `?`.
         let args = vec![
             "--print".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
             "--dangerously-skip-permissions".into(),
             "--add-dir".into(),
             worktree_path.to_string_lossy().into_owned(),
@@ -192,7 +205,7 @@ impl AgentImpl for ClaudeAdapter {
         if out.exit_code != Some(0) {
             return Err(classify_nonzero(out.exit_code, out.signal, &out.stderr));
         }
-        let summary = summarize_last_lines(&out.stdout, 3);
+        let summary = extract_stream_json_summary(&out.stdout);
         let files_changed = git_changed_files(worktree_path).await.unwrap_or_default();
         Ok(ExecutionResult {
             summary,
@@ -376,6 +389,197 @@ fn format_completed_summaries(summaries: &[String]) -> String {
         .map(|s| format!("- {s}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Phase 6 Step 2 — extract the model's final natural-language
+/// reply from a stream-json transcript. The CLI's `result` event
+/// (last NDJSON line in a clean run) carries the full reply text;
+/// when absent (truncated stream / spawn failure) we fall through
+/// to the last assistant text-content block. Q&A detection (Phase 5)
+/// keys on this summary, so the trailing-? heuristic continues to
+/// work even though the surrounding stdout is now structured JSON.
+pub(crate) fn extract_stream_json_summary(stdout: &str) -> String {
+    // Pass 1: prefer the explicit `result` event.
+    for line in stdout.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) == Some("result") {
+            if let Some(result) = value.get("result").and_then(|v| v.as_str()) {
+                return result.trim().to_string();
+            }
+        }
+    }
+    // Pass 2: last assistant text content as fallback.
+    for line in stdout.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) == Some("assistant") {
+            if let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
+                for block in content.iter().rev() {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                            return text.trim().to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Phase 6 Step 2 — parse one stream-json NDJSON line into zero or
+/// one `ToolEvent`. Non-event lines (system, assistant text,
+/// thinking, result) return `vec![]`; unknown tool kinds route to
+/// `ToolEvent::Other` per the Step 0 escape-hatch contract.
+///
+/// Cost: one `serde_json::from_str` per line + a handful of field
+/// lookups. Bounded sub-millisecond on typical lines (Step 0
+/// diagnostic measurements).
+pub fn parse_tool_events(line: &str) -> Vec<ToolEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return vec![];
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return vec![];
+    };
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        // Top-level tool_use events appear in two shapes — either as
+        // a bare `{"type":"tool_use", …}` line (older shape) or
+        // wrapped in an assistant message's content blocks (current
+        // shape). Handle both for robustness.
+        "tool_use" => one_tool_event_from_object(&value).into_iter().collect(),
+        "assistant" => {
+            let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            else {
+                return vec![];
+            };
+            let mut out = Vec::new();
+            for block in content {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    if let Some(ev) = one_tool_event_from_object(block) {
+                        out.push(ev);
+                    }
+                }
+            }
+            out
+        }
+        _ => vec![],
+    }
+}
+
+fn one_tool_event_from_object(obj: &serde_json::Value) -> Option<ToolEvent> {
+    let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let input = obj.get("input").cloned().unwrap_or(serde_json::Value::Null);
+    Some(match name {
+        "Read" => {
+            let path = input.get("file_path").and_then(|v| v.as_str())?.to_string();
+            let lines = match (
+                input.get("offset").and_then(|v| v.as_u64()),
+                input.get("limit").and_then(|v| v.as_u64()),
+            ) {
+                (Some(o), Some(l)) => Some((o as u32, (o + l) as u32)),
+                _ => None,
+            };
+            ToolEvent::FileRead {
+                path: PathBuf::from(path),
+                lines,
+            }
+        }
+        "Edit" | "Write" | "MultiEdit" => {
+            let path = input.get("file_path").and_then(|v| v.as_str())?.to_string();
+            let summary = if name == "Write" {
+                "wrote file".to_string()
+            } else if name == "MultiEdit" {
+                input
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|a| format!("{} edits", a.len()))
+                    .unwrap_or_else(|| "edited".to_string())
+            } else {
+                "edited".to_string()
+            };
+            ToolEvent::FileEdit {
+                path: PathBuf::from(path),
+                summary,
+            }
+        }
+        "Bash" => {
+            let command = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            ToolEvent::Bash { command }
+        }
+        "Grep" | "Glob" => {
+            let query = input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let paths = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| vec![PathBuf::from(p)])
+                .unwrap_or_default();
+            ToolEvent::Search { query, paths }
+        }
+        "" => return None,
+        other => {
+            // Escape hatch: capture the kind verbatim + a short
+            // detail string so the UI shows something useful.
+            let detail = input
+                .as_object()
+                .and_then(|m| m.iter().next())
+                .map(|(k, v)| {
+                    let val = v.as_str().unwrap_or(&v.to_string()[..]).chars().take(60).collect::<String>();
+                    format!("{k}: {val}")
+                })
+                .unwrap_or_default();
+            ToolEvent::Other {
+                tool_name: other.to_string(),
+                detail,
+            }
+        }
+    })
+}
+
+/// Phase 6 Step 3 — extract thinking blocks from a stream-json
+/// NDJSON line. Returns `None` for non-thinking lines. Step 3
+/// surfaces these on an opt-in panel; Step 2 wires the parser tee.
+pub fn parse_thinking(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if value.get("type").and_then(|v| v.as_str()) == Some("thinking") {
+        return value
+            .get("thinking")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+    }
+    None
 }
 
 fn summarize_last_lines(stdout: &str, n: usize) -> String {

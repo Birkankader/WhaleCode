@@ -35,6 +35,7 @@ pub mod gemini;
 pub mod plan_parser;
 pub mod process;
 pub mod prompts;
+pub mod tool_event;
 #[cfg(test)]
 pub mod tests;
 

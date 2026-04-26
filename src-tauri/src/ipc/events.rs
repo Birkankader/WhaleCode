@@ -68,6 +68,14 @@ pub const EVENT_SUBTASK_QUESTION_ASKED: &str = "run:subtask_question_asked";
 /// Phase 5 Step 4: user answered a pending question; the worker is
 /// about to re-execute with the answer appended to its prompt.
 pub const EVENT_SUBTASK_ANSWER_RECEIVED: &str = "run:subtask_answer_received";
+/// Phase 6 Step 2: structured tool-use event parsed from the
+/// worker's output. Tee'd alongside `subtask_log` — log is
+/// authoritative; activity is a re-projection the UI renders as
+/// chips on the worker card.
+pub const EVENT_SUBTASK_ACTIVITY: &str = "run:subtask_activity";
+/// Phase 6 Step 3: agent reasoning / thinking block parsed from
+/// the worker's output. Currently Claude-only.
+pub const EVENT_SUBTASK_THINKING: &str = "run:subtask_thinking";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -367,6 +375,28 @@ pub struct SubtaskQuestionAsked {
     pub detection_method: QuestionDetectionMethod,
 }
 
+/// Phase 6 Step 2 wire payload for [`EVENT_SUBTASK_ACTIVITY`].
+/// Carries the parsed `ToolEvent` plus a monotonic timestamp the UI
+/// uses for the chip-stack compression window.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskActivity {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+    pub event: crate::agents::tool_event::ToolEvent,
+    pub timestamp_ms: u64,
+}
+
+/// Phase 6 Step 3 wire payload for [`EVENT_SUBTASK_THINKING`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskThinking {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+    pub chunk: String,
+    pub timestamp_ms: u64,
+}
+
 /// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_ANSWER_RECEIVED`].
 /// Fires immediately before the subtask transitions back to
 /// `Running`. No answer text on the wire — the reply is ephemeral
@@ -511,6 +541,14 @@ pub fn emit_subtask_answer_received(
     payload: &SubtaskAnswerReceived,
 ) -> tauri::Result<()> {
     app.emit(EVENT_SUBTASK_ANSWER_RECEIVED, payload)
+}
+
+pub fn emit_subtask_activity(app: &AppHandle, payload: &SubtaskActivity) -> tauri::Result<()> {
+    app.emit(EVENT_SUBTASK_ACTIVITY, payload)
+}
+
+pub fn emit_subtask_thinking(app: &AppHandle, payload: &SubtaskThinking) -> tauri::Result<()> {
+    app.emit(EVENT_SUBTASK_THINKING, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

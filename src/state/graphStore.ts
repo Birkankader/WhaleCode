@@ -71,8 +71,10 @@ import {
   type StashCreated,
   type StashPopFailed,
   type StashPopped,
+  type SubtaskActivity,
   type SubtaskAnswerReceived,
   type SubtaskQuestionAsked,
+  type SubtaskThinking,
   type SkipResult,
   type StatusChanged,
   type SubtaskDiff,
@@ -479,6 +481,22 @@ export type GraphState = {
    * Skipped|Cancelled)`. Multiple subtasks may have pending questions
    * simultaneously — the UI renders each on its own card.
    */
+  /**
+   * Phase 6 Step 2 — per-subtask activity stream. Capped at 50
+   * events per subtask (FIFO eviction); store memory-only, no
+   * persistence. UI renders via `compressActivities` + chip-stack
+   * component.
+   */
+  subtaskActivities: ReadonlyMap<
+    SubtaskId,
+    ReadonlyArray<{ event: import('../lib/ipc').ToolEvent; timestampMs: number }>
+  >;
+  /**
+   * Phase 6 Step 3 — per-subtask thinking-block stream. Capped at
+   * 500 chunks per subtask (FIFO). Currently Claude-only — Codex
+   * and Gemini emit no events into this map.
+   */
+  subtaskThinking: ReadonlyMap<SubtaskId, ReadonlyArray<{ chunk: string; timestampMs: number }>>;
   pendingQuestions: ReadonlyMap<SubtaskId, { question: string }>;
   /**
    * Phase 5 Step 4: transient per-subtask flag for "the answer /
@@ -674,6 +692,8 @@ const initial: Pick<
   | 'conflictResolverOpen'
   | 'pendingQuestions'
   | 'questionAnswerInFlight'
+  | 'subtaskActivities'
+  | 'subtaskThinking'
 > = {
   runId: null,
   taskInput: '',
@@ -712,6 +732,8 @@ const initial: Pick<
   conflictResolverOpen: false,
   pendingQuestions: new Map(),
   questionAnswerInFlight: new Set(),
+  subtaskActivities: new Map(),
+  subtaskThinking: new Map(),
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -1340,6 +1362,40 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleSubtaskActivity(e: SubtaskActivity) {
+    if (e.runId !== get().runId) return;
+    set((state) => {
+      const next = new Map(state.subtaskActivities);
+      const existing = next.get(e.subtaskId) ?? [];
+      const appended = [
+        ...existing,
+        { event: e.event, timestampMs: e.timestampMs },
+      ];
+      // FIFO cap at 50 events per subtask. Older events drop off —
+      // streaming surface, not a log.
+      const capped = appended.length > 50 ? appended.slice(-50) : appended;
+      next.set(e.subtaskId, capped);
+      return { subtaskActivities: next };
+    });
+  }
+
+  function handleSubtaskThinking(e: SubtaskThinking) {
+    if (e.runId !== get().runId) return;
+    set((state) => {
+      const next = new Map(state.subtaskThinking);
+      const existing = next.get(e.subtaskId) ?? [];
+      const appended = [
+        ...existing,
+        { chunk: e.chunk, timestampMs: e.timestampMs },
+      ];
+      // FIFO cap at 500 chunks per subtask — verbose surface,
+      // larger budget than activities.
+      const capped = appended.length > 500 ? appended.slice(-500) : appended;
+      next.set(e.subtaskId, capped);
+      return { subtaskThinking: next };
+    });
+  }
+
   function handleSubtaskLog(e: SubtaskLog) {
     if (e.runId !== get().runId) return;
     appendLog(e.subtaskId, e.line);
@@ -1605,6 +1661,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onStashPopFailed: handleStashPopFailed,
       onSubtaskQuestionAsked: handleSubtaskQuestionAsked,
       onSubtaskAnswerReceived: handleSubtaskAnswerReceived,
+      onSubtaskActivity: handleSubtaskActivity,
+      onSubtaskThinking: handleSubtaskThinking,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -2178,6 +2236,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         conflictResolverOpen: false,
         pendingQuestions: new Map(),
         questionAnswerInFlight: new Set(),
+        subtaskActivities: new Map(),
+        subtaskThinking: new Map(),
       });
     },
   };

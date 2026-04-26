@@ -26,3 +26,11 @@ mod question_shapes;
 // lands in Step 2. See docs/phase-6-toolparsing-diagnostic.md.
 #[cfg(test)]
 mod tool_event_shapes;
+
+// Phase 6 Step 2 — per-adapter parser unit tests for
+// `parse_tool_events` and `parse_thinking`. Runs in isolation
+// (no subprocess); the fixture-spawn tests live in
+// `tool_event_shapes`. See `agents/tool_event.rs` + per-adapter
+// modules.
+#[cfg(test)]
+mod parser_tests;

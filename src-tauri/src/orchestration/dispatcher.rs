@@ -965,6 +965,7 @@ async fn dispatch_one(
         deps.event_sink.clone(),
         run_id.clone(),
         sub_id.clone(),
+        worker_kind,
         log_rx,
     ));
 
@@ -1177,11 +1178,30 @@ async fn forward_logs(
     sink: Arc<dyn EventSink>,
     run_id: RunId,
     subtask_id: SubtaskId,
+    worker_kind: AgentKind,
     mut rx: mpsc::Receiver<String>,
 ) {
     while let Some(line) = rx.recv().await {
-        // Best-effort persistence: a log line dropped on the floor is
-        // not worth failing the subtask. The event still goes out.
+        // Phase 6 Step 2: parser tee. Each line goes to storage +
+        // SubtaskLog event (existing path) AND through the
+        // adapter's `parse_tool_events`. Successful parses emit
+        // `SubtaskActivity` events the frontend renders as chips.
+        // Failed parses are silent — log tail is authoritative.
+        let activities = match worker_kind {
+            AgentKind::Claude => crate::agents::claude::parse_tool_events(&line),
+            AgentKind::Codex => crate::agents::codex::parse_tool_events(&line),
+            AgentKind::Gemini => crate::agents::gemini::parse_tool_events(&line),
+        };
+        let thinking = match worker_kind {
+            AgentKind::Claude => crate::agents::claude::parse_thinking(&line),
+            // Codex / Gemini emit no thinking blocks per Step 0
+            // diagnostic. UI greys out the toggle for those workers.
+            _ => None,
+        };
+
+        // Best-effort persistence: a log line dropped on the floor
+        // is not worth failing the subtask. The event still goes
+        // out.
         let _ = storage.append_log(&subtask_id, &line).await;
         sink.emit(RunEvent::SubtaskLog {
             run_id: run_id.clone(),
@@ -1189,6 +1209,34 @@ async fn forward_logs(
             line,
         })
         .await;
+
+        for event in activities {
+            let timestamp_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            sink.emit(RunEvent::SubtaskActivity {
+                run_id: run_id.clone(),
+                subtask_id: subtask_id.clone(),
+                event,
+                timestamp_ms,
+            })
+            .await;
+        }
+
+        if let Some(chunk) = thinking {
+            let timestamp_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            sink.emit(RunEvent::SubtaskThinking {
+                run_id: run_id.clone(),
+                subtask_id: subtask_id.clone(),
+                chunk,
+                timestamp_ms,
+            })
+            .await;
+        }
     }
 }
 

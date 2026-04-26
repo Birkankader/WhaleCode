@@ -41,8 +41,10 @@ import {
   EVENT_STASH_CREATED,
   EVENT_STASH_POP_FAILED,
   EVENT_STASH_POPPED,
+  EVENT_SUBTASK_ACTIVITY,
   EVENT_SUBTASK_ANSWER_RECEIVED,
   EVENT_SUBTASK_QUESTION_ASKED,
+  EVENT_SUBTASK_THINKING,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_DIFF,
   EVENT_SUBTASK_LOG,
@@ -63,8 +65,10 @@ import {
   stashCreatedSchema,
   stashPopFailedSchema,
   stashPoppedSchema,
+  subtaskActivitySchema,
   subtaskAnswerReceivedSchema,
   subtaskQuestionAskedSchema,
+  subtaskThinkingSchema,
   statusChangedSchema,
   subtaskDiffSchema,
   subtaskLogSchema,
@@ -86,8 +90,10 @@ import {
   type StashCreated,
   type StashPopFailed,
   type StashPopped,
+  type SubtaskActivity,
   type SubtaskAnswerReceived,
   type SubtaskQuestionAsked,
+  type SubtaskThinking,
   type StatusChanged,
   type SubtaskDiff,
   type SubtaskLog,
@@ -118,6 +124,8 @@ export type RunEventHandlers = {
   onMergeRetryFailed?: (event: MergeRetryFailed) => void;
   onSubtaskQuestionAsked?: (event: SubtaskQuestionAsked) => void;
   onSubtaskAnswerReceived?: (event: SubtaskAnswerReceived) => void;
+  onSubtaskActivity?: (event: SubtaskActivity) => void;
+  onSubtaskThinking?: (event: SubtaskThinking) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -301,6 +309,16 @@ export class RunSubscription {
         event: EVENT_SUBTASK_ANSWER_RECEIVED,
         schema: subtaskAnswerReceivedSchema,
         handler: this.handlers.onSubtaskAnswerReceived as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_SUBTASK_ACTIVITY,
+        schema: subtaskActivitySchema,
+        handler: this.handlers.onSubtaskActivity as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_SUBTASK_THINKING,
+        schema: subtaskThinkingSchema,
+        handler: this.handlers.onSubtaskThinking as ((e: unknown) => void) | undefined,
       },
     ];
   }

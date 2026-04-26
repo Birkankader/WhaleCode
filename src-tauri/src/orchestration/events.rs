@@ -195,6 +195,28 @@ pub enum RunEvent {
         run_id: RunId,
         subtask_id: SubtaskId,
     },
+    /// Phase 6 Step 2: structured tool-use event parsed from the
+    /// worker's output stream. Tee'd alongside the existing
+    /// `SubtaskLog` — log tail is still authoritative; activity is
+    /// a re-projection the UI renders as chips. `timestamp_ms` is
+    /// epoch milliseconds at emit time (frontend uses for the
+    /// chip-stack compression window).
+    SubtaskActivity {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        event: crate::agents::tool_event::ToolEvent,
+        timestamp_ms: u64,
+    },
+    /// Phase 6 Step 3: agent reasoning / thinking block parsed
+    /// from the worker's output stream. Surfaced on an opt-in
+    /// per-card panel in Step 3. Currently Claude-only — Codex
+    /// and Gemini emit no equivalent (Step 0 diagnostic findings).
+    SubtaskThinking {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        chunk: String,
+        timestamp_ms: u64,
+    },
     /// Phase 5 Step 3: the user clicked "Retry apply" after resolving
     /// a merge conflict, but the re-attempted merge hit a conflict
     /// again. Same file-set payload as `MergeConflict`, plus a
@@ -237,7 +259,9 @@ impl RunEvent {
             | RunEvent::StashPopFailed { run_id, .. }
             | RunEvent::MergeRetryFailed { run_id, .. }
             | RunEvent::SubtaskQuestionAsked { run_id, .. }
-            | RunEvent::SubtaskAnswerReceived { run_id, .. } => run_id,
+            | RunEvent::SubtaskAnswerReceived { run_id, .. }
+            | RunEvent::SubtaskActivity { run_id, .. }
+            | RunEvent::SubtaskThinking { run_id, .. } => run_id,
         }
     }
 }
@@ -442,6 +466,34 @@ impl EventSink for TauriEventSink {
                     &wire::SubtaskAnswerReceived { run_id, subtask_id },
                 )
             }
+            RunEvent::SubtaskActivity {
+                run_id,
+                subtask_id,
+                event,
+                timestamp_ms,
+            } => wire::emit_subtask_activity(
+                &self.app,
+                &wire::SubtaskActivity {
+                    run_id,
+                    subtask_id,
+                    event,
+                    timestamp_ms,
+                },
+            ),
+            RunEvent::SubtaskThinking {
+                run_id,
+                subtask_id,
+                chunk,
+                timestamp_ms,
+            } => wire::emit_subtask_thinking(
+                &self.app,
+                &wire::SubtaskThinking {
+                    run_id,
+                    subtask_id,
+                    chunk,
+                    timestamp_ms,
+                },
+            ),
         };
         if let Err(e) = result {
             eprintln!("[orchestrator] event emit failed: {e}");

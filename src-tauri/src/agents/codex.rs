@@ -27,7 +27,109 @@ use super::process::{
     DEFAULT_EXECUTE_TIMEOUT, DEFAULT_PLAN_TIMEOUT,
 };
 use super::prompts::{MASTER_CODEX, REPLAN_CODEX};
+use super::tool_event::ToolEvent;
 use super::{AgentError, AgentImpl, ExecutionResult, Plan, PlanningContext, ReplanContext};
+
+/// Phase 6 Step 2 — parse one Codex `exec --json` JSONL line into
+/// zero or more `ToolEvent`s. Per Step 0 design, `apply_patch`
+/// expands to one `ToolEvent::FileEdit` per file in the `files`
+/// array so the chip-stack compression rule treats Codex
+/// multi-file edits uniformly with Claude single-file edits.
+pub fn parse_tool_events(line: &str) -> Vec<ToolEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return vec![];
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return vec![];
+    };
+    if value.get("type").and_then(|v| v.as_str()) != Some("function_call") {
+        return vec![];
+    }
+    let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    match name {
+        "read" => {
+            let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
+                return vec![];
+            };
+            vec![ToolEvent::FileRead {
+                path: PathBuf::from(path),
+                lines: None,
+            }]
+        }
+        "apply_patch" => {
+            let files = args
+                .get("files")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if files.is_empty() {
+                vec![ToolEvent::FileEdit {
+                    path: PathBuf::from("<unknown>"),
+                    summary: "applied patch".into(),
+                }]
+            } else {
+                files
+                    .iter()
+                    .filter_map(|f| f.as_str())
+                    .map(|p| ToolEvent::FileEdit {
+                        path: PathBuf::from(p),
+                        summary: "patched".into(),
+                    })
+                    .collect()
+            }
+        }
+        "shell" => {
+            let command = args
+                .get("command")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            vec![ToolEvent::Bash { command }]
+        }
+        "grep" | "search" => {
+            let query = args
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let paths = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| vec![PathBuf::from(p)])
+                .unwrap_or_default();
+            vec![ToolEvent::Search { query, paths }]
+        }
+        "" => vec![],
+        other => {
+            let detail = args
+                .as_object()
+                .and_then(|m| m.iter().next())
+                .map(|(k, v)| {
+                    let val = v
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string());
+                    let truncated: String = val.chars().take(60).collect();
+                    format!("{k}: {truncated}")
+                })
+                .unwrap_or_default();
+            vec![ToolEvent::Other {
+                tool_name: other.to_string(),
+                detail,
+            }]
+        }
+    }
+}
 
 pub struct CodexAdapter {
     binary: PathBuf,

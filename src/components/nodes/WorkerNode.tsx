@@ -29,6 +29,7 @@ import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
 import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
+import { ActivityChipStack } from './ActivityChipStack';
 import { QuestionInput } from './QuestionInput';
 import { StopButton } from './StopButton';
 import { WorktreeActions } from './WorktreeActions';
@@ -376,6 +377,13 @@ export function WorkerNode({ id, data }: NodeProps) {
       {isEscalated ? (
         <EscalationActions subtaskId={id} replanCount={d.replanCount ?? 0} />
       ) : null}
+
+      {/* Phase 6 Step 2: activity chip stack — sits above the log
+          tail on running/retrying cards. Empty stack renders null,
+          so non-running states are unaffected. Compressed bursts
+          shrink the visible chip count without altering the
+          underlying event store. */}
+      {showLogs ? <ActivityChipStack subtaskId={id} /> : null}
 
       {showLogs ? (
         isExpanded && canExpand ? (

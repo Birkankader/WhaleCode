@@ -47,8 +47,10 @@ import {
   EVENT_STASH_CREATED,
   EVENT_STASH_POP_FAILED,
   EVENT_STASH_POPPED,
+  EVENT_SUBTASK_ACTIVITY,
   EVENT_SUBTASK_ANSWER_RECEIVED,
   EVENT_SUBTASK_QUESTION_ASKED,
+  EVENT_SUBTASK_THINKING,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -2443,5 +2445,90 @@ describe('graphStore — Phase 5 Step 4 interactive Q&A', () => {
     await state().answerSubtaskQuestion('one', 'A');
     await state().skipSubtaskQuestion('one');
     expect(calls).toBe(0);
+  });
+});
+
+describe('graphStore — Phase 6 Step 2 activity stream', () => {
+  it('SubtaskActivity appends to subtaskActivities map', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASK_ACTIVITY, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      event: { kind: 'file-read', path: 'src/auth.ts' },
+      timestampMs: 1000,
+    });
+    const stored = state().subtaskActivities.get('one');
+    expect(stored).toHaveLength(1);
+    expect(stored?.[0].event.kind).toBe('file-read');
+  });
+
+  it('caps subtaskActivities at 50 events with FIFO eviction', async () => {
+    await state().submitTask('x');
+    for (let i = 0; i < 60; i++) {
+      emit(EVENT_SUBTASK_ACTIVITY, {
+        runId: BACKEND_RUN_ID,
+        subtaskId: 'one',
+        event: { kind: 'bash', command: `cmd-${i}` },
+        timestampMs: 1000 + i,
+      });
+    }
+    const stored = state().subtaskActivities.get('one');
+    expect(stored).toHaveLength(50);
+    // Oldest dropped: first event held should be cmd-10.
+    expect(stored?.[0].event.kind === 'bash' && (stored?.[0].event as { command: string }).command).toBe('cmd-10');
+    // Latest held: cmd-59.
+    expect(
+      stored?.[49].event.kind === 'bash' &&
+        (stored?.[49].event as { command: string }).command,
+    ).toBe('cmd-59');
+  });
+
+  it('per-subtask activities are independent', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASK_ACTIVITY, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      event: { kind: 'file-read', path: 'a.ts' },
+      timestampMs: 1000,
+    });
+    emit(EVENT_SUBTASK_ACTIVITY, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'two',
+      event: { kind: 'file-edit', path: 'b.ts', summary: 'edited' },
+      timestampMs: 1100,
+    });
+    expect(state().subtaskActivities.get('one')).toHaveLength(1);
+    expect(state().subtaskActivities.get('two')).toHaveLength(1);
+  });
+});
+
+describe('graphStore — Phase 6 Step 3 thinking stream', () => {
+  it('SubtaskThinking appends to subtaskThinking map', async () => {
+    await state().submitTask('x');
+    emit(EVENT_SUBTASK_THINKING, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      chunk: 'reasoning here',
+      timestampMs: 1000,
+    });
+    const stored = state().subtaskThinking.get('one');
+    expect(stored).toHaveLength(1);
+    expect(stored?.[0].chunk).toBe('reasoning here');
+  });
+
+  it('caps subtaskThinking at 500 chunks with FIFO eviction', async () => {
+    await state().submitTask('x');
+    for (let i = 0; i < 510; i++) {
+      emit(EVENT_SUBTASK_THINKING, {
+        runId: BACKEND_RUN_ID,
+        subtaskId: 'one',
+        chunk: `chunk-${i}`,
+        timestampMs: 1000 + i,
+      });
+    }
+    const stored = state().subtaskThinking.get('one');
+    expect(stored).toHaveLength(500);
+    expect(stored?.[0].chunk).toBe('chunk-10');
+    expect(stored?.[499].chunk).toBe('chunk-509');
   });
 });
