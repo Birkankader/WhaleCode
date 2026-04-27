@@ -48,6 +48,7 @@ import {
   markSubtaskFixed as markSubtaskFixedIpc,
   rejectRun as rejectRunIpc,
   removeSubtask as removeSubtaskIpc,
+  setSettings,
   skipSubtask as skipSubtaskIpc,
   submitTask as submitTaskIpc,
   tryReplanAgain as tryReplanAgainIpc,
@@ -603,6 +604,66 @@ export type GraphState = {
    * does, which keeps the visual grid honest.
    */
   toggleWorkerExpanded: (subtaskId: SubtaskId) => void;
+
+  // -------------------------------------------------------------
+  // Phase 7 Step 1: InlineDiffSidebar
+  // -------------------------------------------------------------
+  /**
+   * Set of subtask ids whose diffs are currently selected for
+   * display in the InlineDiffSidebar. Single-click on a worker's
+   * "N files" chip resets to a single-id set; modifier-click adds
+   * to the set (multi-worker union view).
+   *
+   * Cleared on `reset` so a new run starts with an empty sidebar
+   * selection.
+   */
+  inlineDiffSelection: ReadonlySet<string>;
+  /**
+   * Per-run user override for the sidebar's open/closed state.
+   * - `null`: derive from `status` (open during running / merging,
+   *   closed in idle / applied / rejected — matches spec Q5)
+   * - `true`: user explicitly opened
+   * - `false`: user explicitly closed
+   *
+   * Cleared on `reset` so the next run starts with the default
+   * derivation.
+   */
+  inlineDiffSidebarUserToggled: boolean | null;
+  /**
+   * Persisted width (px) of the sidebar. Hydrated from settings at
+   * boot via `hydrateInlineDiffSidebarWidth`; updated by the drag-
+   * resize handle which also writes back to settings.
+   * Range 320-720; values outside the range are clamped on write.
+   */
+  inlineDiffSidebarWidth: number;
+  /**
+   * Click-handler entry point for the worker's "N files" chip.
+   * `multi` = `true` means modifier-key was held — add to the
+   * current selection. `multi` = `false` means a plain click —
+   * reset to a single-worker selection.
+   */
+  selectDiffWorker: (subtaskId: SubtaskId, multi: boolean) => void;
+  /**
+   * Clear all sidebar selection. Sidebar empty-state renders.
+   */
+  clearDiffSelection: () => void;
+  /**
+   * Toggle the sidebar's open/closed state. Records the user's
+   * intent in `inlineDiffSidebarUserToggled`, overriding the
+   * status-based default derivation for the rest of the run.
+   */
+  toggleInlineDiffSidebar: () => void;
+  /**
+   * Set the sidebar's width and persist via `setSettings`.
+   * Clamps to 320-720 px before persisting.
+   */
+  setInlineDiffSidebarWidth: (width: number) => Promise<void>;
+  /**
+   * Hydrate the sidebar width from a settings load. Called once at
+   * boot; absent/null falls back to the default 480.
+   */
+  hydrateInlineDiffSidebarWidth: (width: number | null | undefined) => void;
+
   reset: () => void;
 };
 
@@ -633,6 +694,30 @@ export function isSubtaskEdited(state: GraphState, id: string): boolean {
 /** True if the subtask was added by the user via `addSubtask`. */
 export function isSubtaskAdded(state: GraphState, id: string): boolean {
   return state.userAddedSubtaskIds.has(id);
+}
+
+/**
+ * Phase 7 Step 1: derive whether the InlineDiffSidebar should render
+ * as open. The user's explicit toggle (`inlineDiffSidebarUserToggled`)
+ * always wins. When unset, default open during in-flight states
+ * (running / merging / planning / awaiting_approval / awaiting_human_fix)
+ * and closed otherwise (idle / done / applied / rejected / failed /
+ * cancelled). Per spec Q5: open while user wants to watch diffs land,
+ * closed once the run resolves.
+ */
+const INLINE_DIFF_SIDEBAR_DEFAULT_OPEN_STATUSES: ReadonlySet<GraphStatus> = new Set<GraphStatus>([
+  'planning',
+  'awaiting_approval',
+  'running',
+  'merging',
+  'awaiting_human_fix',
+]);
+
+export function computeSidebarOpen(state: GraphState): boolean {
+  if (state.inlineDiffSidebarUserToggled !== null) {
+    return state.inlineDiffSidebarUserToggled;
+  }
+  return INLINE_DIFF_SIDEBAR_DEFAULT_OPEN_STATUSES.has(state.status);
 }
 
 /**
@@ -732,6 +817,9 @@ const initial: Pick<
   | 'subtaskThinking'
   | 'workerThinkingVisible'
   | 'hintInFlight'
+  | 'inlineDiffSelection'
+  | 'inlineDiffSidebarUserToggled'
+  | 'inlineDiffSidebarWidth'
 > = {
   runId: null,
   taskInput: '',
@@ -774,6 +862,9 @@ const initial: Pick<
   subtaskThinking: new Map(),
   workerThinkingVisible: new Set(),
   hintInFlight: new Set(),
+  inlineDiffSelection: new Set(),
+  inlineDiffSidebarUserToggled: null,
+  inlineDiffSidebarWidth: 480,
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -2298,6 +2389,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
     reset() {
       detachActiveSubscription();
       for (const actor of get().nodeActors.values()) actor.stop();
+      // Phase 7 Step 1: width persists across resets (settings-backed),
+      // selection + user-toggle override clear with the run.
+      const persistedWidth = get().inlineDiffSidebarWidth;
       set({
         ...initial,
         nodeActors: new Map(),
@@ -2325,7 +2419,56 @@ export const useGraphStore = create<GraphState>((set, get) => {
         subtaskThinking: new Map(),
         workerThinkingVisible: new Set(),
         hintInFlight: new Set(),
+        inlineDiffSelection: new Set(),
+        inlineDiffSidebarUserToggled: null,
+        inlineDiffSidebarWidth: persistedWidth,
       });
+    },
+
+    // -----------------------------------------------------------
+    // Phase 7 Step 1: InlineDiffSidebar actions
+    // -----------------------------------------------------------
+    selectDiffWorker(subtaskId: SubtaskId, multi: boolean) {
+      set((state) => {
+        if (!multi) {
+          // Plain click: reset to single-worker selection.
+          return { inlineDiffSelection: new Set([subtaskId]) };
+        }
+        const next = new Set(state.inlineDiffSelection);
+        if (next.has(subtaskId)) {
+          next.delete(subtaskId);
+        } else {
+          next.add(subtaskId);
+        }
+        return { inlineDiffSelection: next };
+      });
+    },
+
+    clearDiffSelection() {
+      set({ inlineDiffSelection: new Set() });
+    },
+
+    toggleInlineDiffSidebar() {
+      set((state) => {
+        const currentlyOpen = computeSidebarOpen(state);
+        return { inlineDiffSidebarUserToggled: !currentlyOpen };
+      });
+    },
+
+    async setInlineDiffSidebarWidth(width: number) {
+      const clamped = Math.max(320, Math.min(720, Math.round(width)));
+      set({ inlineDiffSidebarWidth: clamped });
+      try {
+        await setSettings({ inlineDiffSidebarWidth: clamped });
+      } catch (err) {
+        console.error('[graphStore] persist sidebar width failed', err);
+      }
+    },
+
+    hydrateInlineDiffSidebarWidth(width: number | null | undefined) {
+      if (typeof width !== 'number') return;
+      const clamped = Math.max(320, Math.min(720, Math.round(width)));
+      set({ inlineDiffSidebarWidth: clamped });
     },
   };
 });

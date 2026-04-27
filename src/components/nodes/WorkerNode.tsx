@@ -27,7 +27,6 @@ import { InlineTextEdit } from '../primitives/InlineTextEdit';
 import { NodeContainer } from '../primitives/NodeContainer';
 import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
-import { DiffPopover } from './DiffPopover';
 import { EscalationActions } from './EscalationActions';
 import { ActivityChipStack } from './ActivityChipStack';
 import { HintInput } from './HintInput';
@@ -467,9 +466,10 @@ export function WorkerNode({ id, data }: NodeProps) {
             Hidden while proposed (no work yet) and while running (diff
             hasn't been collected). `undefined` diff = no chip; empty
             diff = "0 files" (user-visible signal the worker touched
-            nothing). */}
+            nothing). Phase 7 Step 1: chip click selects the worker in
+            the InlineDiffSidebar instead of opening the legacy popover. */}
         {!isProposed && diff !== undefined ? (
-          <FileCountChip files={diff} />
+          <FileCountChip subtaskId={id} files={diff} />
         ) : null}
         {isProposed ? (
           <WorkerDropdown id={id} value={d.agent} />
@@ -843,41 +843,51 @@ function RemoveButton({ id, title }: { id: string; title: string }) {
 }
 
 /**
- * Phase 3.5 Item 6: clickable "N files" chip + diff popover. Shown on
+ * Phase 3.5 Item 6 / Phase 7 Step 1: clickable "N files" chip on
  * done/failed workers once the backend has emitted `run:subtask_diff`
- * for this id. Keyed on a local `open` flag so reparenting the card
- * (e.g. a layout recompute) doesn't leak an open popover to another
- * worker. Stops click propagation so the card-click-to-select
- * affordance doesn't fire and so a click on the chip while the popover
- * is open doesn't race the outside-click dismiss in the popover.
+ * for this id.
+ *
+ * Phase 7 Step 1 reroutes the click target: instead of opening the
+ * legacy `DiffPopover` modal (Phase 4 Step 6, deprecated this step),
+ * the chip now selects this worker's diff in the right-edge
+ * `InlineDiffSidebar`. Modifier-click adds to the multi-worker union
+ * view; plain click resets to a single-worker selection.
+ *
+ * Stops click propagation so the card-click-to-select affordance
+ * doesn't fire alongside.
  */
-function FileCountChip({ files }: { files: readonly import('../../lib/ipc').FileDiff[] }) {
-  const [open, setOpen] = useState(false);
+function FileCountChip({
+  subtaskId,
+  files,
+}: {
+  subtaskId: string;
+  files: readonly import('../../lib/ipc').FileDiff[];
+}) {
+  const selectDiffWorker = useGraphStore((s) => s.selectDiffWorker);
+  const isSelected = useGraphStore((s) => s.inlineDiffSelection.has(subtaskId));
   const count = files.length;
   return (
     <span className="relative">
       <button
         type="button"
         // nodrag/nopan so React Flow doesn't hijack the click for a pan
-        // gesture. aria-expanded drives screen-reader state; click toggles
-        // the popover and doubles as the dismiss affordance when open.
+        // gesture. aria-pressed drives screen-reader state for sidebar
+        // selection; click selects (or deselects on multi-click).
         className="nodrag nopan inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-hint hover:bg-bg-subtle/40"
         style={{
-          borderColor: 'var(--color-border-default)',
+          borderColor: isSelected ? 'var(--color-fg-primary)' : 'var(--color-border-default)',
           color: 'var(--color-fg-secondary)',
         }}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-label={`Show ${count} changed file${count === 1 ? '' : 's'}`}
+        aria-pressed={isSelected}
+        aria-label={`Show ${count} changed file${count === 1 ? '' : 's'} in diff sidebar`}
         onClick={(e) => {
           e.stopPropagation();
-          setOpen((v) => !v);
+          selectDiffWorker(subtaskId, e.metaKey || e.ctrlKey);
         }}
         data-testid="worker-file-count-chip"
       >
         {count} file{count === 1 ? '' : 's'}
       </button>
-      {open ? <DiffPopover files={files} onClose={() => setOpen(false)} /> : null}
     </span>
   );
 }

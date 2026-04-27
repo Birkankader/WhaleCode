@@ -1031,7 +1031,7 @@ describe('WorkerNode — file-count chip + diff popover', () => {
     expect(screen.queryByTestId('worker-file-count-chip')).toBeNull();
   });
 
-  it('clicking the chip opens the popover with path + +/- counts', () => {
+  it('plain click on the chip selects this worker in the InlineDiffSidebar (Phase 7 Step 1)', () => {
     seedDiff('auth', [
       { path: 'src/auth.ts', additions: 10, deletions: 2 },
       { path: 'tests/auth.test.ts', additions: 40, deletions: 0 },
@@ -1045,37 +1045,20 @@ describe('WorkerNode — file-count chip + diff popover', () => {
       replaces: [],
       retries: 0,
     });
-    // Closed on mount.
+    // No popover auto-mount any more; sidebar is the new surface.
     expect(screen.queryByTestId('diff-popover')).toBeNull();
+    expect(useGraphStore.getState().inlineDiffSelection.size).toBe(0);
     fireEvent.click(screen.getByTestId('worker-file-count-chip'));
-    const popover = screen.getByTestId('diff-popover');
-    expect(popover).toBeDefined();
-    expect(popover.textContent).toMatch(/src\/auth\.ts/);
-    expect(popover.textContent).toMatch(/\+10/);
-    expect(popover.textContent).toMatch(/−2/);
-    expect(popover.textContent).toMatch(/tests\/auth\.test\.ts/);
+    const sel = useGraphStore.getState().inlineDiffSelection;
+    expect(sel.has('auth')).toBe(true);
+    expect(sel.size).toBe(1);
   });
 
-  it('clicking the chip again closes the popover (toggle)', () => {
+  it('plain click resets multi-selection to single-worker (Phase 7 Step 1)', () => {
     seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
-    renderNode('auth', {
-      state: 'done',
-      agent: 'claude',
-      title: 't',
-      why: null,
-      dependsOn: [],
-      replaces: [],
-      retries: 0,
+    useGraphStore.setState({
+      inlineDiffSelection: new Set(['other-worker', 'auth']),
     });
-    const chip = screen.getByTestId('worker-file-count-chip');
-    fireEvent.click(chip);
-    expect(screen.getByTestId('diff-popover')).toBeDefined();
-    fireEvent.click(chip);
-    expect(screen.queryByTestId('diff-popover')).toBeNull();
-  });
-
-  it('pressing Escape dismisses the popover', () => {
-    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
     renderNode('auth', {
       state: 'done',
       agent: 'claude',
@@ -1086,14 +1069,31 @@ describe('WorkerNode — file-count chip + diff popover', () => {
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('worker-file-count-chip'));
-    expect(screen.getByTestId('diff-popover')).toBeDefined();
-    act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
-    });
-    expect(screen.queryByTestId('diff-popover')).toBeNull();
+    const sel = useGraphStore.getState().inlineDiffSelection;
+    expect(Array.from(sel)).toEqual(['auth']);
   });
 
-  it('"0 files" popover renders the "touched no files" empty state', () => {
+  it('modifier-click on the chip adds this worker to the multi-select (Phase 7 Step 1)', () => {
+    seedDiff('auth', [{ path: 'src/x.ts', additions: 1, deletions: 0 }]);
+    useGraphStore.setState({
+      inlineDiffSelection: new Set(['other-worker']),
+    });
+    renderNode('auth', {
+      state: 'done',
+      agent: 'claude',
+      title: 't',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    fireEvent.click(screen.getByTestId('worker-file-count-chip'), { metaKey: true });
+    const sel = useGraphStore.getState().inlineDiffSelection;
+    expect(sel.has('other-worker')).toBe(true);
+    expect(sel.has('auth')).toBe(true);
+  });
+
+  it('"0 files" worker still selects in sidebar with empty diff (Phase 7 Step 1)', () => {
     seedDiff('auth', []);
     renderNode('auth', {
       state: 'done',
@@ -1106,10 +1106,7 @@ describe('WorkerNode — file-count chip + diff popover', () => {
     });
     expect(screen.getByTestId('worker-file-count-chip').textContent).toMatch(/0 files/);
     fireEvent.click(screen.getByTestId('worker-file-count-chip'));
-    const popover = screen.getByTestId('diff-popover');
-    expect(popover.textContent).toMatch(/touched no files/i);
-    // Empty state replaces the list — assert no list rendered.
-    expect(screen.queryByTestId('diff-popover-list')).toBeNull();
+    expect(useGraphStore.getState().inlineDiffSelection.has('auth')).toBe(true);
   });
 });
 

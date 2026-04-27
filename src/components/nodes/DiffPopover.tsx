@@ -15,6 +15,13 @@ import type { DiffStatus, FileDiff } from '../../lib/ipc';
  * The expanded body ships in a dynamically-imported chunk (`./DiffBody`)
  * so Shiki's grammar loader glue and `@tanstack/react-virtual` stay out
  * of the main bundle until the user actually opens a diff preview.
+ *
+ * @deprecated Phase 7 Step 1 introduced `InlineDiffSidebar` (right-edge
+ * sidebar) as the replacement surface for diff inspection. The
+ * WorkerNode "N files" chip no longer auto-mounts this popover —
+ * clicks now select the worker in the sidebar. This component remains
+ * exported and tested through Phase 7 Step 8 for backwards-compat
+ * verification; Step 8 removes the file entirely.
  */
 
 const DiffBody = lazy(() => import('./DiffBody'));

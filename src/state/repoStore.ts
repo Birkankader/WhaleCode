@@ -95,6 +95,16 @@ export const useRepoStore = create<RepoState>((set, get) => ({
 
       set({ settings, currentRepo, initializing: false });
 
+      // Phase 7 Step 1: hydrate the InlineDiffSidebar width into the
+      // graph store. Settings are the source of truth for persisted
+      // width; the graph store keeps the live value because it
+      // changes during drag-resize before the persistence write
+      // settles. Imported lazily to keep the boot dependency graph
+      // simple — repoStore must not import graphStore at module
+      // load time (would create a cycle through the IPC layer).
+      const { useGraphStore } = await import('./graphStore');
+      useGraphStore.getState().hydrateInlineDiffSidebarWidth(settings.inlineDiffSidebarWidth);
+
       // Kick off agent detection. We don't await it blocking the UI — the
       // setup/picker screens can render without it — but we do want the
       // master-agent auto-swap to happen before the first submit_task.

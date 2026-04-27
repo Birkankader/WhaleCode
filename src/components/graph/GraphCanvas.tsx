@@ -26,6 +26,7 @@ import {
   type LayoutNodeInput,
 } from '../../lib/layout';
 import { FinalNode, type FinalNodeData } from '../nodes/FinalNode';
+import { InlineDiffSidebar } from '../nodes/InlineDiffSidebar';
 import { MasterNode, type MasterNodeData } from '../nodes/MasterNode';
 import { WorkerNode, type WorkerNodeData } from '../nodes/WorkerNode';
 import { ApplySummaryOverlay } from '../overlay/ApplySummaryOverlay';
@@ -165,15 +166,22 @@ const noopNodeClick = () => undefined;
 export function GraphCanvas() {
   return (
     <ReactFlowProvider>
-      <GraphCanvasInner />
       {/*
-       * ApplySummaryOverlay lives inside ReactFlowProvider so it can
-       * call `useReactFlow().setCenter` for per-worker navigation.
-       * Positioned absolutely within the GraphCanvasInner container
-       * (bottom-right), so the overlay rides on top of the graph
-       * without interfering with canvas interaction.
+       * Phase 7 Step 1: outer flex container splits the canvas
+       * area into a flex-1 graph region (with absolute-positioned
+       * ApplySummaryOverlay riding on top) and the right-edge
+       * InlineDiffSidebar. Sidebar collapse / drag-resize shrinks
+       * the graph region; ResizeObserver inside GraphCanvasInner
+       * re-fires the compact-mode breakpoint flip and ReactFlow's
+       * own resize observer re-fits the viewport.
        */}
-      <ApplySummaryOverlay />
+      <div className="flex h-full w-full">
+        <div className="relative min-w-0 flex-1">
+          <GraphCanvasInner />
+          <ApplySummaryOverlay />
+        </div>
+        <InlineDiffSidebar />
+      </div>
     </ReactFlowProvider>
   );
 }

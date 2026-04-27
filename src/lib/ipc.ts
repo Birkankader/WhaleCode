@@ -680,6 +680,12 @@ export const settingsSchema = z.object({
    * auto-approve back off does not clear this flag.
    */
   autoApproveConsentGiven: z.boolean().default(false),
+  /**
+   * Phase 7 Step 1: persisted width (px) of the InlineDiffSidebar.
+   * Backend clamps to 320-720; absent/null = use frontend default of
+   * 480.
+   */
+  inlineDiffSidebarWidth: z.number().int().min(320).max(720).optional(),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -697,6 +703,7 @@ export type SettingsPatch = Partial<{
   autoApprove: boolean;
   maxSubtasksPerAutoApprovedRun: number;
   autoApproveConsentGiven: boolean;
+  inlineDiffSidebarWidth: number | null;
 }>;
 
 // ---------- Repo ----------

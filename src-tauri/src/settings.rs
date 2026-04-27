@@ -77,6 +77,13 @@ pub struct Settings {
     /// flag is `false`; flipping it back off does not clear the flag.
     #[serde(default)]
     pub auto_approve_consent_given: bool,
+    /// Phase 7 Step 1: persisted width of the InlineDiffSidebar
+    /// (right-edge sidebar that absorbed Phase 4's DiffPopover modal).
+    /// Range 320-720 px; the frontend clamps. Missing in legacy
+    /// payloads → frontend default of 480.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)] // wire-only; consumed by frontend hydration
+    pub inline_diff_sidebar_width: Option<u32>,
 }
 
 fn default_max_subtasks_per_auto_approved_run() -> u32 {
@@ -95,6 +102,7 @@ impl Default for Settings {
             auto_approve: false,
             max_subtasks_per_auto_approved_run: default_max_subtasks_per_auto_approved_run(),
             auto_approve_consent_given: false,
+            inline_diff_sidebar_width: None,
         }
     }
 }
@@ -226,6 +234,18 @@ pub fn apply_patch(settings: &mut Settings, patch: &serde_json::Value) -> Result
                     .as_bool()
                     .ok_or_else(|| format!("{key}: expected boolean"))?;
             }
+            "inlineDiffSidebarWidth" => match value {
+                serde_json::Value::Null => settings.inline_diff_sidebar_width = None,
+                v => {
+                    let n = v
+                        .as_u64()
+                        .ok_or_else(|| format!("{key}: expected positive integer or null"))?;
+                    if !(320..=720).contains(&n) {
+                        return Err(format!("{key}: must be between 320 and 720"));
+                    }
+                    settings.inline_diff_sidebar_width = Some(n as u32);
+                }
+            },
             _ => {} // ignore unknown keys
         }
     }
@@ -342,6 +362,7 @@ mod tests {
             max_subtasks_per_auto_approved_run:
                 default_max_subtasks_per_auto_approved_run(),
             auto_approve_consent_given: false,
+            inline_diff_sidebar_width: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         assert!(json.contains("\"lastRepo\":\"/tmp/repo\""));
@@ -387,6 +408,7 @@ mod tests {
             max_subtasks_per_auto_approved_run:
                 default_max_subtasks_per_auto_approved_run(),
             auto_approve_consent_given: false,
+            inline_diff_sidebar_width: None,
         };
         save_to(&original, &path).unwrap();
         let reloaded = load_from(&path);
@@ -640,5 +662,70 @@ mod tests {
             s.max_subtasks_per_auto_approved_run,
             default_max_subtasks_per_auto_approved_run()
         );
+    }
+
+    // ---- Phase 7 Step 1: inlineDiffSidebarWidth ----
+
+    #[test]
+    fn legacy_settings_without_inline_diff_sidebar_width_field_defaults_to_none() {
+        let legacy = r#"{"lastRepo":null,"masterAgent":"claude"}"#;
+        let s: Settings = serde_json::from_str(legacy).unwrap();
+        assert!(s.inline_diff_sidebar_width.is_none());
+    }
+
+    #[test]
+    fn patch_accepts_valid_inline_diff_sidebar_width() {
+        let mut s = Settings::default();
+        apply_patch(&mut s, &serde_json::json!({ "inlineDiffSidebarWidth": 600 })).unwrap();
+        assert_eq!(s.inline_diff_sidebar_width, Some(600));
+    }
+
+    #[test]
+    fn patch_accepts_null_inline_diff_sidebar_width_to_clear() {
+        let mut s = Settings {
+            inline_diff_sidebar_width: Some(500),
+            ..Settings::default()
+        };
+        apply_patch(
+            &mut s,
+            &serde_json::json!({ "inlineDiffSidebarWidth": null }),
+        )
+        .unwrap();
+        assert!(s.inline_diff_sidebar_width.is_none());
+    }
+
+    #[test]
+    fn patch_rejects_inline_diff_sidebar_width_below_min() {
+        let mut s = Settings::default();
+        let err = apply_patch(
+            &mut s,
+            &serde_json::json!({ "inlineDiffSidebarWidth": 100 }),
+        )
+        .unwrap_err();
+        assert!(err.contains("inlineDiffSidebarWidth"));
+    }
+
+    #[test]
+    fn patch_rejects_inline_diff_sidebar_width_above_max() {
+        let mut s = Settings::default();
+        let err = apply_patch(
+            &mut s,
+            &serde_json::json!({ "inlineDiffSidebarWidth": 1000 }),
+        )
+        .unwrap_err();
+        assert!(err.contains("inlineDiffSidebarWidth"));
+    }
+
+    #[test]
+    fn inline_diff_sidebar_width_round_trips_through_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = Settings {
+            inline_diff_sidebar_width: Some(560),
+            ..Settings::default()
+        };
+        save_to(&original, &path).unwrap();
+        let reloaded = load_from(&path);
+        assert_eq!(reloaded.inline_diff_sidebar_width, Some(560));
     }
 }
