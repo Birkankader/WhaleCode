@@ -71,6 +71,9 @@ whalecode/
 │   ├── phase-5-spec.md          # Phase 5 (shipped)
 │   ├── phase-5-verification.md  # Phase 5 goal-backward verification
 │   ├── phase-5-qa-diagnostic.md # Phase 5 Step 0 Q&A capability diagnostic
+│   ├── phase-6-spec.md          # Phase 6 (shipped)
+│   ├── phase-6-verification.md  # Phase 6 goal-backward verification
+│   ├── phase-6-toolparsing-diagnostic.md # Phase 6 Step 0 tool-use parsing diagnostic
 │   ├── KNOWN_ISSUES.md          # Debt ledger — deferred items + target phase + severity
 │   ├── retrospectives/          # Post-phase retros
 │   └── roadmap.md               # All 8 phases + v2.5/v3 track
@@ -79,7 +82,7 @@ whalecode/
 │   │   ├── agents/              # Agent adapters (claude/codex/gemini) + trait, prompts/, plan_parser, process spawn
 │   │   ├── orchestration/       # Orchestrator, lifecycle task, dispatcher, registry, run state, shared notes, events
 │   │   ├── worktree/            # Git worktree lifecycle (hidden from user)
-│   │   ├── storage/             # SQLite schema + migrations, runs/subtasks/logs tables (cost tables land in Phase 6)
+│   │   ├── storage/             # SQLite schema + migrations, runs/subtasks/logs tables (cost tables land in Phase 7 cost-aware suite)
 │   │   ├── detection/           # CLI agent detector (PATH scan + version probe for claude/codex/gemini)
 │   │   ├── settings.rs          # App-level settings (lastRepo, masterAgent, binary paths)
 │   │   ├── repo.rs              # Repo picker + validation
@@ -131,18 +134,18 @@ whalecode/
 
 1. You already have this file. Don't re-read it unless I say so.
 2. For any specific area, read the matching `docs/` file. Don't read all of them.
-3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 5 is shipped — see `docs/phase-5-verification.md` and `docs/retrospectives/phase-5.md`; Phase 6 spec is not yet written).
+3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 6 is shipped — see `docs/phase-6-verification.md` and `docs/retrospectives/phase-6.md`; Phase 7 spec is not yet written).
 4. When in doubt about design decisions, check `docs/architecture.md` section 11.
 5. For UI specifics (colors, spacing, animation timing), check `docs/design-system.md`.
 6. Before starting work, skim `docs/KNOWN_ISSUES.md` so you don't re-open already-triaged debt.
 
 ## Current status
 
-**Active phase:** Phase 6 — spec unwritten (awaiting real-usage data from Phase 5 shipment)
-**Last shipped:** Phase 5 — unblock the run (`1976b94`, 2026-04-23; docs close-out follows)
-**Phase 6 candidates (not commitments):** Q&A false-positive heuristic calibration, Claude interactive-mode stdin injection, base-branch terminal affordance in conflict resolver, mono-repo planning awareness, cost tracking wire-up, rate-limit classification + backoff, programmatic visual regression pilot, debug-only failure injection. Spec writes after users run real work on the shipped Phase 5 surface.
+**Active phase:** Phase 7 — spec unwritten (awaiting real-usage data from Phase 6 shipment)
+**Last shipped:** Phase 6 — real-time partnership (`9e5792a`, 2026-04-26; docs close-out 2026-04-27)
+**Phase 7 candidates (not commitments):** *cost-aware feature suite cluster* (per-worker outcome summaries, diff content explanations, Claude pause-resume pilot, cost dashboard foundation — coherent sub-scope around LLM-cost user actions); plus existing candidates: Q&A false-positive heuristic calibration, Claude interactive-mode stdin injection, base-branch terminal affordance in conflict resolver, mono-repo planning awareness, rate-limit classification + backoff, programmatic visual regression pilot, debug-only failure injection, multi-agent same-task comparison, per-worker hint counter affordance, Gemini activity-chip fidelity gap. Spec writes after users run real work on the shipped Phase 6 surface.
 
-Phase 5 is closed: 5/5 goal-criteria PASS, 25/25 step-level acceptance PASS, frontend 705/705, Rust 360/360, typecheck/lint/clippy clean, build succeeds. Verification at `docs/phase-5-verification.md`; retro at `docs/retrospectives/phase-5.md`; five text visual observations under `docs/retrospectives/phase-5-visuals/`; Q&A capability diagnostic at `docs/phase-5-qa-diagnostic.md` (Step 0 spike). Phase 4 verification + retro remain at `docs/phase-4-verification.md` / `docs/retrospectives/phase-4.md`. Phase 3.5 retro at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 6 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
+Phase 6 is closed: 3/3 goal-criteria PASS, 18/18 step-level acceptance PASS, frontend 770/770, Rust 397/397, typecheck/lint/clippy clean, build succeeds. Verification at `docs/phase-6-verification.md`; retro at `docs/retrospectives/phase-6.md`; four text visual observations under `docs/retrospectives/phase-6-visuals/`; tool-use parsing diagnostic at `docs/phase-6-toolparsing-diagnostic.md` (Step 0 spike). Phase 5 verification + retro remain at `docs/phase-5-verification.md` / `docs/retrospectives/phase-5.md`; Phase 4 at `docs/phase-4-verification.md` / `docs/retrospectives/phase-4.md`. Phase 3.5 retro at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 7 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
 
 ## Useful commands
 

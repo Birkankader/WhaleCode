@@ -1,5 +1,7 @@
 # Phase 6: Real-time partnership
 
+**Status: SHIPPED 2026-04-27.** All 5 steps landed; goal-backward verification at `docs/phase-6-verification.md` (3/3 criteria PASS, 18/18 step-level PASS); retrospective at `docs/retrospectives/phase-6.md`; visual observations at `docs/retrospectives/phase-6-visuals/`. Frontend 770 / 770, Rust 397 / 397. `tsc --noEmit`, `eslint`, `cargo clippy -- -D warnings`, `pnpm build` all clean.
+
 **Goal:** Make the run a partnership the user can read and steer mid-flight. Phase 4 shipped *visibility* (logs, diff popover, apply summary). Phase 5 shipped *unblock* (per-worker stop, conflict resolver, Q&A). Phase 6 ships the *layer between*: process visibility (what is the agent doing right now?) and user-initiated mid-execution intervention (interject without stopping the run).
 
 **Duration estimate:** 8-10 days spec budget. Realistic floor 3-5 active working days based on Phase 3 / 3.5 / 4 / 5 evidence (each came in at 1-2.5 days vs 14-day budgets).
@@ -253,7 +255,7 @@ User can inject a hint to a running worker without cancelling the run. The worke
 
 ---
 
-### Step 5: Verification + retrospective + close-out
+### Step 5: Verification + retrospective + close-out — SHIPPED 2026-04-27
 
 Same shape as Phase 4 Step 7 / Phase 5 Step 5 — manual verification on real repo, integration tests verified, visual observations, retrospective, KNOWN_ISSUES + CLAUDE.md sync.
 
