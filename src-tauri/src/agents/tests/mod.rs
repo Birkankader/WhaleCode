@@ -34,3 +34,11 @@ mod tool_event_shapes;
 // modules.
 #[cfg(test)]
 mod parser_tests;
+
+// Phase 7 Step 0 follow-up turn diagnostic — exercises six
+// fixtures (3 adapters × with-parent-context + fresh-prompt)
+// and locks in the cost delta the diagnostic's recommendation
+// keys on. Tests-only; production follow-up dispatch lands in
+// Phase 7 Step 5. See docs/phase-7-followup-diagnostic.md.
+#[cfg(test)]
+mod followup_shapes;
