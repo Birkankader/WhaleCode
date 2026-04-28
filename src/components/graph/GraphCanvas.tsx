@@ -238,6 +238,12 @@ function GraphCanvasInner() {
   // height bump on the worker card so the inline detail panel
   // doesn't overflow the container into the MERGE node below.
   const subtaskChipExpanded = useGraphStore((s) => s.subtaskChipExpanded);
+  // Phase 7 polish: ReactFlow's bottom-right Controls panel collides
+  // with the bottom-anchored ApprovalBar / ApplySummaryOverlay. Lift
+  // it via a modifier class so the +/- buttons stay clickable when
+  // the user is mid-approval or just landed Apply.
+  const status = useGraphStore((s) => s.status);
+  const liftControls = status === 'awaiting_approval' || status === 'applied';
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -389,7 +395,9 @@ function GraphCanvasInner() {
         <Controls
           showInteractive={false}
           position="bottom-right"
-          className="whalecode-controls"
+          className={
+            liftControls ? 'whalecode-controls whalecode-controls--lifted' : 'whalecode-controls'
+          }
         />
       </ReactFlow>
     </div>

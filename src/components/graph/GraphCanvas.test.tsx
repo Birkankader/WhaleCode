@@ -5,10 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // handlers are wired. `@xyflow/react` ships a heavy DOM/canvas stack that
 // we don't want to exercise here — we only care about the handler wiring.
 const reactFlowProps = vi.fn();
+const controlsProps = vi.fn();
 vi.mock('@xyflow/react', () => ({
   ReactFlow: (props: Record<string, unknown>) => {
     reactFlowProps(props);
-    return null;
+    // Render children so child mocks (Controls, Background) mount and
+    // their props can be captured.
+    return <>{(props as { children?: React.ReactNode }).children ?? null}</>;
   },
   ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   useReactFlow: () => ({
@@ -16,13 +19,15 @@ vi.mock('@xyflow/react', () => ({
     zoomIn: () => undefined,
     zoomOut: () => undefined,
   }),
-  // Background / Controls are rendered as ReactFlow's children in v12. The
-  // canvas test only cares about props on <ReactFlow> — stub both to
-  // render-nothing so the import chain resolves without pulling in the
-  // real DOM/canvas stack.
+  // Background / Controls are rendered as ReactFlow's children in v12.
+  // Background renders nothing; Controls captures its props so tests can
+  // assert the lift modifier class without pulling in the real stack.
   Background: () => null,
   BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
-  Controls: () => null,
+  Controls: (props: Record<string, unknown>) => {
+    controlsProps(props);
+    return null;
+  },
   useStore: () => 1,
 }));
 
@@ -40,6 +45,7 @@ import { GraphCanvas } from './GraphCanvas';
 
 beforeEach(() => {
   reactFlowProps.mockClear();
+  controlsProps.mockClear();
   // jsdom doesn't ship ResizeObserver — the canvas uses it to track the
   // container for compact-mode layout. Stub it so the layout effect can run.
   if (!('ResizeObserver' in globalThis)) {
@@ -298,5 +304,43 @@ describe('GraphCanvas — per-state worker height', () => {
     const a = nodes.find((n) => n.id === 'a');
     // Proposed has no LogBlock branch — chip bump does not apply.
     expect(a?.data.height).toBe(140);
+  });
+});
+
+describe('GraphCanvas — Controls lift', () => {
+  // Phase 7 polish: ApprovalBar (status=awaiting_approval) and
+  // ApplySummaryOverlay (status=applied) sit at the bottom of the
+  // viewport and collide with the bottom-right Controls panel. The
+  // canvas applies a `whalecode-controls--lifted` modifier class so
+  // CSS bumps the panel's bottom margin.
+  it('passes the bare class on running status (no bottom-anchored bar)', () => {
+    useGraphStore.setState({ status: 'running' });
+    render(<GraphCanvas />);
+    const props = controlsProps.mock.calls[0]?.[0] ?? {};
+    expect(props.className).toBe('whalecode-controls');
+  });
+
+  it('appends --lifted modifier on awaiting_approval (ApprovalBar visible)', () => {
+    useGraphStore.setState({ status: 'awaiting_approval' });
+    render(<GraphCanvas />);
+    const props = controlsProps.mock.calls[0]?.[0] ?? {};
+    expect(props.className).toContain('whalecode-controls--lifted');
+  });
+
+  it('appends --lifted modifier on applied (ApplySummaryOverlay visible)', () => {
+    useGraphStore.setState({ status: 'applied' });
+    render(<GraphCanvas />);
+    const props = controlsProps.mock.calls[0]?.[0] ?? {};
+    expect(props.className).toContain('whalecode-controls--lifted');
+  });
+
+  it('does not lift on idle / done / rejected', () => {
+    for (const status of ['idle', 'done', 'rejected'] as const) {
+      controlsProps.mockClear();
+      useGraphStore.setState({ status });
+      render(<GraphCanvas />);
+      const props = controlsProps.mock.calls[0]?.[0] ?? {};
+      expect(props.className, `status=${status}`).not.toContain('--lifted');
+    }
   });
 });

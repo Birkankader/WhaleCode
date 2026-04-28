@@ -157,6 +157,14 @@ body {
   box-shadow: none;
   margin: 16px;
   overflow: hidden;
+  transition: margin-bottom 200ms ease-out;
+}
+/* Phase 7 polish: lift the Controls panel when a bottom-anchored
+   bar is on screen (ApprovalBar at awaiting_approval,
+   ApplySummaryOverlay at applied). 80px clears the ~64px bar with
+   16px breathing room. */
+.react-flow__controls.whalecode-controls--lifted {
+  margin-bottom: 80px;
 }
 .react-flow__controls.whalecode-controls .react-flow__controls-button {
   background-color: transparent;
