@@ -268,4 +268,35 @@ describe('GraphCanvas — per-state worker height', () => {
       expect(a?.data.height, `height for ${state}`).toBe(140);
     }
   });
+
+  it('chip detail expansion bumps the running card +80px (200 → 280)', () => {
+    // Phase 7 polish: when ActivityChipStack opens an inline detail
+    // panel, the card must grow to fit it. Layout reads
+    // `subtaskChipExpanded` from the store to decide the bump.
+    useGraphStore.setState({
+      subtaskChipExpanded: new Map([['a', 'chip-0']]),
+    });
+    const nodes = seedTwoWorkerDag('running', 'proposed');
+    const a = nodes.find((n) => n.id === 'a');
+    expect(a?.data.height).toBe(280);
+  });
+
+  it('chip detail bump alignment lifts row-mate to the same height', () => {
+    useGraphStore.setState({
+      subtaskChipExpanded: new Map([['a', 'chip-0']]),
+    });
+    const nodes = seedTwoWorkerDag('running', 'proposed');
+    const b = nodes.find((n) => n.id === 'b');
+    expect(b?.data.height).toBe(280);
+  });
+
+  it('chip detail bump only fires for log-states (proposed unaffected)', () => {
+    useGraphStore.setState({
+      subtaskChipExpanded: new Map([['a', 'chip-0']]),
+    });
+    const nodes = seedTwoWorkerDag('proposed', 'proposed');
+    const a = nodes.find((n) => n.id === 'a');
+    // Proposed has no LogBlock branch — chip bump does not apply.
+    expect(a?.data.height).toBe(140);
+  });
 });

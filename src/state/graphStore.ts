@@ -335,6 +335,17 @@ export type GraphState = {
    */
   workerExpanded: ReadonlySet<string>;
   /**
+   * Phase 7 polish: per-subtask "which activity row is expanded for
+   * detail" id, or `null` when no row is currently expanded.
+   * Driven by `ActivityChipStack` clicks; `GraphCanvas.buildGraph`
+   * reads it to bump the card's container height while a row is
+   * open so the inline detail panel doesn't overflow into the
+   * MERGE node below. Cleared on `reset` and when the subtask
+   * leaves running state (no point keeping an expanded row open
+   * on a card that's gone terminal).
+   */
+  subtaskChipExpanded: ReadonlyMap<string, string>;
+  /**
    * Bug #5 follow-up: the window between `submitTask`'s optimistic local
    * runId (`pending_*`) and the real backend runId landing is roughly an
    * IPC round-trip, but if the user clicks Cancel in that window the
@@ -604,6 +615,13 @@ export type GraphState = {
    * does, which keeps the visual grid honest.
    */
   toggleWorkerExpanded: (subtaskId: SubtaskId) => void;
+  /**
+   * Phase 7 polish: open / close an activity-row inline detail
+   * panel. Pass `chipId = null` to close the panel for that
+   * subtask. Single-row selection per subtask; calling with a
+   * different `chipId` switches.
+   */
+  setChipExpanded: (subtaskId: SubtaskId, chipId: string | null) => void;
 
   // -------------------------------------------------------------
   // Phase 7 Step 1: InlineDiffSidebar
@@ -828,6 +846,7 @@ const initial: Pick<
   | 'inlineDiffSelection'
   | 'inlineDiffSidebarUserToggled'
   | 'inlineDiffSidebarWidth'
+  | 'subtaskChipExpanded'
 > = {
   runId: null,
   taskInput: '',
@@ -873,6 +892,7 @@ const initial: Pick<
   inlineDiffSelection: new Set(),
   inlineDiffSidebarUserToggled: null,
   inlineDiffSidebarWidth: 480,
+  subtaskChipExpanded: new Map(),
 };
 
 function mapRunStatus(s: RunStatus): GraphStatus {
@@ -2363,6 +2383,18 @@ export const useGraphStore = create<GraphState>((set, get) => {
       });
     },
 
+    setChipExpanded(subtaskId, chipId) {
+      set((state) => {
+        const next = new Map(state.subtaskChipExpanded);
+        if (chipId === null) {
+          next.delete(subtaskId);
+        } else {
+          next.set(subtaskId, chipId);
+        }
+        return { subtaskChipExpanded: next };
+      });
+    },
+
     toggleWorkerThinking(subtaskId) {
       set((state) => {
         const next = new Set(state.workerThinkingVisible);
@@ -2430,6 +2462,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         inlineDiffSelection: new Set(),
         inlineDiffSidebarUserToggled: null,
         inlineDiffSidebarWidth: persistedWidth,
+        subtaskChipExpanded: new Map(),
       });
     },
 

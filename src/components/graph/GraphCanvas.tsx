@@ -76,6 +76,14 @@ const ESCALATION_WORKER_HEIGHT = 280;
  * compression rule doesn't fire.
  */
 const LOGS_WORKER_HEIGHT = 200;
+/**
+ * Phase 7 polish: extra height added to the running-state card when
+ * an activity row's inline detail panel is open. ~3 lines of mono
+ * text @ 18px line-height + padding fits comfortably in 80px; for
+ * unusually long edit summaries the inline `break-words` wraps and
+ * the user sees the whole panel without overflow.
+ */
+const CHIP_DETAIL_BUMP_PX = 80;
 const LOGS_STATES: ReadonlySet<NodeState> = new Set([
   'running',
   'retrying',
@@ -226,6 +234,10 @@ function GraphCanvasInner() {
   // stays proportional to how often the computed height actually
   // changes.
   const nodeLogs = useGraphStore((s) => s.nodeLogs);
+  // Phase 7 polish: per-subtask chip-detail expansion drives a +80px
+  // height bump on the worker card so the inline detail panel
+  // doesn't overflow the container into the MERGE node below.
+  const subtaskChipExpanded = useGraphStore((s) => s.subtaskChipExpanded);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -258,6 +270,7 @@ function GraphCanvasInner() {
       selectedSubtaskIds,
       workerExpanded,
       nodeLogs,
+      subtaskChipExpanded,
       compact ? 2 : undefined,
     );
   }, [
@@ -267,6 +280,7 @@ function GraphCanvasInner() {
     selectedSubtaskIds,
     workerExpanded,
     nodeLogs,
+    subtaskChipExpanded,
     compact,
   ]);
 
@@ -417,6 +431,7 @@ function buildGraph(
   selectedSubtaskIds: ReadonlySet<string>,
   workerExpanded: ReadonlySet<string>,
   nodeLogs: ReadonlyMap<string, string[]>,
+  subtaskChipExpanded: ReadonlyMap<string, string>,
   maxPerRow: number | undefined,
 ): { nodes: Node[]; edges: Edge[] } {
   const { masterNode, subtasks, finalNode } = structure;
@@ -459,7 +474,10 @@ function buildGraph(
     } else if (state === 'human_escalation') {
       workerHeights.set(st.id, ESCALATION_WORKER_HEIGHT);
     } else if (state && LOGS_STATES.has(state)) {
-      workerHeights.set(st.id, LOGS_WORKER_HEIGHT);
+      // Phase 7 polish: bump 80px when an activity row's detail panel
+      // is open so the inline content has room without overflowing.
+      const chipBump = subtaskChipExpanded.has(st.id) ? CHIP_DETAIL_BUMP_PX : 0;
+      workerHeights.set(st.id, LOGS_WORKER_HEIGHT + chipBump);
     }
   }
 

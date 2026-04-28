@@ -32,7 +32,7 @@ import {
   Sparkles,
   Terminal,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 
 import { useGraphStore } from '../../state/graphStore';
 import {
@@ -56,9 +56,12 @@ export function ActivityChipStack({ subtaskId }: Props) {
   );
   const visible = compressed.slice(Math.max(0, compressed.length - MAX_VISIBLE));
 
-  // Single-row selection drives the inline detail panel. Re-click
-  // closes; clicking another row switches.
-  const [selectedChipId, setSelectedChipId] = useState<string | null>(null);
+  // Phase 7 polish: chip-expansion state lives in the store so
+  // `GraphCanvas.buildGraph` can read it for dynamic card height.
+  const selectedChipId = useGraphStore(
+    (s) => s.subtaskChipExpanded.get(subtaskId) ?? null,
+  );
+  const setChipExpanded = useGraphStore((s) => s.setChipExpanded);
 
   if (visible.length === 0) return null;
 
@@ -84,7 +87,9 @@ export function ActivityChipStack({ subtaskId }: Props) {
               <ActivityRow
                 chip={chip}
                 isSelected={isSelected}
-                onToggle={() => setSelectedChipId(isSelected ? null : chip.id)}
+                onToggle={() =>
+                  setChipExpanded(subtaskId, isSelected ? null : chip.id)
+                }
                 subtaskId={subtaskId}
               />
               {isSelected ? <ChipDetail chip={chip} subtaskId={subtaskId} /> : null}
@@ -165,7 +170,7 @@ function renderDetailBody(ev: ToolEvent, count: number) {
       const suffix = count > 1 ? ` · ${count} reads compressed` : '';
       return (
         <span className="block" data-testid="activity-chip-detail-path">
-          <span className="text-fg-secondary">{ev.path}</span>
+          <span className="text-fg-secondary">{relativePath(ev.path)}</span>
           {range}
           {suffix ? <span className="text-fg-tertiary">{suffix}</span> : null}
         </span>
@@ -176,7 +181,7 @@ function renderDetailBody(ev: ToolEvent, count: number) {
       return (
         <>
           <span className="block" data-testid="activity-chip-detail-path">
-            <span className="text-fg-secondary">{ev.path}</span>
+            <span className="text-fg-secondary">{relativePath(ev.path)}</span>
             {suffix ? <span className="text-fg-tertiary">{suffix}</span> : null}
           </span>
           {ev.summary ? (
@@ -191,11 +196,14 @@ function renderDetailBody(ev: ToolEvent, count: number) {
       return (
         <span className="block" data-testid="activity-chip-detail-command">
           <span className="text-fg-tertiary">$</span>{' '}
-          <span className="text-fg-secondary">{ev.command}</span>
+          <span className="text-fg-secondary">{relativeCommand(ev.command)}</span>
         </span>
       );
     case 'search': {
-      const where = ev.paths.length > 0 ? ` in ${ev.paths.join(', ')}` : '';
+      const where =
+        ev.paths.length > 0
+          ? ` in ${ev.paths.map(relativePath).join(', ')}`
+          : '';
       return (
         <span className="block" data-testid="activity-chip-detail-query">
           <span className="text-fg-secondary">&ldquo;{ev.query}&rdquo;</span>
@@ -210,6 +218,21 @@ function renderDetailBody(ev: ToolEvent, count: number) {
         </span>
       );
   }
+}
+
+/**
+ * Strip worktree / $HOME prefixes from absolute paths embedded in
+ * shell commands (typically `cd /Users/.../worktree/sub/apps/api`).
+ * Conservative — only rewrites the recognised prefixes; leaves the
+ * rest of the command unchanged.
+ */
+function relativeCommand(cmd: string): string {
+  return cmd
+    .replace(
+      /\/[^\s]+\.whalecode(?:-worktrees)?\/[^/\s]+\/[^/\s]+\/([^\s]+)/g,
+      '$1',
+    )
+    .replace(/\/(?:Users|home)\/[^/\s]+\/([^\s]+)/g, '~/$1');
 }
 
 /**
@@ -244,7 +267,11 @@ function rowParts(chip: CompressedChip): {
     case 'bash':
       return compressed
         ? { verb: 'Run', primary: 'shell commands', secondary: `× ${chip.count}` }
-        : { verb: 'Run', primary: truncateInline(ev.command, 36), secondary: null };
+        : {
+            verb: 'Run',
+            primary: truncateInline(relativeCommand(ev.command), 36),
+            secondary: null,
+          };
     case 'search':
       return compressed
         ? { verb: 'Search', primary: 'queries', secondary: `× ${chip.count}` }
@@ -270,6 +297,25 @@ function basename(path: string): string {
 function basenameDir(dir: string): string {
   const trimmed = dir.endsWith('/') ? dir.slice(0, -1) : dir;
   return basename(trimmed);
+}
+
+/**
+ * Strip the worktree prefix and `$HOME/` prefix so the detail panel
+ * shows a workspace-relative path instead of the full absolute path.
+ *
+ * Worktree shape: `<repo>/.whalecode-worktrees/<run-id>/<subtask-id>/<rest>`.
+ * Returns just `<rest>` when the prefix is recognised; falls through
+ * to `~/<rest>` when the path is under `$HOME`; returns the input
+ * unchanged otherwise (already relative or a different workspace).
+ */
+function relativePath(absolute: string): string {
+  const worktreeMatch = absolute.match(
+    /\.whalecode(?:-worktrees)?\/[^/]+\/[^/]+\/(.+)$/,
+  );
+  if (worktreeMatch) return worktreeMatch[1];
+  const homeMatch = absolute.match(/^\/(?:Users|home)\/[^/]+\/(.+)$/);
+  if (homeMatch) return `~/${homeMatch[1]}`;
+  return absolute;
 }
 
 function truncateInline(s: string, max: number): string {

@@ -281,4 +281,68 @@ describe('ActivityChipStack — chip click → detail panel', () => {
     fireEvent.click(chip);
     expect(chip.getAttribute('aria-pressed')).toBe('true');
   });
+
+  it('chip click writes the selected id into graphStore.subtaskChipExpanded', () => {
+    seedActivities('s-1', [
+      { event: { kind: 'bash', command: 'ls' }, timestampMs: 1000 },
+    ]);
+    render(<ActivityChipStack subtaskId="s-1" />);
+    expect(useGraphStore.getState().subtaskChipExpanded.has('s-1')).toBe(false);
+    fireEvent.click(screen.getByTestId('activity-chip-s-1-bash'));
+    expect(useGraphStore.getState().subtaskChipExpanded.has('s-1')).toBe(true);
+  });
+
+  it('worktree-rooted absolute paths render relative-to-repo in the detail panel', () => {
+    seedActivities('s-1', [
+      {
+        event: {
+          kind: 'file-edit',
+          path: '/Users/birkankader/Documents/Projects/ProjectHeimdall/.whalecode-worktrees/01ABC/01XYZ/apps/web/src/App.tsx',
+          summary: 'edited',
+        },
+        timestampMs: 1000,
+      },
+    ]);
+    render(<ActivityChipStack subtaskId="s-1" />);
+    fireEvent.click(screen.getByTestId('activity-chip-s-1-file-edit'));
+    const detail = screen.getByTestId('activity-chip-detail-path');
+    expect(detail).toHaveTextContent('apps/web/src/App.tsx');
+    expect(detail.textContent).not.toContain('/Users/birkankader');
+    expect(detail.textContent).not.toContain('.whalecode-worktrees');
+  });
+
+  it('home-directory absolute paths render with ~/ prefix in the detail panel', () => {
+    seedActivities('s-1', [
+      {
+        event: { kind: 'file-read', path: '/Users/alice/code/lib.ts' },
+        timestampMs: 1000,
+      },
+    ]);
+    render(<ActivityChipStack subtaskId="s-1" />);
+    fireEvent.click(screen.getByTestId('activity-chip-s-1-file-read'));
+    expect(screen.getByTestId('activity-chip-detail-path')).toHaveTextContent(
+      '~/code/lib.ts',
+    );
+  });
+
+  it('bash command absolute paths get rewritten in row + detail', () => {
+    seedActivities('s-1', [
+      {
+        event: {
+          kind: 'bash',
+          command:
+            'cd /Users/birkankader/Documents/Projects/ProjectHeimdall/.whalecode-worktrees/01ABC/01XYZ/apps/api',
+        },
+        timestampMs: 1000,
+      },
+    ]);
+    render(<ActivityChipStack subtaskId="s-1" />);
+    const row = screen.getByTestId('activity-chip-s-1-bash');
+    expect(row.textContent).toContain('apps/api');
+    expect(row.textContent).not.toContain('/Users/birkankader');
+    fireEvent.click(row);
+    expect(screen.getByTestId('activity-chip-detail-command')).toHaveTextContent(
+      'cd apps/api',
+    );
+  });
 });
