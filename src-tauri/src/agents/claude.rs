@@ -564,22 +564,58 @@ fn one_tool_event_from_object(obj: &serde_json::Value) -> Option<ToolEvent> {
     })
 }
 
-/// Phase 6 Step 3 — extract thinking blocks from a stream-json
-/// NDJSON line. Returns `None` for non-thinking lines. Step 3
-/// surfaces these on an opt-in panel; Step 2 wires the parser tee.
-pub fn parse_thinking(line: &str) -> Option<String> {
+/// Phase 6 Step 3 / Phase 7 polish — extract thinking blocks from a
+/// stream-json NDJSON line. Returns the empty vec for non-thinking
+/// lines. Step 3 surfaces these on an opt-in panel; Step 2 wires the
+/// parser tee.
+///
+/// Two wire shapes covered (mirrors `parse_tool_events`):
+///   1. Top-level `{"type":"thinking","thinking":"…"}` — the older
+///      shape captured by Step 0 fixtures.
+///   2. Wrapped inside an assistant message's content blocks:
+///      `{"type":"assistant","message":{"content":[{"type":"thinking",
+///      "thinking":"…"}, …]}}` — the shape real Claude Code emits
+///      (single `assistant` event may carry zero, one, or several
+///      thinking blocks alongside text + tool_use blocks).
+///
+/// The Phase 7 polish patch fixed an empty-thinking-panel report:
+/// production parse only handled shape 1, but Claude emits shape 2,
+/// so no chunks ever landed in the store.
+pub fn parse_thinking(line: &str) -> Vec<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return None;
+        return vec![];
     }
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    if value.get("type").and_then(|v| v.as_str()) == Some("thinking") {
-        return value
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return vec![];
+    };
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "thinking" => value
             .get("thinking")
             .and_then(|v| v.as_str())
-            .map(str::to_string);
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default(),
+        "assistant" => {
+            let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            else {
+                return vec![];
+            };
+            let mut out = Vec::new();
+            for block in content {
+                if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                    if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
+                        out.push(text.to_string());
+                    }
+                }
+            }
+            out
+        }
+        _ => vec![],
     }
-    None
 }
 
 fn summarize_last_lines(stdout: &str, n: usize) -> String {

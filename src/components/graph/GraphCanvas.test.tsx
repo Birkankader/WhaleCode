@@ -204,10 +204,10 @@ describe('GraphCanvas — proposed-state edge dimming', () => {
 });
 
 describe('GraphCanvas — per-state worker height', () => {
-  // States that render a LogBlock grow the worker card to 180px so the
-  // title + why + LogBlock stack doesn't overflow the default 140px —
-  // the visual bug that hid `why` behind the LogBlock's opaque dark
-  // background during Phase 3 Step 9 verification.
+  // States that render a LogBlock grow the worker card to 240px (was
+  // 180px through Phase 6; bumped in the Phase 7 Step 1 polish patch
+  // after real-usage screenshots showed the chip stack + hint input
+  // squeezed down to a single visible row each on a 180px card).
   function seedTwoWorkerDag(
     aState: string,
     bState: string,
@@ -227,26 +227,26 @@ describe('GraphCanvas — per-state worker height', () => {
     return (props.nodes as Array<{ id: string; data: { height?: number } }>) ?? [];
   }
 
-  it('running worker gets the 180px height override', () => {
+  it('running worker gets the 240px height override', () => {
     const nodes = seedTwoWorkerDag('running', 'proposed');
     const a = nodes.find((n) => n.id === 'a');
-    expect(a?.data.height).toBe(180);
+    expect(a?.data.height).toBe(240);
   });
 
-  it('row-max alignment: proposed neighbour in a running row also renders at 180px', () => {
+  it('row-max alignment: proposed neighbour in a running row also renders at 240px', () => {
     // Same row (layout is one-row default). The row-max lifts `b` to
     // match `a`'s expanded height so the grid stays visually even.
     const nodes = seedTwoWorkerDag('running', 'proposed');
     const b = nodes.find((n) => n.id === 'b');
-    expect(b?.data.height).toBe(180);
+    expect(b?.data.height).toBe(240);
   });
 
-  it('done, retrying, and failed also get 180px (each has a LogBlock)', () => {
+  it('done, retrying, and failed also get 240px (each has a LogBlock)', () => {
     for (const state of ['done', 'retrying', 'failed']) {
       reactFlowProps.mockClear();
       const nodes = seedTwoWorkerDag(state, state);
       const a = nodes.find((n) => n.id === 'a');
-      expect(a?.data.height, `height for ${state}`).toBe(180);
+      expect(a?.data.height, `height for ${state}`).toBe(240);
     }
   });
 
@@ -255,7 +255,7 @@ describe('GraphCanvas — per-state worker height', () => {
     const a = nodes.find((n) => n.id === 'a');
     const b = nodes.find((n) => n.id === 'b');
     expect(a?.data.height).toBe(280);
-    // Row-max lifts the running neighbour to 280 too, not 180.
+    // Row-max lifts the running neighbour to 280 too, not 240.
     expect(b?.data.height).toBe(280);
   });
 

@@ -468,6 +468,98 @@ describe('InlineDiffSidebar — file row expand', () => {
 // graphStore selection actions
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// Auto-selection (Phase 7 Step 1 polish)
+// ---------------------------------------------------------------------
+
+describe('InlineDiffSidebar — auto-selection (no manual picks)', () => {
+  function seedTwoDoneWorkers() {
+    useGraphStore.setState({
+      status: 'running',
+      subtasks: [
+        {
+          id: 's-1',
+          title: 'A',
+          why: null,
+          dependsOn: [],
+          replaces: [],
+          replanCount: 0,
+          agent: 'claude',
+        },
+        {
+          id: 's-2',
+          title: 'B',
+          why: null,
+          dependsOn: [],
+          replaces: [],
+          replanCount: 0,
+          agent: 'codex',
+        },
+      ],
+      subtaskDiffs: new Map([
+        [
+          's-1',
+          [fd({ path: 'src/a.ts', additions: 1, deletions: 0 })] as readonly FileDiff[],
+        ],
+        [
+          's-2',
+          [fd({ path: 'src/b.ts', additions: 2, deletions: 1 })] as readonly FileDiff[],
+        ],
+      ]),
+      inlineDiffSelection: new Set(),
+    });
+  }
+
+  it('auto-fills with every worker that has diffs when no manual selection', () => {
+    seedTwoDoneWorkers();
+    render(<InlineDiffSidebar />);
+    const headers = screen.getAllByTestId('inline-diff-sidebar-worker-header');
+    expect(headers).toHaveLength(2);
+  });
+
+  it('header label uses "All workers" copy in auto mode', () => {
+    seedTwoDoneWorkers();
+    render(<InlineDiffSidebar />);
+    expect(screen.getByText(/All workers \(2\)/)).toBeInTheDocument();
+  });
+
+  it('clear button hidden in auto mode (clearing would re-fill)', () => {
+    seedTwoDoneWorkers();
+    render(<InlineDiffSidebar />);
+    expect(screen.queryByTestId('inline-diff-sidebar-clear')).not.toBeInTheDocument();
+  });
+
+  it('manual selection switches header copy back to "selected"', () => {
+    seedTwoDoneWorkers();
+    useGraphStore.setState({ inlineDiffSelection: new Set(['s-1']) });
+    render(<InlineDiffSidebar />);
+    expect(screen.getByText('1 worker selected')).toBeInTheDocument();
+    expect(screen.queryByText(/All workers/)).not.toBeInTheDocument();
+  });
+
+  it('clearing manual selection returns to auto mode (re-fills)', () => {
+    seedTwoDoneWorkers();
+    useGraphStore.setState({ inlineDiffSelection: new Set(['s-1']) });
+    const { rerender } = render(<InlineDiffSidebar />);
+    expect(screen.getAllByTestId('inline-diff-sidebar-file-header')).toHaveLength(1);
+    useGraphStore.getState().clearDiffSelection();
+    rerender(<InlineDiffSidebar />);
+    // Auto mode now: both workers visible.
+    expect(screen.getAllByTestId('inline-diff-sidebar-worker-header')).toHaveLength(2);
+  });
+
+  it('empty state still renders when no diffs anywhere', () => {
+    useGraphStore.setState({
+      status: 'running',
+      subtasks: [],
+      subtaskDiffs: new Map(),
+      inlineDiffSelection: new Set(),
+    });
+    render(<InlineDiffSidebar />);
+    expect(screen.getByTestId('inline-diff-sidebar-empty')).toBeInTheDocument();
+  });
+});
+
 describe('graphStore — selectDiffWorker / clearDiffSelection', () => {
   it('plain click resets to a single-id selection', () => {
     useGraphStore.setState({ inlineDiffSelection: new Set(['s-old']) });

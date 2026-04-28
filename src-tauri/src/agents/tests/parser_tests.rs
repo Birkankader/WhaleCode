@@ -98,23 +98,52 @@ fn claude_ignores_non_tool_lines() {
 }
 
 #[test]
-fn claude_parse_thinking_extracts_text() {
+fn claude_parse_thinking_extracts_top_level_shape() {
+    // Phase 6 Step 0 fixture shape — `{"type":"thinking",...}` per line.
     let line = r#"{"type":"thinking","thinking":"Need to find auth flow first."}"#;
     assert_eq!(
         crate::agents::claude::parse_thinking(line),
-        Some("Need to find auth flow first.".into())
+        vec!["Need to find auth flow first.".to_string()]
     );
 }
 
 #[test]
-fn claude_parse_thinking_returns_none_for_other_lines() {
+fn claude_parse_thinking_extracts_assistant_content_block_shape() {
+    // Phase 7 polish — production Claude Code wraps thinking blocks
+    // inside the assistant message's content array. Step 6 missed
+    // this shape and shipped the empty-thinking-panel bug.
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Plan first."},{"type":"text","text":"…"}]}}"#;
+    assert_eq!(
+        crate::agents::claude::parse_thinking(line),
+        vec!["Plan first.".to_string()]
+    );
+}
+
+#[test]
+fn claude_parse_thinking_extracts_multiple_thinking_blocks_in_one_message() {
+    // Single assistant event can carry multiple thinking blocks
+    // alongside text + tool_use.
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"First"},{"type":"text","text":"middle"},{"type":"thinking","thinking":"Second"}]}}"#;
+    assert_eq!(
+        crate::agents::claude::parse_thinking(line),
+        vec!["First".to_string(), "Second".to_string()]
+    );
+}
+
+#[test]
+fn claude_parse_thinking_returns_empty_for_other_lines() {
     let cases = [
         r#"{"type":"tool_use","name":"Read","input":{}}"#,
         r#"{"type":"system"}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"done"}"#,
         "",
     ];
     for line in cases {
-        assert!(crate::agents::claude::parse_thinking(line).is_none());
+        assert!(
+            crate::agents::claude::parse_thinking(line).is_empty(),
+            "expected empty: {line}"
+        );
     }
 }
 

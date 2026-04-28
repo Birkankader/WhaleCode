@@ -720,6 +720,14 @@ export function computeSidebarOpen(state: GraphState): boolean {
   return INLINE_DIFF_SIDEBAR_DEFAULT_OPEN_STATUSES.has(state.status);
 }
 
+// Note: the "effective selection" derivation (auto-fill the sidebar
+// with every worker that has diffs when no manual chip click has
+// landed) is computed inside `InlineDiffSidebar` via `useMemo` rather
+// than as a store-level selector. Returning a fresh array from a
+// zustand selector triggers React 19's stricter equality check and
+// causes an infinite re-render — so the deriviation lives at the
+// component layer, keyed off the same primitives.
+
 /**
  * UX-preview BFS: how many *transitive* dependents the given subtask
  * has in the store's current plan. The count excludes the origin

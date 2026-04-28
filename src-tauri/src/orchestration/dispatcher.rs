@@ -1261,11 +1261,11 @@ async fn forward_logs(
             AgentKind::Codex => crate::agents::codex::parse_tool_events(&line),
             AgentKind::Gemini => crate::agents::gemini::parse_tool_events(&line),
         };
-        let thinking = match worker_kind {
+        let thinking_chunks: Vec<String> = match worker_kind {
             AgentKind::Claude => crate::agents::claude::parse_thinking(&line),
             // Codex / Gemini emit no thinking blocks per Step 0
             // diagnostic. UI greys out the toggle for those workers.
-            _ => None,
+            _ => Vec::new(),
         };
 
         // Best-effort persistence: a log line dropped on the floor
@@ -1293,7 +1293,7 @@ async fn forward_logs(
             .await;
         }
 
-        if let Some(chunk) = thinking {
+        for chunk in thinking_chunks {
             let timestamp_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)

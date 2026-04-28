@@ -52,7 +52,7 @@ const MAX_WIDTH = 720;
 export function InlineDiffSidebar() {
   const open = useGraphStore(computeSidebarOpen);
   const width = useGraphStore((s) => s.inlineDiffSidebarWidth);
-  const selection = useGraphStore((s) => s.inlineDiffSelection);
+  const manualSelection = useGraphStore((s) => s.inlineDiffSelection);
   const subtaskDiffs = useGraphStore((s) => s.subtaskDiffs);
   const subtasks = useGraphStore((s) => s.subtasks);
   const { toggleInlineDiffSidebar, setInlineDiffSidebarWidth, clearDiffSelection } = useGraphStore(
@@ -63,17 +63,33 @@ export function InlineDiffSidebar() {
     })),
   );
 
-  // Worker entries for currently-selected ids, in stable plan order.
+  const isAutoSelection = manualSelection.size === 0;
+
+  // Phase 7 Step 1 polish: when the user hasn't picked a worker
+  // manually, default to showing every subtask that has diffs (the
+  // union view) so the sidebar is informative the moment diffs land.
+  // Memoized off store primitives so identity is stable across
+  // render cycles (returning a fresh array from a zustand selector
+  // would trigger an infinite re-render under React 19's stricter
+  // equality semantics).
   const selectedEntries = useMemo(() => {
     const entries: { id: string; title: string; files: readonly FileDiff[] }[] = [];
-    for (const sub of subtasks) {
-      if (!selection.has(sub.id)) continue;
-      const files = subtaskDiffs.get(sub.id);
-      if (!files) continue;
-      entries.push({ id: sub.id, title: sub.title, files });
+    if (isAutoSelection) {
+      for (const sub of subtasks) {
+        const files = subtaskDiffs.get(sub.id);
+        if (!files) continue;
+        entries.push({ id: sub.id, title: sub.title, files });
+      }
+    } else {
+      for (const sub of subtasks) {
+        if (!manualSelection.has(sub.id)) continue;
+        const files = subtaskDiffs.get(sub.id);
+        if (!files) continue;
+        entries.push({ id: sub.id, title: sub.title, files });
+      }
     }
     return entries;
-  }, [selection, subtaskDiffs, subtasks]);
+  }, [isAutoSelection, manualSelection, subtaskDiffs, subtasks]);
 
   if (!open) {
     // Collapsed: render a thin spine with a re-open button. Stays
@@ -116,6 +132,7 @@ export function InlineDiffSidebar() {
       <ResizeHandle width={width} onWidthChange={setInlineDiffSidebarWidth} />
       <Header
         count={selectedEntries.length}
+        isAuto={isAutoSelection}
         onClose={toggleInlineDiffSidebar}
         onClear={clearDiffSelection}
       />
@@ -139,27 +156,39 @@ export function InlineDiffSidebar() {
 
 function Header({
   count,
+  isAuto,
   onClose,
   onClear,
 }: {
   count: number;
+  isAuto: boolean;
   onClose: () => void;
   onClear: () => void;
 }) {
+  // Auto-selection (no manual picks) shows a hint "all workers" copy
+  // so users know they're seeing the full union by default. Once they
+  // click a chip the header flips to the explicit count.
+  let label: string;
+  if (count === 0) {
+    label = 'Diff sidebar';
+  } else if (isAuto) {
+    label =
+      count === 1
+        ? 'All workers (1)'
+        : `All workers (${count})`;
+  } else if (count === 1) {
+    label = '1 worker selected';
+  } else {
+    label = `${count} workers selected`;
+  }
   return (
     <header
       className="flex items-center justify-between border-b px-3 py-2 text-hint uppercase tracking-wide text-fg-secondary"
       style={{ borderColor: 'var(--color-border-default)' }}
     >
-      <span>
-        {count === 0
-          ? 'Diff sidebar'
-          : count === 1
-            ? '1 worker selected'
-            : `${count} workers selected`}
-      </span>
+      <span>{label}</span>
       <span className="flex items-center gap-2">
-        {count > 0 ? (
+        {count > 0 && !isAuto ? (
           <button
             type="button"
             onClick={onClear}

@@ -65,12 +65,16 @@ const ESCALATION_WORKER_HEIGHT = 280;
  * Per-worker container height for states that have a LogBlock (54px) on
  * top of the title + why + header + chip stack. The default 140px isn't
  * enough — the why line gets visually overwritten by the LogBlock's
- * opaque background when flex squeezes the NonProposedBody. 180px is
- * the middle ground between the compact proposed card (140px) and the
- * escalated surface (280px), and row-max alignment keeps mixed-state
- * rows (one proposed + one running) visually aligned to the taller one.
+ * opaque background when flex squeezes the NonProposedBody. Originally
+ * 180px (Phase 4 Step 3); bumped to 240px in the Phase 7 polish patch
+ * after real-usage screenshots showed the running card squeezing the
+ * Phase 6 surfaces (ActivityChipStack + HintInput + log tail) into a
+ * single visible line each. 240 fits 3-5 chips comfortably, the hint
+ * input, and 2-3 log lines without forcing the user to expand. Row-max
+ * alignment keeps mixed-state rows (one proposed + one running)
+ * visually aligned to the taller one.
  */
-const LOGS_WORKER_HEIGHT = 180;
+const LOGS_WORKER_HEIGHT = 240;
 const LOGS_STATES: ReadonlySet<NodeState> = new Set([
   'running',
   'retrying',
