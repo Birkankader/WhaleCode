@@ -319,6 +319,17 @@ export type GraphState = {
    */
   applySummary: ApplySummary | null;
   /**
+   * Phase 7 polish: `true` while an `apply_run` IPC is in flight (the
+   * window between the user clicking "Apply to branch" on the MERGE
+   * node and the `ApplySummary` event landing). FinalNode reads this
+   * to render an "Applying…" state on the primary button without
+   * confusing it with the pre-done backend `merging` status (which
+   * runs *before* the user gets a chance to click). Cleared on
+   * success in `handleApplySummary`, on error in `applyRun`'s catch
+   * block, and on `reset`.
+   */
+  applyInFlight: boolean;
+  /**
    * Phase 4 Step 3: subtask ids whose worker card is expanded to show
    * the full scrollable log. Per-node, in-session only — cleared on
    * `reset` / new submit. Lives in the store (not in local component
@@ -827,6 +838,7 @@ const initial: Pick<
   | 'autoApproved'
   | 'autoApproveSuspended'
   | 'applySummary'
+  | 'applyInFlight'
   | 'workerExpanded'
   | 'pendingCancel'
   | 'cancelInFlight'
@@ -873,6 +885,7 @@ const initial: Pick<
   autoApproved: null,
   autoApproveSuspended: null,
   applySummary: null,
+  applyInFlight: false,
   workerExpanded: new Set(),
   pendingCancel: false,
   cancelInFlight: false,
@@ -1811,8 +1824,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
     // Last event in the applied path's ordering invariant
     // (DiffReady → Completed → StatusChanged(Done) → ApplySummary).
     // Park the payload for the overlay and retire the subscription —
-    // no further events are expected for this run.
-    set({ applySummary: e });
+    // no further events are expected for this run. Phase 7 polish:
+    // also clear `applyInFlight` so the FinalNode flips out of the
+    // "Applying…" state into the "Applied" success state.
+    set({ applySummary: e, applyInFlight: false });
     detachActiveSubscription();
   }
 
@@ -2004,11 +2019,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
       // Clear any stale "base branch dirty" / "apply failed" error from a
       // prior attempt. If the new attempt fails the same way, the
       // event handler will repopulate with the fresh file list.
-      set({ currentError: null });
+      // Phase 7 polish: flip `applyInFlight` so FinalNode can show an
+      // "Applying…" state on the user-clicked button without confusing
+      // it with the pre-done backend `merging` phase. The flag clears
+      // on success (ApplySummary handler — see `handleApplySummary`)
+      // or on error here.
+      set({ currentError: null, applyInFlight: true });
       try {
         await applyRunIpc(runId);
       } catch (err) {
-        set({ currentError: `Apply failed: ${String(err)}` });
+        set({ currentError: `Apply failed: ${String(err)}`, applyInFlight: false });
         throw err;
       }
     },

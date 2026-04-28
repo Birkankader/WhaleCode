@@ -185,8 +185,23 @@ describe('FinalNode — applied state (Phase 7 polish)', () => {
     expect(screen.getByTestId('final-node-label')).toHaveTextContent(/Applied/i);
   });
 
-  it('shows "Applying…" + disables buttons during status=merging', () => {
-    useGraphStore.setState({ status: 'merging' });
+  it('shows "Applying…" only after user clicks Apply (applyInFlight true), NOT during pre-done backend merging', () => {
+    // Pre-done `status=merging` is the backend stitching workers
+    // together before the MERGE card is even ready. The user has
+    // not clicked Apply yet — the button must NOT show "Applying…".
+    useGraphStore.setState({ status: 'merging', applyInFlight: false });
+    renderNode({
+      state: 'done',
+      label: 'Merge',
+      files: ['a.ts'],
+      conflictFiles: null,
+    });
+    expect(screen.getByTestId('final-node-label')).toHaveTextContent('Merge');
+    expect(screen.getByTestId('final-node-apply')).toHaveTextContent(/Apply to branch/i);
+  });
+
+  it('shows "Applying…" + disables buttons when applyInFlight flag is set', () => {
+    useGraphStore.setState({ status: 'done', applyInFlight: true });
     renderNode({
       state: 'done',
       label: 'Merge',

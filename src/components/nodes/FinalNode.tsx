@@ -35,6 +35,7 @@ export function FinalNode({ data }: NodeProps) {
   // ApplySummaryOverlay confirmed success on the right).
   const status = useGraphStore((s) => s.status);
   const applySummary = useGraphStore((s) => s.applySummary);
+  const applyInFlight = useGraphStore((s) => s.applyInFlight);
 
   const conflicting =
     d.conflictFiles !== null && d.conflictFiles !== undefined && d.conflictFiles.length > 0;
@@ -86,7 +87,12 @@ export function FinalNode({ data }: NodeProps) {
   }
 
   const isApplied = status === 'applied' || applySummary !== null;
-  const isApplying = status === 'merging';
+  // Phase 7 polish: only show "Applying…" when the user has actually
+  // clicked Apply (applyInFlight is set in `applyRun`, cleared in
+  // `handleApplySummary`). The pre-done `status === 'merging'`
+  // backend phase runs *before* the user can click and was wrongly
+  // showing "Applying…" on the MERGE node.
+  const isApplying = applyInFlight && !isApplied;
   const activated = d.state === 'done' || d.state === 'running';
   const dotColor = isApplied
     ? 'var(--color-status-success)'
