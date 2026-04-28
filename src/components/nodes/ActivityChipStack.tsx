@@ -29,7 +29,11 @@ import {
 } from '../../state/activityCompression';
 import type { ToolEvent } from '../../lib/ipc';
 
-const MAX_VISIBLE = 5;
+// Phase 7 polish: tightened from 5 to 3 visible chips so the latest-
+// activity surface fits one horizontal row on the 280px-wide card
+// without wrapping. Older chips still live in `subtaskActivities`
+// (capped 50 per subtask) and become visible on expand if needed.
+const MAX_VISIBLE = 3;
 
 type Props = { subtaskId: string };
 
@@ -45,7 +49,7 @@ export function ActivityChipStack({ subtaskId }: Props) {
 
   return (
     <div
-      className="flex flex-wrap items-center gap-1"
+      className="flex min-w-0 items-center gap-1 overflow-hidden"
       data-testid={`activity-chip-stack-${subtaskId}`}
       role="status"
       aria-live="polite"
@@ -58,7 +62,7 @@ export function ActivityChipStack({ subtaskId }: Props) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -2 }}
             transition={{ duration: 0.15 }}
-            className="inline-flex max-w-full items-center gap-1 truncate rounded-sm border border-fg-secondary/30 bg-bg-elevated px-1.5 py-0.5 text-meta text-fg-secondary"
+            className="inline-flex min-w-0 shrink items-center gap-1 truncate rounded-sm border border-fg-secondary/30 bg-bg-elevated px-1.5 py-0.5 text-meta text-fg-secondary"
             data-testid={`activity-chip-${subtaskId}-${chip.event.kind}`}
             aria-label={ariaLabelFor(chip)}
             title={chipLabel(chip)}

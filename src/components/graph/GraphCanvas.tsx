@@ -62,19 +62,20 @@ const PAN_MARGIN = 200;
  */
 const ESCALATION_WORKER_HEIGHT = 280;
 /**
- * Per-worker container height for states that have a LogBlock (54px) on
- * top of the title + why + header + chip stack. The default 140px isn't
- * enough — the why line gets visually overwritten by the LogBlock's
- * opaque background when flex squeezes the NonProposedBody. Originally
- * 180px (Phase 4 Step 3); bumped to 240px in the Phase 7 polish patch
- * after real-usage screenshots showed the running card squeezing the
- * Phase 6 surfaces (ActivityChipStack + HintInput + log tail) into a
- * single visible line each. 240 fits 3-5 chips comfortably, the hint
- * input, and 2-3 log lines without forcing the user to expand. Row-max
- * alignment keeps mixed-state rows (one proposed + one running)
- * visually aligned to the taller one.
+ * Per-worker container height for states that have a streaming
+ * surface — chip stack + hint input on top of title + why + header.
+ *
+ * History: 180 (Phase 4 Step 3) → 240 (Phase 7 polish after Step 1
+ * screenshots showed cramping) → 200 (Phase 7 polish round 2 after
+ * the LogBlock was removed from the default running view). The log
+ * tail used to claim a 54px row; with stream-json turning that row
+ * into raw NDJSON noise, the LogBlock now mounts only when the user
+ * clicks the card to expand it. The remaining stack (header + title
+ * + why + chip stack + hint input + footer) fits in ~180px; 200 gives
+ * one row of breathing room for two-row chip overflow when the
+ * compression rule doesn't fire.
  */
-const LOGS_WORKER_HEIGHT = 240;
+const LOGS_WORKER_HEIGHT = 200;
 const LOGS_STATES: ReadonlySet<NodeState> = new Set([
   'running',
   'retrying',

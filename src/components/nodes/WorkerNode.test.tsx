@@ -417,7 +417,11 @@ describe('WorkerNode — non-proposed body', () => {
   // verification. The fix swaps that for a muted placeholder row
   // with a blinking cursor, kept only while the actor is actively
   // streaming (running/retrying).
-  it('empty logs in running state show the "Waiting for output…" placeholder', () => {
+  it('LogBlock is hidden by default on running state (Phase 7 polish — expand to view raw stream)', () => {
+    // Phase 7 polish: with Claude on stream-json, the raw log tail
+    // is JSON noise; the chip stack above is the human surface.
+    // LogBlock now mounts only when the user clicks the card to
+    // expand it.
     useGraphStore.setState({ nodeLogs: new Map([['auth', []]]) });
     renderNode('auth', {
       state: 'running',
@@ -428,12 +432,25 @@ describe('WorkerNode — non-proposed body', () => {
       replaces: [],
       retries: 0,
     });
-    const waiting = screen.getByTestId('worker-log-waiting');
-    expect(waiting.textContent).toMatch(/Waiting for output/);
-    // The wrapper LogBlock renders regardless — the placeholder sits
-    // inside it so the card's 180px height stays reserved and the
-    // eventual first log line arrives without a layout shift.
-    expect(screen.getByTestId('worker-log-block')).toBeDefined();
+    expect(screen.queryByTestId('worker-log-block')).toBeNull();
+    expect(screen.queryByTestId('worker-log-waiting')).toBeNull();
+  });
+
+  it('expanded running state mounts the ExpandedLogBlock with full scrollback', () => {
+    useGraphStore.setState({
+      nodeLogs: new Map([['auth', ['line one', 'line two']]]),
+      workerExpanded: new Set(['auth']),
+    });
+    renderNode('auth', {
+      state: 'running',
+      agent: 'claude',
+      title: 'Apply theme tokens',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+    });
+    expect(screen.getByTestId('worker-log-expanded')).toBeDefined();
   });
 
   it('empty logs in done/failed states do NOT render the LogBlock (no misleading "waiting" hint)', () => {
@@ -454,8 +471,11 @@ describe('WorkerNode — non-proposed body', () => {
     }
   });
 
-  it('non-empty logs render normal tail and no "Waiting…" placeholder', () => {
-    useGraphStore.setState({ nodeLogs: new Map([['auth', ['✓ done step 1', '→ starting step 2']]]) });
+  it('non-empty logs surface in the expanded view (LogBlock hidden by default per Phase 7 polish)', () => {
+    useGraphStore.setState({
+      nodeLogs: new Map([['auth', ['✓ done step 1', '→ starting step 2']]]),
+      workerExpanded: new Set(['auth']),
+    });
     renderNode('auth', {
       state: 'running',
       agent: 'claude',
@@ -465,9 +485,9 @@ describe('WorkerNode — non-proposed body', () => {
       replaces: [],
       retries: 0,
     });
-    expect(screen.getByTestId('worker-log-block')).toBeDefined();
-    expect(screen.queryByTestId('worker-log-waiting')).toBeNull();
     expect(screen.getByText(/starting step 2/i)).toBeDefined();
+    // Default-collapsed LogBlock no longer renders.
+    expect(screen.queryByTestId('worker-log-block')).toBeNull();
   });
 
   // Regression: the running-state card packs header + title + why +
@@ -797,8 +817,9 @@ describe('WorkerNode — dependency click-to-pan', () => {
       retries: 0,
     });
     fireEvent.click(screen.getByTestId('depends-on-link-a'));
-    // Default worker dimensions are 200×140.
-    expect(reactFlowMock.setCenter).toHaveBeenCalledWith(150, 120, {
+    // Default worker dimensions: 280×140 (Phase 7 polish width bump).
+    // Center = (50 + 280/2, 50 + 140/2) = (190, 120).
+    expect(reactFlowMock.setCenter).toHaveBeenCalledWith(190, 120, {
       zoom: 1,
       duration: 300,
     });

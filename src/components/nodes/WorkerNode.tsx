@@ -406,28 +406,24 @@ export function WorkerNode({ id, data }: NodeProps) {
           UX, hint stays hidden. */}
       {d.state === 'running' ? <HintInput subtaskId={id} /> : null}
 
-      {showLogs ? (
-        isExpanded && canExpand ? (
-          <ExpandedLogBlock
-            lines={logs ?? []}
-            animateCursor={isStreaming(d.state)}
-          />
-        ) : (
-          <LogBlock lines={logs ?? []} animateCursor={isStreaming(d.state)} />
-        )
-      ) : null}
       {/*
-        Expanded + non-streaming expandable states without a LogBlock
-        (cancelled, human_escalation) still get the expanded surface
-        — the tail LogBlock itself is gated on `showLogs`, but the
-        expand toggle is legal on those states per the spec. Render
-        a placeholder so the card fills its content-fit container rather
-        than leaving blank space. Double-gated on `canExpand` to
-        defend against a stale set entry on a transient non-
-        expandable state (skipped / escalating).
+        Phase 7 polish: LogBlock no longer renders by default on
+        running cards. After the Phase 6 Step 2 stream-json switch,
+        the log tail surfaces raw NDJSON envelopes (`{"type":"system",
+        "subtype":"init",…}`) which is unreadable noise compared to
+        the semantic ActivityChipStack chips above. The log stays
+        accessible via the Phase 4 Step 3 expand toggle (click the
+        card body), which renders the full ExpandedLogBlock with
+        scrollback + render-window cap. Cancelled / human_escalation
+        states without a streaming log still get the placeholder
+        when expanded so the content-fit container has something to
+        fill.
       */}
-      {isExpanded && canExpand && !showLogs ? (
-        <ExpandedLogBlock lines={logs ?? []} animateCursor={false} />
+      {isExpanded && canExpand ? (
+        <ExpandedLogBlock
+          lines={logs ?? []}
+          animateCursor={showLogs && isStreaming(d.state)}
+        />
       ) : null}
 
       {/* Phase 5 Step 4: QuestionInput renders on `awaiting_input`
@@ -900,59 +896,13 @@ function FileCountChip({
 // attempt 2 began.
 const RETRY_LOG_MARKER = '[whalecode] retry';
 
-function LogBlock({ lines, animateCursor }: { lines: readonly string[]; animateCursor: boolean }) {
-  const tail = lines.slice(-3);
-  // Done / failed with no logs emitted: don't render the block at all —
-  // a placeholder would mislead the user into thinking output is still
-  // coming. The card's terminal-state border already communicates the
-  // outcome, and our per-state height (180px) stays reserved so the
-  // layout doesn't shift.
-  if (tail.length === 0 && !animateCursor) return null;
-  return (
-    <div
-      // Background intentionally transparent — inherits bg-elevated from
-      // the card. The older darker `bg-primary` fill created a stark
-      // black rectangle during the brief window before the first log
-      // line arrived; with the placeholder row below, the terminal
-      // identity comes from font-mono + italic waiting hint + cursor,
-      // not from a darker fill.
-      className="font-mono text-fg-tertiary"
-      style={{
-        padding: '6px 8px',
-        fontSize: 10,
-        lineHeight: 1.5,
-        height: 54,
-        overflow: 'hidden',
-      }}
-      data-testid="worker-log-block"
-    >
-      {tail.length === 0 ? (
-        <div className="truncate italic" data-testid="worker-log-waiting">
-          Waiting for output…
-          <BlinkingCursor />
-        </div>
-      ) : (
-        tail.map((line, i) => {
-          const isLast = i === tail.length - 1;
-          if (line.startsWith(RETRY_LOG_MARKER)) {
-            return (
-              <RetrySeparator
-                key={`${i}-retry`}
-                prevError={extractRetryError(line)}
-              />
-            );
-          }
-          return (
-            <div key={`${i}-${line}`} className="truncate">
-              <LogLine line={line} />
-              {isLast && animateCursor ? <BlinkingCursor /> : null}
-            </div>
-          );
-        })
-      )}
-    </div>
-  );
-}
+// Phase 7 polish: the inline 3-line `LogBlock` (Phase 4 Step 3) was
+// removed from the default running view after the Phase 6 stream-json
+// switch turned its content into raw NDJSON noise. The semantic
+// ActivityChipStack above is the human-readable surface; the full
+// ExpandedLogBlock (below) renders when the user clicks to expand the
+// card. The function lived here since Phase 3; deleted to avoid the
+// `unused` lint error and keep one source of truth for log rendering.
 
 /**
  * Phase 4 Step 3: "pinned open" chevron that rotates 90° when the

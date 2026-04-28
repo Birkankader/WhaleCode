@@ -42,8 +42,12 @@ export type LayoutOptions = {
 };
 
 export const NODE_DIMENSIONS: Record<LayoutNodeKind, { width: number; height: number }> = {
-  master: { width: 240, height: 80 },
-  worker: { width: 200, height: 140 },
+  master: { width: 280, height: 80 },
+  // Phase 7 polish: bumped 200 → 280 so the Phase 6 ActivityChipStack
+  // chips fit on a single horizontal row instead of wrapping into a
+  // tall vertical stack at narrow widths. Master grew to match so the
+  // master/worker visual rhythm stays consistent.
+  worker: { width: 280, height: 140 },
   final: { width: 280, height: 148 },
 };
 

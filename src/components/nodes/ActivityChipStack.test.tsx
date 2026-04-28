@@ -73,7 +73,7 @@ describe('ActivityChipStack — render', () => {
     expect(chips[0].getAttribute('data-count')).toBe('4');
   });
 
-  it('caps visible chips at 5 even when more events stored', () => {
+  it('caps visible chips at 3 even when more events stored (Phase 7 polish — narrower default)', () => {
     const events = Array.from({ length: 8 }, (_, i) => ({
       event: {
         kind: 'bash' as const,
@@ -84,8 +84,8 @@ describe('ActivityChipStack — render', () => {
     seedActivities('s-1', events);
     render(<ActivityChipStack subtaskId="s-1" />);
     const chips = screen.getAllByTestId(/^activity-chip-s-1-/);
-    expect(chips).toHaveLength(5);
-    // Latest 5 — newest is cmd-7.
+    expect(chips).toHaveLength(3);
+    // Latest 3 — newest is cmd-7.
     expect(chips[chips.length - 1].textContent).toContain('cmd-7');
   });
 
