@@ -37,7 +37,6 @@ import { useMemo, useState } from 'react';
 import { useGraphStore } from '../../state/graphStore';
 import {
   compressActivities,
-  truncatePath,
   type CompressedChip,
 } from '../../state/activityCompression';
 import type { ToolEvent } from '../../lib/ipc';
@@ -143,7 +142,12 @@ function ChipDetail({ chip, subtaskId }: { chip: CompressedChip; subtaskId: stri
   const ev = chip.event;
   return (
     <div
-      className="ml-5 mr-1 mb-1 flex flex-col gap-0.5 rounded-sm border border-fg-secondary/20 bg-bg-subtle/40 px-2 py-1 font-mono text-meta text-fg-primary"
+      // Tight indent so it visually nests under the row, no
+      // border/background — keeps the card calm and avoids the
+      // panel-on-panel feel the round-3 design had. The detail is
+      // verb-less (the row above carries the verb); just the
+      // information the row hid behind a basename.
+      className="ml-5 mr-1 -mt-0.5 mb-0.5 break-words font-mono text-meta text-fg-tertiary"
       data-testid={`activity-chip-detail-${subtaskId}`}
       data-kind={ev.kind}
       role="region"
@@ -158,47 +162,51 @@ function renderDetailBody(ev: ToolEvent, count: number) {
   switch (ev.kind) {
     case 'file-read': {
       const range = ev.lines ? ` (lines ${ev.lines[0]}–${ev.lines[1]})` : '';
+      const suffix = count > 1 ? ` · ${count} reads compressed` : '';
       return (
-        <span className="block break-all" data-testid="activity-chip-detail-path">
-          Read <span className="text-fg-secondary">{ev.path}</span>
+        <span className="block" data-testid="activity-chip-detail-path">
+          <span className="text-fg-secondary">{ev.path}</span>
           {range}
-          {count > 1 ? <span className="text-fg-tertiary"> · {count} reads compressed</span> : null}
+          {suffix ? <span className="text-fg-tertiary">{suffix}</span> : null}
         </span>
       );
     }
-    case 'file-edit':
+    case 'file-edit': {
+      const suffix = count > 1 ? ` · ${count} edits compressed` : '';
       return (
         <>
-          <span className="break-all" data-testid="activity-chip-detail-path">
-            Edit <span className="text-fg-secondary">{ev.path}</span>
-            {count > 1 ? <span className="text-fg-tertiary"> · {count} edits compressed</span> : null}
+          <span className="block" data-testid="activity-chip-detail-path">
+            <span className="text-fg-secondary">{ev.path}</span>
+            {suffix ? <span className="text-fg-tertiary">{suffix}</span> : null}
           </span>
           {ev.summary ? (
-            <span className="text-fg-tertiary" data-testid="activity-chip-detail-summary">
+            <span className="block" data-testid="activity-chip-detail-summary">
               {ev.summary}
             </span>
           ) : null}
         </>
       );
+    }
     case 'bash':
       return (
-        <span className="block break-all" data-testid="activity-chip-detail-command">
-          <span className="text-fg-tertiary">$</span> {ev.command}
+        <span className="block" data-testid="activity-chip-detail-command">
+          <span className="text-fg-tertiary">$</span>{' '}
+          <span className="text-fg-secondary">{ev.command}</span>
         </span>
       );
     case 'search': {
       const where = ev.paths.length > 0 ? ` in ${ev.paths.join(', ')}` : '';
       return (
-        <span className="block break-all" data-testid="activity-chip-detail-query">
-          Search <span className="text-fg-secondary">&ldquo;{ev.query}&rdquo;</span>
+        <span className="block" data-testid="activity-chip-detail-query">
+          <span className="text-fg-secondary">&ldquo;{ev.query}&rdquo;</span>
           {where}
         </span>
       );
     }
     case 'other':
       return (
-        <span className="block break-all" data-testid="activity-chip-detail-other">
-          <span className="text-fg-secondary">{ev.toolName}</span>: {ev.detail}
+        <span className="block" data-testid="activity-chip-detail-other">
+          {ev.detail || ev.toolName}
         </span>
       );
   }
@@ -206,9 +214,15 @@ function renderDetailBody(ev: ToolEvent, count: number) {
 
 /**
  * Compact row segments. `verb` is the action ("Read", "Edit", etc.)
- * in muted color; `primary` is the file path / command in mono;
- * `secondary` is an optional trailing badge ("× 4" for compressed
- * bursts).
+ * in muted color; `primary` is the *basename* of the file (or the
+ * command, or the search query) — no full paths, those live in the
+ * detail panel. `secondary` is an optional trailing badge ("× 4" for
+ * compressed bursts).
+ *
+ * Phase 7 polish round 4: rows previously showed truncated full
+ * paths ("/Users/birkankader/Documents/.../App.tsx") which ate row
+ * width and forced middle-ellipsis. Real-usage feedback: just show
+ * `App.tsx`. Click → detail panel reveals the full path.
  */
 function rowParts(chip: CompressedChip): {
   verb: string;
@@ -217,33 +231,45 @@ function rowParts(chip: CompressedChip): {
 } {
   const ev = chip.event;
   const compressed = chip.count > 1;
-  const dirHint = chip.parentDir ? `${chip.parentDir}/` : '.';
+  const dirBasename = chip.parentDir ? `${basenameDir(chip.parentDir)}/` : './';
   switch (ev.kind) {
     case 'file-read':
       return compressed
-        ? { verb: 'Read', primary: dirHint, secondary: `× ${chip.count}` }
-        : { verb: 'Read', primary: truncatePath(ev.path), secondary: null };
+        ? { verb: 'Read', primary: dirBasename, secondary: `× ${chip.count}` }
+        : { verb: 'Read', primary: basename(ev.path), secondary: null };
     case 'file-edit':
       return compressed
-        ? { verb: 'Edit', primary: dirHint, secondary: `× ${chip.count}` }
-        : { verb: 'Edit', primary: truncatePath(ev.path), secondary: null };
+        ? { verb: 'Edit', primary: dirBasename, secondary: `× ${chip.count}` }
+        : { verb: 'Edit', primary: basename(ev.path), secondary: null };
     case 'bash':
       return compressed
         ? { verb: 'Run', primary: 'shell commands', secondary: `× ${chip.count}` }
-        : { verb: 'Run', primary: truncateInline(ev.command, 50), secondary: null };
+        : { verb: 'Run', primary: truncateInline(ev.command, 36), secondary: null };
     case 'search':
       return compressed
         ? { verb: 'Search', primary: 'queries', secondary: `× ${chip.count}` }
-        : { verb: 'Search', primary: `"${truncateInline(ev.query, 40)}"`, secondary: null };
+        : { verb: 'Search', primary: `"${truncateInline(ev.query, 30)}"`, secondary: null };
     case 'other':
       return compressed
         ? { verb: ev.toolName, primary: 'calls', secondary: `× ${chip.count}` }
         : {
             verb: ev.toolName,
-            primary: ev.detail.length > 0 ? truncateInline(ev.detail, 50) : '',
+            primary: ev.detail.length > 0 ? truncateInline(ev.detail, 36) : '',
             secondary: null,
           };
   }
+}
+
+/** Strip everything before the final `/`. Returns `path` unchanged when there's no slash. */
+function basename(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx === -1 ? path : path.slice(idx + 1) || path;
+}
+
+/** Basename for a directory path — drops trailing slash if present. */
+function basenameDir(dir: string): string {
+  const trimmed = dir.endsWith('/') ? dir.slice(0, -1) : dir;
+  return basename(trimmed);
 }
 
 function truncateInline(s: string, max: number): string {

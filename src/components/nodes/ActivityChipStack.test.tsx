@@ -91,13 +91,29 @@ describe('ActivityChipStack — render', () => {
     expect(chips[chips.length - 1].textContent).toContain('cmd-7');
   });
 
-  it('renders aria-label per row with verb + path', () => {
+  it('renders aria-label per row with verb + basename', () => {
     seedActivities('s-1', [
       { event: { kind: 'file-read', path: 'src/a.ts' }, timestampMs: 1000 },
     ]);
     render(<ActivityChipStack subtaskId="s-1" />);
     const chip = screen.getByTestId('activity-chip-s-1-file-read');
-    expect(chip.getAttribute('aria-label')).toMatch(/Read src\/a\.ts/);
+    // Phase 7 polish round 4: row shows basename only; full path
+    // lives in the click-to-expand detail panel.
+    expect(chip.getAttribute('aria-label')).toMatch(/Read a\.ts/);
+  });
+
+  it('row primary is basename (not full path)', () => {
+    seedActivities('s-1', [
+      {
+        event: { kind: 'file-read', path: 'apps/web/src/routes/login.tsx' },
+        timestampMs: 1000,
+      },
+    ]);
+    render(<ActivityChipStack subtaskId="s-1" />);
+    const chip = screen.getByTestId('activity-chip-s-1-file-read');
+    expect(chip.textContent).toContain('login.tsx');
+    // Full path NOT in the row body — it's hidden until detail expand.
+    expect(chip.textContent).not.toContain('apps/web/src/routes');
   });
 
   it('compressed chip aria-label cites event count', () => {
@@ -135,8 +151,9 @@ describe('ActivityChipStack — chip click → detail panel', () => {
     fireEvent.click(screen.getByTestId('activity-chip-s-1-file-read'));
     const detail = screen.getByTestId('activity-chip-detail-s-1');
     expect(detail.getAttribute('data-kind')).toBe('file-read');
+    // Detail panel surfaces the full path (verb-less — row above has it).
     expect(screen.getByTestId('activity-chip-detail-path')).toHaveTextContent(
-      /Read.+apps\/web\/src\/routes\/very\/long\/path\.tsx/,
+      'apps/web/src/routes/very/long/path.tsx',
     );
   });
 
@@ -196,7 +213,7 @@ describe('ActivityChipStack — chip click → detail panel', () => {
     expect(screen.getByTestId('activity-chip-detail-query')).toHaveTextContent(/src\/auth/);
   });
 
-  it('other detail shows tool name and detail string', () => {
+  it('other detail shows the detail string (toolName lives in the row above)', () => {
     seedActivities('s-1', [
       {
         event: { kind: 'other', toolName: 'WebFetch', detail: 'fetched https://example.com' },
@@ -204,8 +221,10 @@ describe('ActivityChipStack — chip click → detail panel', () => {
       },
     ]);
     render(<ActivityChipStack subtaskId="s-1" />);
-    fireEvent.click(screen.getByTestId('activity-chip-s-1-other'));
-    expect(screen.getByTestId('activity-chip-detail-other')).toHaveTextContent(/WebFetch/);
+    // Row primary holds the detail when present; toolName is the row's verb.
+    const row = screen.getByTestId('activity-chip-s-1-other');
+    expect(row.getAttribute('aria-label')).toMatch(/WebFetch/);
+    fireEvent.click(row);
     expect(screen.getByTestId('activity-chip-detail-other')).toHaveTextContent(
       /fetched https:\/\/example\.com/,
     );
