@@ -59,7 +59,7 @@ describe('ActivityChipStack — render', () => {
     expect(screen.getByTestId('activity-chip-s-1-search')).toBeInTheDocument();
   });
 
-  it('compresses 4 same-dir reads into one chip with count', () => {
+  it('compresses 4 same-dir reads into one row with × count badge', () => {
     seedActivities('s-1', [
       { event: { kind: 'file-read', path: 'src/a.ts' }, timestampMs: 1000 },
       { event: { kind: 'file-read', path: 'src/b.ts' }, timestampMs: 1100 },
@@ -69,11 +69,13 @@ describe('ActivityChipStack — render', () => {
     render(<ActivityChipStack subtaskId="s-1" />);
     const chips = screen.getAllByTestId(/^activity-chip-s-1-/);
     expect(chips).toHaveLength(1);
-    expect(chips[0].textContent).toMatch(/Reading 4 files in src\//);
+    expect(chips[0].textContent).toContain('Read');
+    expect(chips[0].textContent).toContain('src/');
+    expect(chips[0].textContent).toMatch(/× 4/);
     expect(chips[0].getAttribute('data-count')).toBe('4');
   });
 
-  it('caps visible chips at 3 even when more events stored (Phase 7 polish — narrower default)', () => {
+  it('caps visible rows at MAX_VISIBLE (4) even when more events stored', () => {
     const events = Array.from({ length: 8 }, (_, i) => ({
       event: {
         kind: 'bash' as const,
@@ -84,18 +86,18 @@ describe('ActivityChipStack — render', () => {
     seedActivities('s-1', events);
     render(<ActivityChipStack subtaskId="s-1" />);
     const chips = screen.getAllByTestId(/^activity-chip-s-1-/);
-    expect(chips).toHaveLength(3);
-    // Latest 3 — newest is cmd-7.
+    expect(chips).toHaveLength(4);
+    // Latest — newest is cmd-7.
     expect(chips[chips.length - 1].textContent).toContain('cmd-7');
   });
 
-  it('renders aria-label per chip', () => {
+  it('renders aria-label per row with verb + path', () => {
     seedActivities('s-1', [
       { event: { kind: 'file-read', path: 'src/a.ts' }, timestampMs: 1000 },
     ]);
     render(<ActivityChipStack subtaskId="s-1" />);
     const chip = screen.getByTestId('activity-chip-s-1-file-read');
-    expect(chip.getAttribute('aria-label')).toMatch(/Reading src\/a\.ts/);
+    expect(chip.getAttribute('aria-label')).toMatch(/Read src\/a\.ts/);
   });
 
   it('compressed chip aria-label cites event count', () => {
@@ -235,16 +237,6 @@ describe('ActivityChipStack — chip click → detail panel', () => {
     const details = screen.getAllByTestId('activity-chip-detail-s-1');
     expect(details).toHaveLength(1);
     expect(details[0].getAttribute('data-kind')).toBe('bash');
-  });
-
-  it('explicit close button closes the panel', () => {
-    seedActivities('s-1', [
-      { event: { kind: 'bash', command: 'ls' }, timestampMs: 1000 },
-    ]);
-    render(<ActivityChipStack subtaskId="s-1" />);
-    fireEvent.click(screen.getByTestId('activity-chip-s-1-bash'));
-    fireEvent.click(screen.getByLabelText(/Close activity detail/i));
-    expect(screen.queryByTestId('activity-chip-detail-s-1')).toBeNull();
   });
 
   it('compressed chip detail cites the count in the body', () => {

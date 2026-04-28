@@ -1,27 +1,31 @@
 /**
- * Phase 6 Step 2 / Phase 7 polish — activity chip stack on running
- * worker cards.
+ * Phase 6 Step 2 / Phase 7 polish — activity list on running worker
+ * cards.
  *
- * Renders the most recent compressed activity chips. Pulls from
- * `subtaskActivities` (capped 50 events per subtask, FIFO), runs
- * them through `compressActivities` to collapse same-kind same-dir
- * bursts, and shows the latest `MAX_VISIBLE` chips on a single
- * horizontal row.
+ * Originally shipped Phase 6 as a horizontal "chip stack"; redesigned
+ * in Phase 7 polish round 3 to a Cursor-style vertical list after
+ * real-usage screenshots showed the chip-with-truncated-label layout
+ * never told the user *which* file was being read. The new shape
+ * mirrors the Cursor / OpenCode reference UI: one compact row per
+ * compressed activity, full-width inside the card, click a row to
+ * expand inline detail (full path + lines / full command / full
+ * search query) without leaving the card or opening a modal.
  *
- * Phase 7 polish addition: each chip is now a button. Click → expand
- * a `ChipDetail` panel below the stack with the full event info
- * (full file path + lines, full command, full search query + paths,
- * etc.). Click the same chip again or click another chip to switch.
- * Replaces the older "click to expand the whole card and read the
- * raw stream-json" path with a focused detail surface that's
- * actually readable.
+ * Component name + `activity-chip-*` testids are preserved so the
+ * Phase 6 spec references and existing tests stay valid.
  *
- * No persistence; the stack disappears when the subtask leaves
- * the running state. Older chips fade out via AnimatePresence.
+ * Pulls from `subtaskActivities` (capped 50 events per subtask,
+ * FIFO), runs them through `compressActivities` to collapse same-
+ * kind same-dir bursts. The list shows the latest `MAX_VISIBLE`
+ * rows; older rows roll off (they remain in the store).
+ *
+ * No persistence; the list disappears when the subtask leaves the
+ * running state. Rows fade in via AnimatePresence.
  */
 
 import { AnimatePresence, motion } from 'framer-motion';
 import {
+  ChevronRight,
   FileText,
   Pencil,
   Search,
@@ -32,17 +36,16 @@ import { useMemo, useState } from 'react';
 
 import { useGraphStore } from '../../state/graphStore';
 import {
-  chipLabel,
   compressActivities,
+  truncatePath,
   type CompressedChip,
 } from '../../state/activityCompression';
 import type { ToolEvent } from '../../lib/ipc';
 
-// Phase 7 polish: tightened from 5 to 3 visible chips so the latest-
-// activity surface fits one horizontal row on the 280px-wide card
-// without wrapping. Older chips still live in `subtaskActivities`
-// (capped 50 per subtask) and become visible on expand if needed.
-const MAX_VISIBLE = 3;
+// Phase 7 polish round 3: vertical list at 4 rows fits comfortably
+// in the ~80px activity slot of a 200px-tall card. Older rows roll
+// off (still in the store, capped at 50 per subtask).
+const MAX_VISIBLE = 4;
 
 type Props = { subtaskId: string };
 
@@ -54,108 +57,99 @@ export function ActivityChipStack({ subtaskId }: Props) {
   );
   const visible = compressed.slice(Math.max(0, compressed.length - MAX_VISIBLE));
 
-  // Phase 7 polish: single-chip selection drives the detail panel.
-  // Reset on subtask change implicit via React key on parent.
+  // Single-row selection drives the inline detail panel. Re-click
+  // closes; clicking another row switches.
   const [selectedChipId, setSelectedChipId] = useState<string | null>(null);
 
   if (visible.length === 0) return null;
 
-  // If the selected chip aged out of the visible window (older
-  // events flushed by FIFO), drop the selection silently rather
-  // than render a stale detail panel.
-  const selectedChip = selectedChipId
-    ? visible.find((c) => c.id === selectedChipId) ?? null
-    : null;
-
   return (
     <div
-      className="flex flex-col gap-1"
+      className="flex flex-col"
       data-testid={`activity-chip-stack-${subtaskId}`}
+      role="status"
+      aria-live="polite"
     >
-      <div
-        className="flex min-w-0 items-center gap-1 overflow-hidden"
-        role="status"
-        aria-live="polite"
-      >
-        <AnimatePresence initial={false}>
-          {visible.map((chip) => {
-            const isSelected = selectedChip?.id === chip.id;
-            return (
-              <motion.button
-                key={chip.id}
-                type="button"
-                initial={{ opacity: 0, y: -2 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -2 }}
-                transition={{ duration: 0.15 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedChipId(isSelected ? null : chip.id);
-                }}
-                className="nodrag nopan inline-flex min-w-0 shrink items-center gap-1 truncate rounded-sm border bg-bg-elevated px-1.5 py-0.5 text-meta text-fg-secondary hover:border-fg-secondary/60"
-                style={{
-                  borderColor: isSelected
-                    ? 'var(--color-fg-secondary)'
-                    : 'var(--color-fg-secondary)',
-                  opacity: isSelected ? 1 : 0.85,
-                }}
-                data-testid={`activity-chip-${subtaskId}-${chip.event.kind}`}
-                aria-label={ariaLabelFor(chip)}
-                aria-pressed={isSelected}
-                title={chipLabel(chip)}
-                data-count={chip.count > 1 ? chip.count : undefined}
-              >
-                <Icon event={chip.event} />
-                <span className="truncate">{chipLabel(chip)}</span>
-              </motion.button>
-            );
-          })}
-        </AnimatePresence>
-      </div>
-      {selectedChip ? (
-        <ChipDetail
-          chip={selectedChip}
-          onClose={() => setSelectedChipId(null)}
-          subtaskId={subtaskId}
-        />
-      ) : null}
+      <AnimatePresence initial={false}>
+        {visible.map((chip) => {
+          const isSelected = selectedChipId === chip.id;
+          return (
+            <motion.div
+              key={chip.id}
+              initial={{ opacity: 0, y: -2 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -2 }}
+              transition={{ duration: 0.15 }}
+              className="flex flex-col"
+            >
+              <ActivityRow
+                chip={chip}
+                isSelected={isSelected}
+                onToggle={() => setSelectedChipId(isSelected ? null : chip.id)}
+                subtaskId={subtaskId}
+              />
+              {isSelected ? <ChipDetail chip={chip} subtaskId={subtaskId} /> : null}
+            </motion.div>
+          );
+        })}
+      </AnimatePresence>
     </div>
   );
 }
 
-function ChipDetail({
+function ActivityRow({
   chip,
-  onClose,
+  isSelected,
+  onToggle,
   subtaskId,
 }: {
   chip: CompressedChip;
-  onClose: () => void;
+  isSelected: boolean;
+  onToggle: () => void;
   subtaskId: string;
 }) {
+  const { verb, primary, secondary } = rowParts(chip);
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className="nodrag nopan group flex w-full items-center gap-1.5 rounded-sm px-1 py-0.5 text-left text-meta text-fg-secondary hover:bg-bg-subtle/40"
+      data-testid={`activity-chip-${subtaskId}-${chip.event.kind}`}
+      data-count={chip.count > 1 ? chip.count : undefined}
+      aria-pressed={isSelected}
+      aria-label={ariaLabelFor(chip)}
+      title={`${verb} ${primary}`}
+    >
+      <Icon event={chip.event} />
+      <span className="shrink-0 text-fg-tertiary">{verb}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-fg-primary">{primary}</span>
+      {secondary ? (
+        <span className="shrink-0 text-fg-tertiary">{secondary}</span>
+      ) : null}
+      <ChevronRight
+        size={12}
+        aria-hidden
+        className="shrink-0 text-fg-tertiary transition-transform"
+        style={{ transform: isSelected ? 'rotate(90deg)' : 'rotate(0deg)' }}
+      />
+    </button>
+  );
+}
+
+function ChipDetail({ chip, subtaskId }: { chip: CompressedChip; subtaskId: string }) {
   const ev = chip.event;
   return (
     <div
-      className="flex items-start gap-2 rounded-sm border border-fg-secondary/20 bg-bg-subtle/40 px-2 py-1 font-mono text-meta text-fg-primary"
+      className="ml-5 mr-1 mb-1 flex flex-col gap-0.5 rounded-sm border border-fg-secondary/20 bg-bg-subtle/40 px-2 py-1 font-mono text-meta text-fg-primary"
       data-testid={`activity-chip-detail-${subtaskId}`}
       data-kind={ev.kind}
       role="region"
       aria-label="Activity detail"
     >
-      <Icon event={ev} />
-      <div className="min-w-0 flex-1">
-        {renderDetailBody(ev, chip.count)}
-      </div>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        className="shrink-0 text-fg-tertiary hover:text-fg-primary"
-        aria-label="Close activity detail"
-      >
-        <span aria-hidden>×</span>
-      </button>
+      {renderDetailBody(ev, chip.count)}
     </div>
   );
 }
@@ -174,7 +168,7 @@ function renderDetailBody(ev: ToolEvent, count: number) {
     }
     case 'file-edit':
       return (
-        <div className="flex flex-col">
+        <>
           <span className="break-all" data-testid="activity-chip-detail-path">
             Edit <span className="text-fg-secondary">{ev.path}</span>
             {count > 1 ? <span className="text-fg-tertiary"> · {count} edits compressed</span> : null}
@@ -184,7 +178,7 @@ function renderDetailBody(ev: ToolEvent, count: number) {
               {ev.summary}
             </span>
           ) : null}
-        </div>
+        </>
       );
     case 'bash':
       return (
@@ -210,6 +204,52 @@ function renderDetailBody(ev: ToolEvent, count: number) {
   }
 }
 
+/**
+ * Compact row segments. `verb` is the action ("Read", "Edit", etc.)
+ * in muted color; `primary` is the file path / command in mono;
+ * `secondary` is an optional trailing badge ("× 4" for compressed
+ * bursts).
+ */
+function rowParts(chip: CompressedChip): {
+  verb: string;
+  primary: string;
+  secondary: string | null;
+} {
+  const ev = chip.event;
+  const compressed = chip.count > 1;
+  const dirHint = chip.parentDir ? `${chip.parentDir}/` : '.';
+  switch (ev.kind) {
+    case 'file-read':
+      return compressed
+        ? { verb: 'Read', primary: dirHint, secondary: `× ${chip.count}` }
+        : { verb: 'Read', primary: truncatePath(ev.path), secondary: null };
+    case 'file-edit':
+      return compressed
+        ? { verb: 'Edit', primary: dirHint, secondary: `× ${chip.count}` }
+        : { verb: 'Edit', primary: truncatePath(ev.path), secondary: null };
+    case 'bash':
+      return compressed
+        ? { verb: 'Run', primary: 'shell commands', secondary: `× ${chip.count}` }
+        : { verb: 'Run', primary: truncateInline(ev.command, 50), secondary: null };
+    case 'search':
+      return compressed
+        ? { verb: 'Search', primary: 'queries', secondary: `× ${chip.count}` }
+        : { verb: 'Search', primary: `"${truncateInline(ev.query, 40)}"`, secondary: null };
+    case 'other':
+      return compressed
+        ? { verb: ev.toolName, primary: 'calls', secondary: `× ${chip.count}` }
+        : {
+            verb: ev.toolName,
+            primary: ev.detail.length > 0 ? truncateInline(ev.detail, 50) : '',
+            secondary: null,
+          };
+  }
+}
+
+function truncateInline(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
 function Icon({ event }: { event: ToolEvent }) {
   const props = { size: 12, 'aria-hidden': true } as const;
   switch (event.kind) {
@@ -227,6 +267,9 @@ function Icon({ event }: { event: ToolEvent }) {
 }
 
 function ariaLabelFor(chip: CompressedChip): string {
-  const base = chipLabel(chip);
-  return chip.count > 1 ? `${base} (compressed ${chip.count} events)` : base;
+  const { verb, primary, secondary } = rowParts(chip);
+  const parts = [verb, primary];
+  if (secondary) parts.push(secondary);
+  if (chip.count > 1) parts.push(`(compressed ${chip.count} events)`);
+  return parts.join(' ');
 }
