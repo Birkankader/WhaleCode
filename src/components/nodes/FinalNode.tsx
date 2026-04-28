@@ -1,4 +1,5 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Check } from 'lucide-react';
 
 import { NODE_DIMENSIONS } from '../../lib/layout';
 import { useGraphStore } from '../../state/graphStore';
@@ -28,6 +29,12 @@ export function FinalNode({ data }: NodeProps) {
   const { width, height } = NODE_DIMENSIONS.final;
   const applyRun = useGraphStore((s) => s.applyRun);
   const discardRun = useGraphStore((s) => s.discardRun);
+  // Phase 7 polish: read run-level state so the MERGE node reflects
+  // the post-Apply outcome instead of leaving the "Apply to branch"
+  // button live (looks like the click did nothing, even though the
+  // ApplySummaryOverlay confirmed success on the right).
+  const status = useGraphStore((s) => s.status);
+  const applySummary = useGraphStore((s) => s.applySummary);
 
   const conflicting =
     d.conflictFiles !== null && d.conflictFiles !== undefined && d.conflictFiles.length > 0;
@@ -78,8 +85,20 @@ export function FinalNode({ data }: NodeProps) {
     );
   }
 
+  const isApplied = status === 'applied' || applySummary !== null;
+  const isApplying = status === 'merging';
   const activated = d.state === 'done' || d.state === 'running';
-  const dotColor = activated ? 'var(--color-status-success)' : 'var(--color-fg-tertiary)';
+  const dotColor = isApplied
+    ? 'var(--color-status-success)'
+    : activated
+      ? 'var(--color-status-success)'
+      : 'var(--color-fg-tertiary)';
+
+  // Phase 7 polish: post-Apply success state replaces the action
+  // footer with a "✓ Applied to <branch> · <sha>" line so the MERGE
+  // node mirrors the ApplySummaryOverlay instead of leaving a
+  // misleadingly-active "Apply to branch" button on screen.
+  const headerLabel = isApplied ? 'Applied' : isApplying ? 'Applying…' : d.label;
 
   return (
     <NodeContainer
@@ -93,7 +112,12 @@ export function FinalNode({ data }: NodeProps) {
       <header className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <StatusDot color={dotColor} />
-          <span className="text-hint uppercase tracking-wide text-fg-secondary">{d.label}</span>
+          <span
+            className="text-hint uppercase tracking-wide text-fg-secondary"
+            data-testid="final-node-label"
+          >
+            {headerLabel}
+          </span>
         </div>
         <span className="text-hint text-fg-tertiary">
           {d.files.length} file{d.files.length === 1 ? '' : 's'}
@@ -109,13 +133,40 @@ export function FinalNode({ data }: NodeProps) {
           <li className="text-fg-tertiary">+{d.files.length - 3} more</li>
         ) : null}
       </ul>
-      <footer className="mt-auto flex items-center justify-end gap-2">
-        <Button variant="ghost" disabled={!activated} onClick={() => void discardRun()}>
-          Discard all
-        </Button>
-        <Button variant="primary" disabled={!activated} onClick={() => void applyRun()}>
-          Apply to branch
-        </Button>
+      <footer className="mt-auto flex items-center justify-between gap-2">
+        {isApplied && applySummary ? (
+          <span
+            className="flex min-w-0 items-center gap-1.5 text-meta text-fg-secondary"
+            data-testid="final-node-applied"
+          >
+            <Check
+              size={12}
+              aria-hidden
+              style={{ color: 'var(--color-status-success)' }}
+            />
+            <span className="truncate font-mono">
+              {applySummary.branch} · {applySummary.commitSha.slice(0, 7)}
+            </span>
+          </span>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              disabled={!activated || isApplying}
+              onClick={() => void discardRun()}
+            >
+              Discard all
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!activated || isApplying}
+              onClick={() => void applyRun()}
+              data-testid="final-node-apply"
+            >
+              {isApplying ? 'Applying…' : 'Apply to branch'}
+            </Button>
+          </>
+        )}
       </footer>
       <Handle type="source" position={Position.Bottom} className="!border-0 !bg-transparent" />
     </NodeContainer>

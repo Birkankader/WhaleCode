@@ -135,3 +135,78 @@ describe('FinalNode — conflict variant', () => {
     expect(discardRun).toHaveBeenCalled();
   });
 });
+
+describe('FinalNode — applied state (Phase 7 polish)', () => {
+  // Post-Apply: ApplySummaryOverlay shows the success summary; the
+  // MERGE node previously left "Apply to branch" live which read as
+  // "click did nothing". Now the buttons collapse into an "Applied"
+  // line with the branch + short SHA.
+  it('replaces buttons with an Applied line when applySummary lands', () => {
+    useGraphStore.setState({
+      status: 'applied',
+      applySummary: {
+        runId: 'r-1',
+        commitSha: '2fa47ae0123456789',
+        branch: 'main',
+        filesChanged: 3,
+        perWorker: [],
+      },
+    });
+    renderNode({
+      state: 'done',
+      label: 'Merge',
+      files: ['a.ts'],
+      conflictFiles: null,
+    });
+    expect(screen.queryByRole('button', { name: /apply to branch/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /discard all/i })).toBeNull();
+    const applied = screen.getByTestId('final-node-applied');
+    expect(applied).toHaveTextContent('main');
+    expect(applied).toHaveTextContent('2fa47ae');
+  });
+
+  it('header label flips to "Applied" once applySummary is present', () => {
+    useGraphStore.setState({
+      status: 'applied',
+      applySummary: {
+        runId: 'r-1',
+        commitSha: 'deadbeef0',
+        branch: 'feat/x',
+        filesChanged: 1,
+        perWorker: [],
+      },
+    });
+    renderNode({
+      state: 'done',
+      label: 'Merge',
+      files: [],
+      conflictFiles: null,
+    });
+    expect(screen.getByTestId('final-node-label')).toHaveTextContent(/Applied/i);
+  });
+
+  it('shows "Applying…" + disables buttons during status=merging', () => {
+    useGraphStore.setState({ status: 'merging' });
+    renderNode({
+      state: 'done',
+      label: 'Merge',
+      files: ['a.ts'],
+      conflictFiles: null,
+    });
+    expect(screen.getByTestId('final-node-label')).toHaveTextContent(/Applying/i);
+    const applyBtn = screen.getByTestId('final-node-apply');
+    expect(applyBtn).toBeDisabled();
+    expect(applyBtn).toHaveTextContent(/Applying/i);
+  });
+
+  it('default state shows "Apply to branch" + Discard buttons (no applySummary)', () => {
+    renderNode({
+      state: 'done',
+      label: 'Merge',
+      files: ['a.ts'],
+      conflictFiles: null,
+    });
+    expect(screen.getByRole('button', { name: /apply to branch/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('final-node-applied')).toBeNull();
+  });
+});
