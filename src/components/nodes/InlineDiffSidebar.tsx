@@ -17,9 +17,10 @@ import { computeSidebarOpen, useGraphStore } from '../../state/graphStore';
 const DiffBody = lazy(() => import('./DiffBody'));
 
 /**
- * Phase 7 Step 1: right-edge sidebar that absorbs the Phase 4 Step 6
- * `DiffPopover` modal. Same `FileDiff` data, same Shiki + virtual-
- * scroll renderer (`./DiffBody`) — new placement.
+ * Phase 7 Step 1: right-edge sidebar that absorbed the Phase 4 Step
+ * 6 `DiffPopover` modal (removed in Step 8). Same `FileDiff` data,
+ * same Shiki + virtual-scroll renderer (`./DiffBody`) — new
+ * placement.
  *
  * Open / closed semantics:
  * - Default open during in-flight statuses (running / merging /
@@ -39,11 +40,9 @@ const DiffBody = lazy(() => import('./DiffBody'));
  * - 480 px default; resizable 320-720 via the drag handle on the
  *   left edge. Persisted to settings (`inlineDiffSidebarWidth`).
  *
- * Backwards-compat note: this is the new default surface for diff
- * inspection. `DiffPopover.tsx` remains exported and tested through
- * Phase 7 Step 8 — chip click does NOT auto-open the legacy popover
- * any more; tests that exercise the popover directly continue to
- * pass.
+ * History: Phase 7 Step 1 deprecated `DiffPopover.tsx` (chip click
+ * stopped auto-mounting the modal); Step 8 removed the file. Diff
+ * inspection now goes through this sidebar exclusively.
  */
 
 const MIN_WIDTH = 320;

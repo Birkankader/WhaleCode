@@ -74,6 +74,11 @@ whalecode/
 │   ├── phase-6-spec.md          # Phase 6 (shipped)
 │   ├── phase-6-verification.md  # Phase 6 goal-backward verification
 │   ├── phase-6-toolparsing-diagnostic.md # Phase 6 Step 0 tool-use parsing diagnostic
+│   ├── phase-7-spec.md          # Phase 7 (shipped)
+│   ├── phase-7-verification.md  # Phase 7 goal-backward verification
+│   ├── phase-7-density-audit.md # Phase 7 Step 0 UI density audit
+│   ├── phase-7-followup-diagnostic.md # Phase 7 Step 0 follow-up adapter diagnostic
+│   ├── phase-8-preview.md       # Phase 8 candidates (multi-agent comparison + adaptive shape)
 │   ├── KNOWN_ISSUES.md          # Debt ledger — deferred items + target phase + severity
 │   ├── retrospectives/          # Post-phase retros
 │   └── roadmap.md               # All 8 phases + v2.5/v3 track
@@ -82,7 +87,7 @@ whalecode/
 │   │   ├── agents/              # Agent adapters (claude/codex/gemini) + trait, prompts/, plan_parser, process spawn
 │   │   ├── orchestration/       # Orchestrator, lifecycle task, dispatcher, registry, run state, shared notes, events
 │   │   ├── worktree/            # Git worktree lifecycle (hidden from user)
-│   │   ├── storage/             # SQLite schema + migrations, runs/subtasks/logs tables (cost tables land in Phase 7 cost-aware suite)
+│   │   ├── storage/             # SQLite schema + migrations, runs/subtasks/logs/parent_run_id tables (cost tables land in the Phase 9+ cost-aware suite)
 │   │   ├── detection/           # CLI agent detector (PATH scan + version probe for claude/codex/gemini)
 │   │   ├── settings.rs          # App-level settings (lastRepo, masterAgent, binary paths)
 │   │   ├── repo.rs              # Repo picker + validation
@@ -120,7 +125,7 @@ whalecode/
 
 ## Things to NEVER do
 
-- Do not add a sidebar. The graph is the navigation.
+- Do not add a left-edge navigation sidebar. The graph is the navigation. (The right-edge `InlineDiffSidebar` shipped in Phase 7 Step 1 is content, not navigation — it absorbed the DiffPopover modal per the "remove ≥1 modal" obligation. New right-edge surfaces still require the same absorption justification.)
 - Do not use shadcn/ui. Write custom minimal components.
 - Do not add tabs or multi-page routing. One canvas, one flow.
 - Do not use modals for approval. Use the sticky bottom bar.
@@ -134,18 +139,18 @@ whalecode/
 
 1. You already have this file. Don't re-read it unless I say so.
 2. For any specific area, read the matching `docs/` file. Don't read all of them.
-3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 6 is shipped — see `docs/phase-6-verification.md` and `docs/retrospectives/phase-6.md`; Phase 7 spec is not yet written).
+3. If the task is in a specific phase, read the matching `docs/phase-N-spec.md` first (Phase 7 is shipped — see `docs/phase-7-verification.md` and `docs/retrospectives/phase-7.md`; Phase 8 spec is not yet written, candidates previewed at `docs/phase-8-preview.md`).
 4. When in doubt about design decisions, check `docs/architecture.md` section 11.
 5. For UI specifics (colors, spacing, animation timing), check `docs/design-system.md`.
 6. Before starting work, skim `docs/KNOWN_ISSUES.md` so you don't re-open already-triaged debt.
 
 ## Current status
 
-**Active phase:** Phase 7 — spec unwritten (awaiting real-usage data from Phase 6 shipment)
-**Last shipped:** Phase 6 — real-time partnership (`9e5792a`, 2026-04-26; docs close-out 2026-04-27)
-**Phase 7 candidates (not commitments):** *cost-aware feature suite cluster* (per-worker outcome summaries, diff content explanations, Claude pause-resume pilot, cost dashboard foundation — coherent sub-scope around LLM-cost user actions); plus existing candidates: Q&A false-positive heuristic calibration, Claude interactive-mode stdin injection, base-branch terminal affordance in conflict resolver, mono-repo planning awareness, rate-limit classification + backoff, programmatic visual regression pilot, debug-only failure injection, multi-agent same-task comparison, per-worker hint counter affordance, Gemini activity-chip fidelity gap. Spec writes after users run real work on the shipped Phase 6 surface.
+**Active phase:** Phase 8 — spec unwritten (awaiting real-usage data from Phase 7 shipment; candidates previewed at `docs/phase-8-preview.md`)
+**Last shipped:** Phase 7 — information density without UI weight (Step 8 close-out commit, 2026-05-04; first Phase 7 commit `5ebbff4`, 2026-05-03)
+**Phase 8 candidates (not commitments):** *multi-agent same-task comparison* + *adaptive single-vs-multi-agent execution* (Phase 8 preview spec at `docs/phase-8-preview.md`); plus existing candidates carrying over: threaded run history view (parent_run_id schema exists, no UI consumes it yet), WorktreeActions context-menu density, ToastStack auto-dismiss density, Q&A false-positive heuristic calibration, Gemini activity-chip fidelity gap, per-worker hint counter affordance, base-branch terminal affordance in conflict resolver, debug-only failure injection, programmatic visual regression pilot, mono-repo planning awareness, rate-limit classification + backoff. Cost-aware feature suite cluster pushed to Phase 9+. Spec writes after users run real work on the shipped Phase 7 surface; observations collect in `docs/phase-8-observations.md`.
 
-Phase 6 is closed: 3/3 goal-criteria PASS, 18/18 step-level acceptance PASS, frontend 770/770, Rust 397/397, typecheck/lint/clippy clean, build succeeds. Verification at `docs/phase-6-verification.md`; retro at `docs/retrospectives/phase-6.md`; four text visual observations under `docs/retrospectives/phase-6-visuals/`; tool-use parsing diagnostic at `docs/phase-6-toolparsing-diagnostic.md` (Step 0 spike). Phase 5 verification + retro remain at `docs/phase-5-verification.md` / `docs/retrospectives/phase-5.md`; Phase 4 at `docs/phase-4-verification.md` / `docs/retrospectives/phase-4.md`. Phase 3.5 retro at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 7 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
+Phase 7 is closed: 5/5 goal-criteria PASS, 33/33 step-level acceptance PASS, frontend 992/992 (Step 7 cross-step coverage at 1007 minus 15 DiffPopover tests removed in Step 8 — net +35 over Step 6 baseline of 957), Rust 423/423 (cargo test at `--test-threads=4`; replan-lineage flake re-confirmed at default threads, monitor-only per KNOWN_ISSUES line 46), typecheck/clippy/build clean, lint clean modulo 2 documented warnings (DiffBody useVirtualizer + ElapsedCounter exports). Verification at `docs/phase-7-verification.md`; retro at `docs/retrospectives/phase-7.md`; seven text visual observations under `docs/retrospectives/phase-7-visuals/`; UI density audit + follow-up adapter diagnostic at `docs/phase-7-density-audit.md` + `docs/phase-7-followup-diagnostic.md` (Step 0 spike). Phase 6 verification + retro remain at `docs/phase-6-verification.md` / `docs/retrospectives/phase-6.md`; Phase 5 at `docs/phase-5-verification.md` / `docs/retrospectives/phase-5.md`; Phase 4 at `docs/phase-4-verification.md` / `docs/retrospectives/phase-4.md`. Phase 3.5 retro at `docs/retrospectives/phase-3.5.md`; Phase 3 retro at `docs/retrospectives/phase-3.md`. Open debt carried into Phase 8 is tracked in `docs/KNOWN_ISSUES.md`; read that first before picking up new work.
 
 ## Useful commands
 

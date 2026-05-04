@@ -12,10 +12,11 @@ import {
 } from '../../lib/shikiHighlighter';
 
 /**
- * Expanded diff body for a single file. Lazy-loaded by `DiffPopover` via
- * `React.lazy` so the heavy dependencies — Shiki grammar loader glue and
- * `@tanstack/react-virtual` — never land in the main bundle. Rendered
- * only after the user clicks a file header to expand it.
+ * Expanded diff body for a single file. Lazy-loaded by
+ * `InlineDiffSidebar` via `React.lazy` so the heavy dependencies —
+ * Shiki grammar loader glue and `@tanstack/react-virtual` — never
+ * land in the main bundle. Rendered only after the user clicks a
+ * file header to expand it.
  *
  * Rendering path:
  *   1. Shiki highlighter + language grammar lazy-load via dynamic import.

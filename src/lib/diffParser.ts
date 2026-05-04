@@ -1,5 +1,6 @@
 /**
- * Parse a unified diff blob into typed display rows for the DiffPopover.
+ * Parse a unified diff blob into typed display rows for the diff
+ * preview UI (`InlineDiffSidebar` / `DiffBody`).
  *
  * Drops the `diff --git` / `index` / `--- a/` / `+++ b/` preamble (the
  * filename is already in the row header) and flattens each hunk into a

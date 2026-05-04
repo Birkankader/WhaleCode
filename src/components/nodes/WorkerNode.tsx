@@ -920,9 +920,9 @@ function RemoveButton({ id, title }: { id: string; title: string }) {
  * done/failed workers once the backend has emitted `run:subtask_diff`
  * for this id.
  *
- * Phase 7 Step 1 reroutes the click target: instead of opening the
- * legacy `DiffPopover` modal (Phase 4 Step 6, deprecated this step),
- * the chip now selects this worker's diff in the right-edge
+ * Phase 7 Step 1 rerouted the click target: instead of opening the
+ * Phase 4 Step 6 `DiffPopover` modal (since removed in Step 8), the
+ * chip now selects this worker's diff in the right-edge
  * `InlineDiffSidebar`. Modifier-click adds to the multi-worker union
  * view; plain click resets to a single-worker selection.
  *

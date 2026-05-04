@@ -1,5 +1,7 @@
 # Phase 7: Information density without UI weight
 
+> **Phase 7 shipped 2026-05-04** at the Step 8 close-out commit. First Phase 7 commit `5ebbff4` (2026-05-03). 5/5 goal criteria PASS, 33/33 step-level acceptance PASS — see `docs/phase-7-verification.md` and `docs/retrospectives/phase-7.md`.
+
 **Goal:** Bring conversational-AI UI patterns (Cursor / OpenCode style) into WhaleCode's multi-agent graph paradigm. The user must see more about what each worker is doing — at any moment in the run lifecycle — without adding new panels, modals, or chrome. Every new surface in this phase replaces or absorbs an existing one rather than stacking on top.
 
 **Theme:** *Information density without UI weight.* Phase 4 shipped visibility as new surfaces (overlay, popover, footer menu). Phase 5 shipped unblock as new affordances (banner action, input fields). Phase 6 shipped real-time partnership as inline panels (chip stack, thinking, hint input). Phase 7 inverts the direction: take what Cursor / OpenCode get right about information density (always-visible diffs, per-action affordances, checklist progress, elapsed counters, conversational follow-up) and adapt them into WhaleCode without growing the UI footprint.

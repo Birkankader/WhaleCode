@@ -13,8 +13,9 @@
 import type { HighlighterCore, ThemedToken } from 'shiki';
 
 /**
- * Minimal subset of Shiki we consume from DiffPopover — typed here so
- * downstream code doesn't depend on `@shikijs/types` directly.
+ * Minimal subset of Shiki consumed by `DiffBody` (lazy-loaded by
+ * `InlineDiffSidebar`) — typed here so downstream code doesn't
+ * depend on `@shikijs/types` directly.
  */
 export type HighlighterLike = HighlighterCore;
 export type TokenizedLine = ThemedToken[];

@@ -11,9 +11,11 @@
  *   - WorkerNode FileCountChip click integration (single + modifier);
  *   - reset semantics: selection + user toggle clear, width survives.
  *
- * Shiki + DiffBody lazy chunks are mocked so jsdom doesn't trip on the
- * real WebAssembly + dynamic import path. Tests for DiffBody itself
- * live in `DiffPopover.test.tsx` (still functional through Step 8).
+ * Shiki + DiffBody lazy chunks are mocked so jsdom doesn't trip on
+ * the real WebAssembly + dynamic import path. The Phase 4 Step 6
+ * DiffBody render test surface lived alongside `DiffPopover.tsx`
+ * (removed in Phase 7 Step 8); migrate any future render-path
+ * coverage into this file.
  */
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
