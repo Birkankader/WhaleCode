@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Capture the props `<ReactFlow>` receives so we can assert which event
@@ -18,6 +18,9 @@ vi.mock('@xyflow/react', () => ({
     setViewport: () => undefined,
     zoomIn: () => undefined,
     zoomOut: () => undefined,
+    setCenter: () => Promise.resolve(true),
+    getNode: () => null,
+    getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
   }),
   // Background / Controls are rendered as ReactFlow's children in v12.
   // Background renders nothing; Controls captures its props so tests can
@@ -342,5 +345,80 @@ describe('GraphCanvas — Controls lift', () => {
       const props = controlsProps.mock.calls[0]?.[0] ?? {};
       expect(props.className, `status=${status}`).not.toContain('--lifted');
     }
+  });
+});
+
+describe('GraphCanvas — PlanChecklist responsive layout (Phase 7 Step 3)', () => {
+  // Phase 7 Step 3: above 1400 px the checklist sits side-by-side
+  // with the graph at a fixed 280 px; below the threshold a tab
+  // bar (Graph | Checklist) replaces the always-on layout.
+
+  function setViewportWidth(px: number) {
+    Object.defineProperty(window, 'innerWidth', {
+      value: px,
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  it('renders PlanChecklist as side-by-side variant at >= 1400px', () => {
+    setViewportWidth(1600);
+    render(<GraphCanvas />);
+    const checklist = document.querySelector('[data-testid="plan-checklist"]');
+    expect(checklist).not.toBeNull();
+    expect(checklist?.getAttribute('data-variant')).toBe('side-by-side');
+    // Tab bar must NOT render in side-by-side mode.
+    expect(
+      document.querySelector('[data-testid="checklist-tab-bar"]'),
+    ).toBeNull();
+  });
+
+  it('renders the tab bar at < 1400px viewport', () => {
+    setViewportWidth(1200);
+    render(<GraphCanvas />);
+    expect(
+      document.querySelector('[data-testid="checklist-tab-bar"]'),
+    ).not.toBeNull();
+  });
+
+  it('default tab is Graph in narrow mode (no checklist visible)', () => {
+    setViewportWidth(1100);
+    render(<GraphCanvas />);
+    expect(
+      document.querySelector('[data-testid="plan-checklist"]'),
+    ).toBeNull();
+    expect(reactFlowProps).toHaveBeenCalled();
+  });
+
+  it('clicking the Checklist tab swaps content to the checklist', () => {
+    setViewportWidth(1200);
+    render(<GraphCanvas />);
+    const checklistTab = document.querySelector(
+      '[data-testid="checklist-tab-checklist"]',
+    ) as HTMLElement;
+    expect(checklistTab).not.toBeNull();
+    act(() => {
+      fireEvent.click(checklistTab);
+    });
+    const checklist = document.querySelector(
+      '[data-testid="plan-checklist"]',
+    );
+    expect(checklist).not.toBeNull();
+    expect(checklist?.getAttribute('data-variant')).toBe('tab');
+  });
+
+  it('exact threshold 1400 still side-by-side (>= boundary)', () => {
+    setViewportWidth(1400);
+    render(<GraphCanvas />);
+    const checklist = document.querySelector('[data-testid="plan-checklist"]');
+    expect(checklist?.getAttribute('data-variant')).toBe('side-by-side');
+  });
+
+  it('1399 falls into tab mode', () => {
+    setViewportWidth(1399);
+    render(<GraphCanvas />);
+    expect(
+      document.querySelector('[data-testid="checklist-tab-bar"]'),
+    ).not.toBeNull();
   });
 });

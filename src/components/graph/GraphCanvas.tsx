@@ -30,6 +30,7 @@ import { InlineDiffSidebar } from '../nodes/InlineDiffSidebar';
 import { MasterNode, type MasterNodeData } from '../nodes/MasterNode';
 import { WorkerNode, type WorkerNodeData } from '../nodes/WorkerNode';
 import { ApplySummaryOverlay } from '../overlay/ApplySummaryOverlay';
+import { PlanChecklist } from './PlanChecklist';
 import { MASTER_ID, FINAL_ID, useGraphStore } from '../../state/graphStore';
 import type { NodeSnapshot } from '../../state/graphStore';
 import type { NodeState } from '../../state/nodeMachine';
@@ -176,7 +177,38 @@ const EXPANDABLE_STATES: ReadonlySet<NodeState> = new Set([
 /** See `onNodeClick` comment below — this noop unblocks pointer-events. */
 const noopNodeClick = () => undefined;
 
+/**
+ * Phase 7 Step 3: side-by-side mode breakpoint. ≥1400px shows
+ * `PlanChecklist` next to the graph as a fixed-width pane; below
+ * the threshold the canvas falls back to a tab toggle (Graph |
+ * Checklist). The 1400 figure is the point where a 280px
+ * checklist + 280px sidebar + the smallest reasonable graph area
+ * (~840px before the worker grid feels cramped) fits comfortably
+ * on a 14" laptop without forcing horizontal compromise.
+ */
+const CHECKLIST_BREAKPOINT_PX = 1400;
+
+type NarrowView = 'graph' | 'checklist';
+
 export function GraphCanvas() {
+  const [viewportWidth, setViewportWidth] = useState<number>(() =>
+    typeof window === 'undefined' ? 1600 : window.innerWidth,
+  );
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return;
+    const apply = () => setViewportWidth(window.innerWidth);
+    apply();
+    window.addEventListener('resize', apply);
+    return () => window.removeEventListener('resize', apply);
+  }, []);
+  const sideBySide = viewportWidth >= CHECKLIST_BREAKPOINT_PX;
+
+  // Tab-mode pick (only consulted when !sideBySide). Persists for
+  // the session via local state; remounting the canvas resets to
+  // 'graph'. Spec doesn't ask for cross-session memory and the
+  // tab is an ephemeral per-run choice.
+  const [narrowView, setNarrowView] = useState<NarrowView>('graph');
+
   return (
     <ReactFlowProvider>
       {/*
@@ -187,15 +219,103 @@ export function GraphCanvas() {
        * the graph region; ResizeObserver inside GraphCanvasInner
        * re-fires the compact-mode breakpoint flip and ReactFlow's
        * own resize observer re-fits the viewport.
+       *
+       * Phase 7 Step 3: when the viewport is wide enough
+       * (`CHECKLIST_BREAKPOINT_PX`), `PlanChecklist` slots in
+       * between the graph region and the sidebar at a fixed
+       * 280px. Below the breakpoint we render a `ChecklistTabBar`
+       * above the graph so the user picks one of the two views;
+       * sidebar collapses by spec default in that range.
        */}
       <div className="flex h-full w-full">
-        <div className="relative min-w-0 flex-1">
-          <GraphCanvasInner />
-          <ApplySummaryOverlay />
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          {!sideBySide ? (
+            <ChecklistTabBar value={narrowView} onChange={setNarrowView} />
+          ) : null}
+          {sideBySide || narrowView === 'graph' ? (
+            <div className="relative min-h-0 flex-1">
+              <GraphCanvasInner />
+              <ApplySummaryOverlay />
+            </div>
+          ) : (
+            <PlanChecklist className="min-h-0 flex-1" />
+          )}
         </div>
+        {sideBySide ? (
+          <PlanChecklist
+            className="shrink-0"
+            data-testid-suffix="side-by-side"
+          />
+        ) : null}
         <InlineDiffSidebar />
       </div>
     </ReactFlowProvider>
+  );
+}
+
+function ChecklistTabBar({
+  value,
+  onChange,
+}: {
+  value: NarrowView;
+  onChange: (next: NarrowView) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Canvas view"
+      className="flex shrink-0 items-center gap-1 border-b px-2 py-1"
+      style={{ borderColor: 'var(--color-border-default)' }}
+      data-testid="checklist-tab-bar"
+    >
+      <TabButton
+        active={value === 'graph'}
+        onClick={() => onChange('graph')}
+        testId="checklist-tab-graph"
+      >
+        Graph
+      </TabButton>
+      <TabButton
+        active={value === 'checklist'}
+        onClick={() => onChange('checklist')}
+        testId="checklist-tab-checklist"
+      >
+        Checklist
+      </TabButton>
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  testId,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  testId: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      data-testid={testId}
+      className="rounded-sm px-2 py-1 text-meta hover:bg-bg-subtle/40"
+      style={{
+        color: active
+          ? 'var(--color-fg-primary)'
+          : 'var(--color-fg-tertiary)',
+        backgroundColor: active
+          ? 'var(--color-bg-subtle)'
+          : 'transparent',
+      }}
+    >
+      {children}
+    </button>
   );
 }
 

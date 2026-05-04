@@ -65,11 +65,12 @@ export function UndoButton({ subtaskId }: Props) {
   // `WorktreeReverted` event fires, `inFlight` flips to false and
   // the card transitions to Cancelled — drop back to idle so a
   // re-mount on a sibling re-running worker starts fresh.
-  useEffect(() => {
-    if (!inFlight && phase === 'reverting') {
-      setPhase('idle');
-    }
-  }, [inFlight, phase]);
+  // Render-phase derivation rather than `setState` in effect — the
+  // effect form trips React Compiler's `set-state-in-effect` rule
+  // (cascade renders), and the value is purely a function of two
+  // existing state slots.
+  const effectivePhase: Phase =
+    !inFlight && phase === 'reverting' ? 'idle' : phase;
 
   const startConfirm = useCallback(() => {
     setPhase('confirming');
@@ -97,7 +98,7 @@ export function UndoButton({ subtaskId }: Props) {
     setPhase('idle');
   }, [clearTimers]);
 
-  if (inFlight || phase === 'reverting') {
+  if (inFlight || effectivePhase === 'reverting') {
     return (
       <button
         type="button"
@@ -113,7 +114,7 @@ export function UndoButton({ subtaskId }: Props) {
     );
   }
 
-  if (phase === 'confirming') {
+  if (effectivePhase === 'confirming') {
     const seconds = Math.ceil(remainingMs / 1000);
     return (
       <button
