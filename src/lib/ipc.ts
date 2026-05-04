@@ -282,6 +282,12 @@ export const EVENT_SUBTASK_THINKING = 'run:subtask_thinking' as const;
 // has been parked + cancel fired. UI flips per-card indicator
 // from "Sending…" to "Restarting with your hint…".
 export const EVENT_SUBTASK_HINT_RECEIVED = 'run:subtask_hint_received' as const;
+// Phase 7 Step 2: per-worker undo. Backend ran `git reset --hard
+// HEAD` + `git clean -fd` in the subtask's worktree and tagged the
+// runtime row with `revert_intent`. UI drops the worker's diff
+// entry + flips the cancelled badge subtitle from "Stopped" to
+// "Reverted".
+export const EVENT_WORKTREE_REVERTED = 'run:worktree_reverted' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -547,6 +553,14 @@ export const subtaskHintReceivedSchema = z.object({
 });
 export type SubtaskHintReceived = z.infer<typeof subtaskHintReceivedSchema>;
 
+/** Phase 7 Step 2 payload for {@link EVENT_WORKTREE_REVERTED}. */
+export const worktreeRevertedSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema,
+  filesCleared: z.number().int().nonnegative(),
+});
+export type WorktreeReverted = z.infer<typeof worktreeRevertedSchema>;
+
 /** Phase 5 Step 4 payload for {@link EVENT_SUBTASK_ANSWER_RECEIVED}. */
 export const subtaskAnswerReceivedSchema = z.object({
   runId: runIdSchema,
@@ -775,6 +789,27 @@ export async function cancelSubtask(
   subtaskId: SubtaskId,
 ): Promise<void> {
   await invoke('cancel_subtask', { runId, subtaskId });
+}
+
+/**
+ * Phase 7 Step 2: per-worker undo (revert worktree changes).
+ *
+ * Like {@link cancelSubtask} but additionally wipes the worker's
+ * worktree (`git reset --hard HEAD` + `git clean -fd`) and tags the
+ * runtime row with `revert_intent`. Backend rejects with a string
+ * error if the subtask is in `proposed` / `skipped` (no worktree) or
+ * already carries `revert_intent` (idempotency / rate-limit guard).
+ *
+ * Cascade: dependent subtasks still in `waiting` / `proposed` flip
+ * to `skipped` (same path the cancel cascade uses); already-running
+ * dependents are left alone — they may have consumed the now-
+ * reverted output but reverting their downstream is out of scope.
+ */
+export async function revertSubtaskChanges(
+  runId: RunId,
+  subtaskId: SubtaskId,
+): Promise<void> {
+  await invoke('revert_subtask_changes', { runId, subtaskId });
 }
 
 /**

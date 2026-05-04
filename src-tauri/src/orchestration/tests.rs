@@ -5067,6 +5067,203 @@ async fn cancel_subtask_on_unknown_subtask_returns_not_found() {
     h.await_status(&run_id, RunStatus::Rejected).await;
 }
 
+// -- Phase 7 Step 2: per-worker undo (revert worktree changes) ------
+
+#[tokio::test]
+async fn revert_subtask_changes_on_done_marks_cancelled_with_revert_intent() {
+    // Done worker → Undo: subtask transitions to Cancelled, the
+    // runtime row carries `revert_intent = true`, and a
+    // WorktreeReverted event is emitted with the cleared-files
+    // count.
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::OkWrite {
+                summary: "wrote a.txt".into(),
+                files: vec![(PathBuf::from("a.txt"), "aaa".into())],
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("done-undo".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Done).await;
+
+    h.orch
+        .revert_subtask_changes(&run_id, &t0_id)
+        .await
+        .unwrap();
+
+    // State must transition to Cancelled.
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Cancelled).await;
+
+    // Runtime row carries `revert_intent` flag.
+    let run_arc = h.orch.get_run(&run_id).await.unwrap();
+    let guard = run_arc.read().await;
+    let sub = guard.find_subtask(&t0_id).unwrap();
+    assert!(sub.revert_intent, "revert_intent should be set");
+    assert!(sub.manual_cancel, "manual_cancel should also be set");
+    drop(guard);
+
+    // WorktreeReverted event was emitted with our subtask id.
+    let events = h.sink.snapshot().await;
+    let saw_event = events.iter().any(|e| {
+        matches!(
+            e,
+            RunEvent::WorktreeReverted { subtask_id, .. } if subtask_id == &t0_id
+        )
+    });
+    assert!(saw_event, "expected WorktreeReverted event");
+}
+
+#[tokio::test]
+async fn revert_subtask_changes_on_proposed_returns_wrong_state() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+    let run_id = h
+        .orch
+        .submit_task("propose-undo".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+
+    let err = h
+        .orch
+        .revert_subtask_changes(&run_id, &t0_id)
+        .await
+        .unwrap_err();
+    match err {
+        OrchestratorError::WrongSubtaskState { state, .. } => {
+            assert_eq!(state, SubtaskState::Proposed);
+        }
+        e => panic!("expected WrongSubtaskState, got {e:?}"),
+    }
+
+    // Cleanup.
+    h.orch.reject_run(&run_id).await.unwrap();
+    h.await_status(&run_id, RunStatus::Rejected).await;
+}
+
+#[tokio::test]
+async fn revert_subtask_changes_idempotent_second_call_returns_wrong_state() {
+    // Defense in depth against UI double-clicks: a row that already
+    // carries revert_intent rejects the second IPC even though the
+    // state is now Cancelled (which would otherwise be a valid
+    // revert target).
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::OkWrite {
+                summary: "wrote".into(),
+                files: vec![(PathBuf::from("a.txt"), "aaa".into())],
+            },
+        )
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("double-undo".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs[0].id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Done).await;
+
+    h.orch
+        .revert_subtask_changes(&run_id, &t0_id)
+        .await
+        .unwrap();
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Cancelled).await;
+
+    // Second call rejects on the revert_intent guard.
+    let err = h
+        .orch
+        .revert_subtask_changes(&run_id, &t0_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::WrongSubtaskState { .. }));
+}
+
+#[tokio::test]
+async fn revert_subtask_changes_cascades_dependents_to_skipped() {
+    // t0 produces files; t1 depends on t0; we revert t0 → t1 cascades
+    // to Skipped (Waiting → Skipped per the existing cascade logic).
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_with_deps(&[("t0", &[]), ("t1", &[0])])))
+        .await
+        .with_execute(
+            "t0",
+            ExecuteScript::OkWrite {
+                summary: "t0 wrote".into(),
+                files: vec![(PathBuf::from("a.txt"), "aaa".into())],
+            },
+        )
+        .await
+        .with_execute("t1", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    let run_id = h
+        .orch
+        .submit_task("undo-cascade".into(), h.repo_path.clone())
+        .await
+        .unwrap();
+    h.await_status(&run_id, RunStatus::AwaitingApproval).await;
+    let subs = h.storage.list_subtasks_for_run(&run_id).await.unwrap();
+    let t0_id = subs.iter().find(|s| s.title == "t0").unwrap().id.clone();
+    let t1_id = subs.iter().find(|s| s.title == "t1").unwrap().id.clone();
+    let ids: Vec<SubtaskId> = subs.iter().map(|s| s.id.clone()).collect();
+    h.orch.approve_subtasks(&run_id, ids).await.unwrap();
+
+    // t0 finishes first (OkWrite is fast); t1 stays Waiting since it
+    // depends on t0.
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Done).await;
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Waiting).await;
+
+    h.orch
+        .revert_subtask_changes(&run_id, &t0_id)
+        .await
+        .unwrap();
+
+    await_subtask_state(&h, &run_id, &t0_id, SubtaskState::Cancelled).await;
+    await_subtask_state(&h, &run_id, &t1_id, SubtaskState::Skipped).await;
+}
+
+#[tokio::test]
+async fn revert_subtask_changes_on_unknown_run_returns_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .revert_subtask_changes(&"ghost".to_string(), &"ghost-sub".to_string())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}
+
 // -- Phase 5 Step 2: base-branch dirty helper ------------------------
 //
 // `stash_and_retry_apply` composes `git stash push -u` + the existing

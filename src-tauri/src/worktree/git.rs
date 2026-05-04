@@ -319,6 +319,33 @@ pub async fn stash_pop<P: AsRef<Path>>(
     })
 }
 
+/// Phase 7 Step 2 — wipe uncommitted changes in a subtask worktree.
+/// Counts the dirty entries first (porcelain status) so the
+/// `WorktreeReverted` event can carry the cleared-files number,
+/// then runs `git reset --hard HEAD` (drops staged + unstaged
+/// modifications) followed by `git clean -fd` (removes untracked
+/// files + directories). Workers don't commit inside their worktree
+/// — the orchestrator commits during the merge phase — so HEAD
+/// always points at the worktree's base commit at revert time.
+///
+/// Returns the number of distinct paths git reported as dirty
+/// before the reset. The number is informational only; the IPC
+/// success means the worktree IS clean afterwards regardless of
+/// the count.
+pub async fn revert_worktree<P: AsRef<Path>>(
+    worktree_path: P,
+) -> Result<u32, WorktreeError> {
+    let path = worktree_path.as_ref();
+    let porcelain = run_git(path, &["status", "--porcelain"]).await?;
+    let cleared = porcelain
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count() as u32;
+    run_git(path, &["reset", "--hard", "HEAD"]).await?;
+    run_git(path, &["clean", "-fd"]).await?;
+    Ok(cleared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

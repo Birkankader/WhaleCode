@@ -87,6 +87,11 @@ pub fn run() {
             // — this stops exactly one subtask and leaves the rest of
             // the run running. Bypasses the retry ladder entirely.
             commands::cancel_subtask,
+            // Phase 7 Step 2: per-worker undo. Like cancel_subtask but
+            // also wipes the worktree (git reset + clean) and tags the
+            // row with `revert_intent` so the frontend distinguishes
+            // "stopped, worktree preserved" from "undone, worktree clean".
+            commands::revert_subtask_changes,
             // Phase 5 Step 2: base-branch dirty helper. stash_and_retry_apply
             // composes `git stash push -u` + the existing apply oneshot;
             // pop_stash is user-initiated — no auto-pop after Apply because

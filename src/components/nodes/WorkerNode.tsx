@@ -33,6 +33,7 @@ import { HintInput } from './HintInput';
 import { QuestionInput } from './QuestionInput';
 import { ShowThinkingToggle } from './ShowThinkingToggle';
 import { StopButton } from './StopButton';
+import { UndoButton } from './UndoButton';
 import { ThinkingPanel } from './ThinkingPanel';
 import { WorktreeActions } from './WorktreeActions';
 
@@ -203,6 +204,17 @@ export function WorkerNode({ id, data }: NodeProps) {
   const showLogs = LOG_VISIBLE_STATES.has(d.state);
   const isInspectable = INSPECTABLE_STATES.has(d.state);
   const isStoppable = STOPPABLE_STATES.has(d.state);
+  // Phase 7 Step 2: per-worker Undo eligibility. Visible when the
+  // worker has produced changes — terminal states with a non-empty
+  // diff (Done with files, Failed with edits, Cancelled with edits)
+  // or active states (Running / Retrying) where the worktree might
+  // already carry work-in-progress edits. Hidden on `awaiting_input`
+  // (QuestionInput owns the footer) and on `proposed` / `skipped`
+  // (no worktree). Once revert succeeds, `subtaskRevertIntent` for
+  // this id is set and the diff entry is gone, so this branch
+  // automatically hides the button on the now-clean cancelled card.
+  const isAwaitingInput = d.state === 'awaiting_input';
+  const isActive = d.state === 'running' || d.state === 'retrying';
 
   const isSelected = useGraphStore((s) => s.selectedSubtaskIds.has(id));
   const toggle = useGraphStore((s) => s.toggleSubtaskSelection);
@@ -241,6 +253,22 @@ export function WorkerNode({ id, data }: NodeProps) {
   // subtasks and for failed subtasks whose backend predates Step 5
   // (Option payload on the wire). Only read; never written here.
   const errorCategory = useGraphStore((s) => s.subtaskErrorCategories.get(id));
+
+  // Phase 7 Step 2: this worker has already been reverted. Drives the
+  // "Reverted" subtitle on the cancelled card and hides the
+  // (now-pointless) Undo button.
+  const isReverted = useGraphStore((s) => s.subtaskRevertIntent.has(id));
+  // Show Undo when the worker has produced changes worth reverting.
+  // Active states qualify even with no diff yet (worker may have
+  // edits unflushed); terminal states require non-empty diff so we
+  // don't render the button on rows that touched nothing.
+  const hasFiles = (diff?.length ?? 0) > 0;
+  const showUndo =
+    !isProposed
+    && !isAwaitingInput
+    && !isReverted
+    && d.state !== 'skipped'
+    && (isActive || hasFiles);
 
   // Inline-edit one-shot: if the store just coined this id via addSubtask,
   // auto-enter edit mode on the title. Consume the flag in a layout effect
@@ -336,6 +364,18 @@ export function WorkerNode({ id, data }: NodeProps) {
           <span className="text-hint uppercase tracking-wide text-fg-secondary">
             {STATE_LABEL[d.state]}
           </span>
+          {/* Phase 7 Step 2: distinguish revert from plain stop on
+              cancelled cards. `subtaskRevertIntent` membership is
+              set on the `WorktreeReverted` event handler (the
+              orchestrator emits it after the git ops succeed). */}
+          {d.state === 'cancelled' && isReverted ? (
+            <span
+              className="text-hint uppercase tracking-wide text-fg-tertiary"
+              data-testid="worker-reverted-subtitle"
+            >
+              · Reverted
+            </span>
+          ) : null}
           {/* Phase 4 Step 5: inline error-category chip. Rendered only
               on Failed cards with a classified category — legacy
               failures (pre-Step-5 payloads) fall back to just the
@@ -444,6 +484,12 @@ export function WorkerNode({ id, data }: NodeProps) {
             (user-intent terminal) without triggering Layer 1 retry,
             Layer 2 replan, or Layer 3 escalation. */}
         {isStoppable ? <StopButton subtaskId={id} /> : null}
+        {/* Phase 7 Step 2: per-worker Undo. Visible on workers that
+            have produced changes (running with progress, or any
+            terminal state with a non-empty diff). Hidden during
+            `awaiting_input` so it doesn't compete with QuestionInput
+            for the footer slot. */}
+        {showUndo ? <UndoButton subtaskId={id} /> : null}
         {/* Phase 6 Step 3: per-card "Show thinking" toggle. Visible
             on log-visible states; capability-gated (Claude only —
             Codex / Gemini greyed out per Step 0 diagnostic findings).

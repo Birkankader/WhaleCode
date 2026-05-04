@@ -241,6 +241,16 @@ pub enum RunEvent {
         files: Vec<PathBuf>,
         retry_attempt: u32,
     },
+    /// Phase 7 Step 2: user clicked Undo on a worker; the orchestrator
+    /// reset the worktree (`git reset --hard HEAD` + `git clean -fd`)
+    /// and the subtask transitioned to `Cancelled` with `revert_intent`
+    /// set on its runtime row. Frontend drops the worker's diff entry
+    /// and tags the cancelled card with a "Reverted" subtitle.
+    WorktreeReverted {
+        run_id: RunId,
+        subtask_id: SubtaskId,
+        files_cleared: u32,
+    },
 }
 
 impl RunEvent {
@@ -273,7 +283,8 @@ impl RunEvent {
             | RunEvent::SubtaskAnswerReceived { run_id, .. }
             | RunEvent::SubtaskActivity { run_id, .. }
             | RunEvent::SubtaskThinking { run_id, .. }
-            | RunEvent::SubtaskHintReceived { run_id, .. } => run_id,
+            | RunEvent::SubtaskHintReceived { run_id, .. }
+            | RunEvent::WorktreeReverted { run_id, .. } => run_id,
         }
     }
 }
@@ -518,6 +529,18 @@ impl EventSink for TauriEventSink {
                     subtask_id,
                     hint,
                     timestamp_ms,
+                },
+            ),
+            RunEvent::WorktreeReverted {
+                run_id,
+                subtask_id,
+                files_cleared,
+            } => wire::emit_worktree_reverted(
+                &self.app,
+                &wire::WorktreeReverted {
+                    run_id,
+                    subtask_id,
+                    files_cleared,
                 },
             ),
         };

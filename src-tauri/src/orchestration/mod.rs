@@ -897,6 +897,184 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Phase 7 Step 2: user-initiated worktree revert.
+    ///
+    /// Distinct from [`Self::cancel_subtask`] in outcome: cancel
+    /// stops the worker but leaves the worktree as-is (the user can
+    /// still inspect / copy edits via `WorktreeActions`); revert
+    /// stops the worker AND wipes the worktree (`git reset --hard
+    /// HEAD` + `git clean -fd`) so the dirty state is gone. Both
+    /// flow through `WorkerOutcome::UserCancelled` for active
+    /// states, but `revert_intent = true` on the runtime row tells
+    /// the frontend to drop the cleared diff entry and tag the
+    /// cancelled card as "Reverted" instead of "Stopped".
+    ///
+    /// State machine:
+    ///
+    ///   - `Running` / `Retrying` / `Waiting` / `AwaitingInput`:
+    ///     mirror the cancel path — set `manual_cancel` +
+    ///     `revert_intent`, fire the per-subtask cancel token, wake
+    ///     the dispatcher loop. The dispatcher transitions the
+    ///     subtask to `Cancelled` via `mark_user_cancelled` and
+    ///     cascades `Waiting` / `Proposed` dependents to `Skipped`.
+    ///   - `Done` / `Failed` / `Cancelled`: dispatcher already
+    ///     finalised the subtask; we transition to `Cancelled`
+    ///     directly, persist via `update_subtask_state`, emit
+    ///     `SubtaskStateChanged`, and run the same skip cascade
+    ///     ourselves.
+    ///   - `Proposed` / `Skipped`: rejected with
+    ///     `WrongSubtaskState` — no worktree exists.
+    ///
+    /// Idempotency: a row that already carries `revert_intent` is
+    /// rejected to avoid re-running git ops on an already-clean
+    /// worktree (rare cases where the user double-clicks Undo).
+    /// The frontend rate-limits the click anyway (1 per 3s per
+    /// subtask) — this is the defense in depth.
+    pub async fn revert_subtask_changes(
+        &self,
+        run_id: &RunId,
+        subtask_id: &SubtaskId,
+    ) -> Result<(), OrchestratorError> {
+        let run_arc = self
+            .get_run(run_id)
+            .await
+            .ok_or_else(|| OrchestratorError::RunNotFound(run_id.clone()))?;
+
+        let (worktree_path, was_active, token, wake) = {
+            let mut guard = run_arc.write().await;
+            let wake = guard.subtask_cancel_wake.clone();
+            let sub = guard
+                .find_subtask_mut(subtask_id)
+                .ok_or_else(|| OrchestratorError::SubtaskNotFound(subtask_id.clone()))?;
+            if matches!(sub.state, SubtaskState::Proposed | SubtaskState::Skipped) {
+                return Err(OrchestratorError::WrongSubtaskState {
+                    subtask_id: subtask_id.clone(),
+                    state: sub.state,
+                    expected:
+                        "running | retrying | waiting | awaiting-input | done | failed | cancelled",
+                });
+            }
+            if sub.revert_intent {
+                return Err(OrchestratorError::WrongSubtaskState {
+                    subtask_id: subtask_id.clone(),
+                    state: sub.state,
+                    expected: "not already reverted",
+                });
+            }
+            let path = sub.worktree_path.clone().ok_or_else(|| {
+                OrchestratorError::InvalidEdit(
+                    "subtask has no worktree to revert".to_string(),
+                )
+            })?;
+            let was_active = matches!(
+                sub.state,
+                SubtaskState::Running
+                    | SubtaskState::Retrying
+                    | SubtaskState::Waiting
+                    | SubtaskState::AwaitingInput
+            );
+            sub.manual_cancel = true;
+            sub.revert_intent = true;
+            (path, was_active, sub.cancel_token.clone(), wake)
+        };
+
+        // For active subtasks, fire the cancel signal so the worker
+        // task observes it and routes through `WorkerOutcome::UserCancelled`.
+        // For terminal ones the dispatcher won't see this — we mark
+        // the state ourselves below.
+        if was_active {
+            token.cancel();
+            wake.notify_one();
+        }
+
+        // Run the worktree reset outside the run lock — git ops are
+        // sync and the lock guard would block sibling worker writes.
+        let files_cleared = crate::worktree::git::revert_worktree(&worktree_path)
+            .await
+            .map_err(|e| {
+                OrchestratorError::InvalidEdit(format!("git revert: {e}"))
+            })?;
+
+        // Terminal-state revert: the dispatcher won't run a state
+        // transition for us. Mark Cancelled, persist, emit the
+        // state change, and cascade to dependents the same way the
+        // dispatcher's `mark_user_cancelled` + cascade path does.
+        if !was_active {
+            let cascade: Vec<SubtaskId> = {
+                let mut guard = run_arc.write().await;
+                let cascade_ids =
+                    compute_skip_cascade(&guard.subtasks, subtask_id);
+                if let Some(sub) = guard.find_subtask_mut(subtask_id) {
+                    if !matches!(sub.state, SubtaskState::Cancelled) {
+                        sub.mark_cancelled();
+                    }
+                }
+                for id in &cascade_ids {
+                    if id == subtask_id {
+                        continue;
+                    }
+                    if let Some(sub) = guard.find_subtask_mut(id) {
+                        if matches!(
+                            sub.state,
+                            SubtaskState::Waiting | SubtaskState::Proposed
+                        ) {
+                            sub.mark_skipped();
+                        }
+                    }
+                }
+                cascade_ids
+            };
+            if let Err(e) = self
+                .storage
+                .update_subtask_state(subtask_id, SubtaskState::Cancelled, None)
+                .await
+            {
+                eprintln!(
+                    "[orchestrator] update_subtask_state(cancelled, {subtask_id}) failed: {e}"
+                );
+            }
+            self.event_sink
+                .emit(RunEvent::SubtaskStateChanged {
+                    run_id: run_id.clone(),
+                    subtask_id: subtask_id.clone(),
+                    state: SubtaskState::Cancelled,
+                    error_category: None,
+                })
+                .await;
+            for id in cascade {
+                if id == *subtask_id {
+                    continue;
+                }
+                if let Err(e) = self
+                    .storage
+                    .update_subtask_state(&id, SubtaskState::Skipped, None)
+                    .await
+                {
+                    eprintln!(
+                        "[orchestrator] update_subtask_state(skipped, {id}) failed: {e}"
+                    );
+                }
+                self.event_sink
+                    .emit(RunEvent::SubtaskStateChanged {
+                        run_id: run_id.clone(),
+                        subtask_id: id,
+                        state: SubtaskState::Skipped,
+                        error_category: None,
+                    })
+                    .await;
+            }
+        }
+
+        self.event_sink
+            .emit(RunEvent::WorktreeReverted {
+                run_id: run_id.clone(),
+                subtask_id: subtask_id.clone(),
+                files_cleared,
+            })
+            .await;
+        Ok(())
+    }
+
     // -- Phase 3 edit commands ------------------------------------------
     //
     // Locking discipline: each of the three methods acquires the run's

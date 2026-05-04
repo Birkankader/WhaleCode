@@ -113,6 +113,24 @@ pub async fn cancel_subtask(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 7 Step 2: user-initiated worktree revert. Like
+/// `cancel_subtask` but also wipes the worktree (`git reset --hard
+/// HEAD` + `git clean -fd`) and tags the row with `revert_intent`
+/// so the frontend can render the cancelled card as "Reverted"
+/// (clean worktree) instead of "Stopped" (worktree preserved).
+/// Wrong-state / no-worktree errors surface as strings the frontend
+/// renders as a toast.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn revert_subtask_changes(
+    orch: State<'_, Arc<Orchestrator>>,
+    run_id: RunId,
+    subtask_id: SubtaskId,
+) -> Result<(), String> {
+    orch.revert_subtask_changes(&run_id, &subtask_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Phase 5 Step 2: stash the dirty base branch and retry Apply.
 /// Composition of `git stash push -u` + the existing apply oneshot —
 /// the frontend offers this as a one-click remediation on the

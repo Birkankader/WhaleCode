@@ -75,6 +75,21 @@ pub struct SubtaskRuntime {
     /// the existing `recover_active_runs` invariant and the flag has
     /// no lingering meaning.
     pub manual_cancel: bool,
+    /// Phase 7 Step 2: distinguishes a *revert* (worktree wiped via
+    /// `revert_subtask_changes`) from a plain manual cancel. Both
+    /// transitions land the subtask in `Cancelled` and bypass the
+    /// retry / replan ladders, but the post-mortem state of the
+    /// worktree is different:
+    ///   - `manual_cancel = true, revert_intent = false`
+    ///     → user clicked Stop. Worktree preserved as-is; the user
+    ///       can still inspect / copy edits via `WorktreeActions`.
+    ///   - `manual_cancel = true, revert_intent = true`
+    ///     → user clicked Undo. Worktree was reset (`git reset --hard
+    ///       HEAD` + `git clean -fd`); diffs cleared on the frontend.
+    /// Both flags can be set on the same row when the user stops a
+    /// running worker first and then reverts the (still-modified)
+    /// worktree afterwards.
+    pub revert_intent: bool,
     /// Phase 6 Step 4: pending hint queued by `hint_subtask`. When
     /// `Some`, the worker task's hint loop reads + clears the value
     /// after the cancel-driven restart, formats it as `extra_context`,
@@ -101,6 +116,7 @@ impl SubtaskRuntime {
             replaces: Vec::new(),
             cancel_token: CancellationToken::new(),
             manual_cancel: false,
+            revert_intent: false,
             hint_pending: None,
         }
     }

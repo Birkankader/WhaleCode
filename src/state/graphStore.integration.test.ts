@@ -52,6 +52,7 @@ import {
   EVENT_SUBTASK_HINT_RECEIVED,
   EVENT_SUBTASK_QUESTION_ASKED,
   EVENT_SUBTASK_THINKING,
+  EVENT_WORKTREE_REVERTED,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -121,6 +122,7 @@ beforeEach(() => {
   invokeHandlers.set('answer_subtask_question', async () => undefined);
   invokeHandlers.set('skip_subtask_question', async () => undefined);
   invokeHandlers.set('hint_subtask', async () => undefined);
+  invokeHandlers.set('revert_subtask_changes', async () => undefined);
 });
 
 afterEach(() => {
@@ -2583,5 +2585,62 @@ describe('graphStore — Phase 6 Step 4 hint injection', () => {
     });
     await state().hintSubtask('one', 'h');
     expect(calls).toBe(0);
+  });
+});
+
+describe('graphStore — Phase 7 Step 2 worktree revert', () => {
+  it('revertSubtaskChanges sets revertInFlight; WorktreeReverted clears + tags revert_intent', async () => {
+    await state().submitTask('x');
+    // Seed a diff so the revert handler has something to clear.
+    useGraphStore.setState((s) => {
+      const next = new Map(s.subtaskDiffs);
+      next.set('one', [{ path: 'a.ts', additions: 1, deletions: 0 }]);
+      return { subtaskDiffs: next };
+    });
+
+    await state().revertSubtaskChanges('one');
+    expect(state().revertInFlight.has('one')).toBe(true);
+
+    emit(EVENT_WORKTREE_REVERTED, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      filesCleared: 3,
+    });
+
+    // In-flight cleared, intent tagged, diff entry dropped.
+    expect(state().revertInFlight.has('one')).toBe(false);
+    expect(state().subtaskRevertIntent.has('one')).toBe(true);
+    expect(state().subtaskDiffs.has('one')).toBe(false);
+  });
+
+  it('revertSubtaskChanges rejection rolls back inFlight + surfaces currentError', async () => {
+    await state().submitTask('x');
+    invokeHandlers.set('revert_subtask_changes', async () => {
+      throw 'wrong state';
+    });
+    await expect(state().revertSubtaskChanges('one')).rejects.toBeDefined();
+    expect(state().revertInFlight.has('one')).toBe(false);
+    expect(state().currentError).toMatch(/Undo failed/i);
+  });
+
+  it('no-op on pending_* runId', async () => {
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let calls = 0;
+    invokeHandlers.set('revert_subtask_changes', async () => {
+      calls += 1;
+    });
+    await state().revertSubtaskChanges('one');
+    expect(calls).toBe(0);
+  });
+
+  it('reset clears subtaskRevertIntent + revertInFlight', async () => {
+    await state().submitTask('x');
+    useGraphStore.setState({
+      subtaskRevertIntent: new Set(['one']),
+      revertInFlight: new Set(['two']),
+    });
+    state().reset();
+    expect(state().subtaskRevertIntent.size).toBe(0);
+    expect(state().revertInFlight.size).toBe(0);
   });
 });

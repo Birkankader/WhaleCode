@@ -80,6 +80,13 @@ pub const EVENT_SUBTASK_THINKING: &str = "run:subtask_thinking";
 /// Backend confirms by emitting this; UI flips per-card
 /// indicator from "Sending…" to "Restarting with your hint…".
 pub const EVENT_SUBTASK_HINT_RECEIVED: &str = "run:subtask_hint_received";
+/// Phase 7 Step 2: user clicked Undo on a worker; the orchestrator
+/// reset the worktree (`git reset --hard HEAD` + `git clean -fd`)
+/// and the subtask transitioned to `Cancelled` with `revert_intent`
+/// set on its runtime row. Frontend drops the worker's diff entry
+/// (worktree is now clean) and renders a "Reverted" subtitle on
+/// the cancelled card.
+pub const EVENT_WORKTREE_REVERTED: &str = "run:worktree_reverted";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -413,6 +420,18 @@ pub struct SubtaskHintReceived {
     pub timestamp_ms: u64,
 }
 
+/// Phase 7 Step 2 wire payload for [`EVENT_WORKTREE_REVERTED`].
+/// `files_cleared` is the number of distinct paths git reported
+/// as dirty before the reset; informational only, the IPC
+/// success implies the worktree IS clean afterwards regardless.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeReverted {
+    pub run_id: RunId,
+    pub subtask_id: SubtaskId,
+    pub files_cleared: u32,
+}
+
 /// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_ANSWER_RECEIVED`].
 /// Fires immediately before the subtask transitions back to
 /// `Running`. No answer text on the wire — the reply is ephemeral
@@ -572,6 +591,13 @@ pub fn emit_subtask_hint_received(
     payload: &SubtaskHintReceived,
 ) -> tauri::Result<()> {
     app.emit(EVENT_SUBTASK_HINT_RECEIVED, payload)
+}
+
+pub fn emit_worktree_reverted(
+    app: &AppHandle,
+    payload: &WorktreeReverted,
+) -> tauri::Result<()> {
+    app.emit(EVENT_WORKTREE_REVERTED, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

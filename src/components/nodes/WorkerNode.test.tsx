@@ -1377,6 +1377,91 @@ describe('WorkerNode — Stop button (Phase 5 Step 1)', () => {
   });
 });
 
+describe('WorkerNode — Undo button gating (Phase 7 Step 2)', () => {
+  function baseData(
+    overrides: Partial<WorkerNodeData> = {},
+  ): WorkerNodeData {
+    return {
+      state: 'done',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  function seedDiff(id: string, files: number) {
+    useGraphStore.setState((state) => {
+      const next = new Map(state.subtaskDiffs);
+      next.set(
+        id,
+        Array.from({ length: files }, (_, i) => ({
+          path: `f${i}.ts`,
+          additions: 1,
+          deletions: 0,
+        })),
+      );
+      return { subtaskDiffs: next };
+    });
+  }
+
+  it('renders Undo on Done worker with non-empty diff', () => {
+    seedDiff('sub-a', 2);
+    renderNode('sub-a', baseData({ state: 'done' }));
+    expect(screen.getByTestId('worker-undo-button')).toBeInTheDocument();
+  });
+
+  it('hides Undo on Done worker with empty diff (nothing to revert)', () => {
+    seedDiff('sub-a', 0);
+    renderNode('sub-a', baseData({ state: 'done' }));
+    expect(screen.queryByTestId('worker-undo-button')).toBeNull();
+  });
+
+  it('shows Undo on running worker even before diff lands', () => {
+    renderNode('sub-a', baseData({ state: 'running' }));
+    expect(screen.getByTestId('worker-undo-button')).toBeInTheDocument();
+  });
+
+  it('hides Undo during awaiting_input (QuestionInput owns the slot)', () => {
+    seedDiff('sub-a', 1);
+    renderNode('sub-a', baseData({ state: 'awaiting_input' }));
+    expect(screen.queryByTestId('worker-undo-button')).toBeNull();
+  });
+
+  it('hides Undo on proposed (no worktree yet)', () => {
+    renderNode('sub-a', baseData({ state: 'proposed' }));
+    expect(screen.queryByTestId('worker-undo-button')).toBeNull();
+  });
+
+  it('hides Undo on skipped (no worktree)', () => {
+    renderNode('sub-a', baseData({ state: 'skipped' }));
+    expect(screen.queryByTestId('worker-undo-button')).toBeNull();
+  });
+
+  it('hides Undo once subtask carries revert_intent (already reverted)', () => {
+    seedDiff('sub-a', 2);
+    useGraphStore.setState({ subtaskRevertIntent: new Set(['sub-a']) });
+    renderNode('sub-a', baseData({ state: 'cancelled' }));
+    expect(screen.queryByTestId('worker-undo-button')).toBeNull();
+  });
+
+  it('shows "Reverted" subtitle on cancelled cards in subtaskRevertIntent', () => {
+    useGraphStore.setState({ subtaskRevertIntent: new Set(['sub-a']) });
+    renderNode('sub-a', baseData({ state: 'cancelled' }));
+    expect(screen.getByTestId('worker-reverted-subtitle')).toHaveTextContent(
+      /Reverted/i,
+    );
+  });
+
+  it('omits "Reverted" subtitle on plain Stop (no revert_intent)', () => {
+    renderNode('sub-a', baseData({ state: 'cancelled' }));
+    expect(screen.queryByTestId('worker-reverted-subtitle')).toBeNull();
+  });
+});
+
 describe('WorkerNode — HintInput gating (Phase 6 Step 4)', () => {
   function baseData(
     overrides: Partial<WorkerNodeData> = {},

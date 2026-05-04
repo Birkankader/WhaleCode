@@ -518,3 +518,56 @@ async fn merge_then_cleanup_all_leaves_repo_in_clean_state() {
         .await
         .is_err());
 }
+
+// -- revert_worktree (Phase 7 Step 2) --------------------------------
+
+#[tokio::test]
+async fn revert_worktree_clears_untracked_files_and_restores_tracked() {
+    // Worker case: agent edits a tracked file + drops a new untracked
+    // file in the worktree. revert_worktree must restore the tracked
+    // file to HEAD and remove the untracked one.
+    let (_td, repo) = init_repo().await;
+    let mgr = WorktreeManager::new(repo.clone()).await.unwrap();
+    let wt = mgr.create("r", "s").await.unwrap();
+
+    // Set up a tracked file inside the subtask worktree (committed
+    // there so HEAD knows the original content).
+    commit_in(&wt, &[("README.md", "original\n")], "seed").await;
+
+    // Simulate agent: modify tracked, add untracked.
+    write(&wt.join("README.md"), "EDITED\n").await;
+    write(&wt.join("new.txt"), "scratch\n").await;
+    write(&wt.join("nested/file.txt"), "buried\n").await;
+
+    // Pre-revert: 3 dirty entries (1 modified + 2 untracked dirs).
+    let pre = run_git(&wt, &["status", "--porcelain"]).await.unwrap();
+    assert!(!pre.trim().is_empty(), "tree should be dirty pre-revert");
+
+    let cleared = super::git::revert_worktree(&wt).await.unwrap();
+    assert!(cleared >= 1, "expected at least 1 cleared entry, got {cleared}");
+
+    // Post-revert: tree must be clean.
+    let post = run_git(&wt, &["status", "--porcelain"]).await.unwrap();
+    assert!(post.trim().is_empty(), "tree should be clean: {post:?}");
+
+    // Tracked file restored.
+    let restored = tokio::fs::read_to_string(wt.join("README.md")).await.unwrap();
+    assert_eq!(restored, "original\n");
+
+    // Untracked files removed.
+    assert!(tokio::fs::metadata(wt.join("new.txt")).await.is_err());
+    assert!(tokio::fs::metadata(wt.join("nested")).await.is_err());
+}
+
+#[tokio::test]
+async fn revert_worktree_on_clean_tree_is_idempotent_noop() {
+    let (_td, repo) = init_repo().await;
+    let mgr = WorktreeManager::new(repo.clone()).await.unwrap();
+    let wt = mgr.create("r", "s").await.unwrap();
+
+    let cleared = super::git::revert_worktree(&wt).await.unwrap();
+    assert_eq!(cleared, 0, "clean tree should report 0 cleared entries");
+
+    let post = run_git(&wt, &["status", "--porcelain"]).await.unwrap();
+    assert!(post.trim().is_empty(), "tree should still be clean");
+}

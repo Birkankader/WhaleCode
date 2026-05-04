@@ -48,6 +48,7 @@ import {
   markSubtaskFixed as markSubtaskFixedIpc,
   rejectRun as rejectRunIpc,
   removeSubtask as removeSubtaskIpc,
+  revertSubtaskChanges as revertSubtaskChangesIpc,
   setSettings,
   skipSubtask as skipSubtaskIpc,
   submitTask as submitTaskIpc,
@@ -78,6 +79,7 @@ import {
   type SubtaskHintReceived,
   type SubtaskQuestionAsked,
   type SubtaskThinking,
+  type WorktreeReverted,
   type SkipResult,
   type StatusChanged,
   type SubtaskDiff,
@@ -441,6 +443,16 @@ export type GraphState = {
    */
   hintSubtask: (subtaskId: SubtaskId, hint: string) => Promise<void>;
   /**
+   * Phase 7 Step 2: per-worker undo. Calls the
+   * `revert_subtask_changes` IPC, which fires the cancel for active
+   * states + wipes the worktree (`git reset --hard HEAD` + `git
+   * clean -fd`) + tags the runtime row with `revert_intent`. Sets
+   * `revertInFlight` membership while the IPC is out; cleared on
+   * the backend's `WorktreeReverted` event (success) or on IPC
+   * catch (failure, with `currentError` populated).
+   */
+  revertSubtaskChanges: (subtaskId: SubtaskId) => Promise<void>;
+  /**
    * Phase 5 Step 4: deliver the user's answer to a parked question.
    * Sets `questionAnswerInFlight` while the IPC is out; the store
    * clears it on the backend's next `SubtaskStateChanged(Running)`
@@ -556,6 +568,20 @@ export type GraphState = {
    * your hint…" while membership.
    */
   hintInFlight: ReadonlySet<SubtaskId>;
+  /**
+   * Phase 7 Step 2: subtask ids whose `revert_subtask_changes` IPC
+   * is in flight. UndoButton renders a disabled "Reverting…" state
+   * while membership holds. Cleared on the `WorktreeReverted` event
+   * (success path) or on IPC catch (failure path).
+   */
+  revertInFlight: ReadonlySet<SubtaskId>;
+  /**
+   * Phase 7 Step 2: subtask ids that landed in `Cancelled` via the
+   * revert path (orchestrator set `revert_intent = true`). Drives
+   * the WorkerNode "Reverted" subtitle so the cancelled state can
+   * be visually distinguished from a plain Stop.
+   */
+  subtaskRevertIntent: ReadonlySet<SubtaskId>;
   pendingQuestions: ReadonlyMap<SubtaskId, { question: string }>;
   /**
    * Phase 5 Step 4: transient per-subtask flag for "the answer /
@@ -855,6 +881,8 @@ const initial: Pick<
   | 'subtaskThinking'
   | 'workerThinkingVisible'
   | 'hintInFlight'
+  | 'revertInFlight'
+  | 'subtaskRevertIntent'
   | 'inlineDiffSelection'
   | 'inlineDiffSidebarUserToggled'
   | 'inlineDiffSidebarWidth'
@@ -902,6 +930,8 @@ const initial: Pick<
   subtaskThinking: new Map(),
   workerThinkingVisible: new Set(),
   hintInFlight: new Set(),
+  revertInFlight: new Set(),
+  subtaskRevertIntent: new Set(),
   inlineDiffSelection: new Set(),
   inlineDiffSidebarUserToggled: null,
   inlineDiffSidebarWidth: 480,
@@ -1581,6 +1611,34 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleWorktreeReverted(e: WorktreeReverted) {
+    if (e.runId !== get().runId) return;
+    // Backend reset the worktree + tagged the row with revert_intent.
+    // Three store mutations on this single event:
+    //   1. Drop the worker's diff entry — worktree is clean, the
+    //      diff data is stale.
+    //   2. Add the id to `subtaskRevertIntent` so the WorkerNode
+    //      flips the cancelled subtitle from "Stopped" to "Reverted".
+    //   3. Clear the `revertInFlight` flag so the UndoButton's
+    //      "Reverting…" copy returns to the default disabled state
+    //      (the card has gone Cancelled by now via the
+    //      SubtaskStateChanged event the dispatcher / orchestrator
+    //      emitted alongside).
+    set((state) => {
+      const nextDiffs = new Map(state.subtaskDiffs);
+      nextDiffs.delete(e.subtaskId);
+      const nextIntent = new Set(state.subtaskRevertIntent);
+      nextIntent.add(e.subtaskId);
+      const nextInFlight = new Set(state.revertInFlight);
+      nextInFlight.delete(e.subtaskId);
+      return {
+        subtaskDiffs: nextDiffs,
+        subtaskRevertIntent: nextIntent,
+        revertInFlight: nextInFlight,
+      };
+    });
+  }
+
   function handleSubtaskLog(e: SubtaskLog) {
     if (e.runId !== get().runId) return;
     appendLog(e.subtaskId, e.line);
@@ -1851,6 +1909,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskActivity: handleSubtaskActivity,
       onSubtaskThinking: handleSubtaskThinking,
       onSubtaskHintReceived: handleSubtaskHintReceived,
+      onWorktreeReverted: handleWorktreeReverted,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -2080,6 +2139,31 @@ export const useGraphStore = create<GraphState>((set, get) => {
         set({
           subtaskCancelInFlight: rolledBack,
           currentError: `Stop failed: ${String(err)}`,
+        });
+        throw err;
+      }
+    },
+
+    async revertSubtaskChanges(subtaskId) {
+      const runId = get().runId;
+      if (!runId || runId.startsWith('pending_')) return;
+      const prev = get().revertInFlight;
+      if (prev.has(subtaskId)) return;
+      const nextInFlight = new Set(prev);
+      nextInFlight.add(subtaskId);
+      set({ revertInFlight: nextInFlight });
+      try {
+        await revertSubtaskChangesIpc(runId, subtaskId);
+        // Success path: `WorktreeReverted` handler clears the flag
+        // after the backend confirms the worktree wipe + state
+        // transition. Keeps the "Reverting…" UI alive through the
+        // ~subsecond cancel + git ops window.
+      } catch (err) {
+        const rolledBack = new Set(get().revertInFlight);
+        rolledBack.delete(subtaskId);
+        set({
+          revertInFlight: rolledBack,
+          currentError: `Undo failed: ${String(err)}`,
         });
         throw err;
       }
@@ -2479,6 +2563,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         subtaskThinking: new Map(),
         workerThinkingVisible: new Set(),
         hintInFlight: new Set(),
+        revertInFlight: new Set(),
+        subtaskRevertIntent: new Set(),
         inlineDiffSelection: new Set(),
         inlineDiffSidebarUserToggled: null,
         inlineDiffSidebarWidth: persistedWidth,
