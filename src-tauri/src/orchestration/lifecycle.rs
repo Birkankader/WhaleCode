@@ -74,14 +74,6 @@ const REPLAN_LOG_TAIL_LINES: usize = 50;
 /// third. Matches spec Decision 3 ("max 2 master replans").
 pub(crate) const REPLAN_LINEAGE_CAP: u32 = 2;
 
-/// Phase 3.5 Item 2: how often to emit "still planning… (Ns elapsed)"
-/// heartbeats on the master log while waiting on `AgentImpl::plan`.
-/// 10s was picked over the 5s that matches the worker log tail
-/// because (a) claude typically plans in 3-5s so a single heartbeat
-/// is rare on the happy path, and (b) gemini can sit silent for
-/// ~230s and the user needs ~23 heartbeats, not 46.
-const PLAN_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// Outcome of a Layer-2 replan attempt. Distinct from [`DispatchOutcome`]
 /// so the lifecycle can decide whether to loop back into approval
 /// (`NewPlan`), park on human escalation (`Escalated`), or finalize the
@@ -285,27 +277,21 @@ pub async fn run_lifecycle(
     let available_workers = deps.registry.available().await;
     let ctx = build_planning_context(&repo_root, available_workers).await;
 
-    // Phase 3.5 Item 2: the master CLI is opaque while it plans — claude
+    // Phase 7 Step 6: the master CLI is opaque while it plans — claude
     // uses `--print --output-format json` which emits the envelope only
     // at completion, and gemini can sit silent for ~230s (see the
-    // benchmark in `docs/KNOWN_ISSUES.md`). Without a heartbeat the user
-    // stares at a spinning chip with no sense of progress. Emit a
-    // `MasterLog` every `PLAN_HEARTBEAT_INTERVAL` with elapsed seconds so
-    // the master-log surface shows motion. The ticker stops naturally
-    // when `plan()` resolves and the select arm drops the future.
+    // benchmark in `docs/KNOWN_ISSUES.md`). Without a progress signal
+    // the user stares at a spinning chip with no sense of motion. The
+    // 1-second `ElapsedTick` task below drives a per-second "Working
+    // for Xm Ys" counter on the master node — that's the dedicated
+    // motion surface now. Phase 3.5's redundant 10s `MasterLog`
+    // heartbeat ("still planning… (Ns elapsed)") was removed in Step
+    // 6 because the counter is the better signal: it ticks every
+    // second instead of every ten, and it doesn't compete with the
+    // master log for screen space. Cleanup via `tick_cancel` once
+    // plan() resolves (success or cancellation); a final tick emits
+    // afterwards so the UI captures the frozen runtime.
     let plan_started = std::time::Instant::now();
-    let mut heartbeat = tokio::time::interval(PLAN_HEARTBEAT_INTERVAL);
-    // First tick fires immediately — skip it; the "planning with …"
-    // line emitted above already establishes the T=0 signal.
-    heartbeat.tick().await;
-
-    // Phase 7 Step 4: spawn a 1-second ElapsedTick task alongside the
-    // 10s MasterLog heartbeat so the frontend can render a per-second
-    // "Working for Xm Ys" counter on the master node. The MasterLog
-    // heartbeat stays as-is — it's a human log line, not a counter.
-    // Cleanup via `tick_cancel` once plan() resolves (success or
-    // cancellation); a final tick emits afterwards so the UI captures
-    // the frozen runtime.
     let tick_cancel = tokio_util::sync::CancellationToken::new();
     {
         let event_sink = deps.event_sink.clone();
@@ -338,20 +324,9 @@ pub async fn run_lifecycle(
 
     let plan_fut = master.plan(&task_text, ctx, cancel.clone());
     tokio::pin!(plan_fut);
-    let plan_result = loop {
-        tokio::select! {
-            p = &mut plan_fut => break p,
-            _ = cancel.cancelled() => break Err(AgentError::Cancelled),
-            _ = heartbeat.tick() => {
-                let elapsed = plan_started.elapsed().as_secs();
-                deps.event_sink
-                    .emit(RunEvent::MasterLog {
-                        run_id: run_id.clone(),
-                        line: format!("still planning… ({elapsed}s elapsed)"),
-                    })
-                    .await;
-            }
-        }
+    let plan_result = tokio::select! {
+        p = &mut plan_fut => p,
+        _ = cancel.cancelled() => Err(AgentError::Cancelled),
     };
 
     // Stop the per-second tick task + emit one final tick so the

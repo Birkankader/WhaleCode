@@ -9,12 +9,14 @@
  * Distinct from `ErrorBanner`: not an error, and it reads from a
  * different piece of store state (`autoApproveSuspended`) so the two
  * can coexist vertically if they both fire in the same frame.
+ *
+ * Phase 7 Step 6: shared chrome (motion enter/exit, accent bg,
+ * dismiss × button) is delegated to the `Banner` primitive. This
+ * wrapper picks copy + accent variant only.
  */
 
-import { AnimatePresence, motion } from 'framer-motion';
-import { AlertCircle, X } from 'lucide-react';
-
 import { useGraphStore } from '../../state/graphStore';
+import { Banner } from '../primitives/Banner';
 
 const REASON_COPY: Record<string, string> = {
   subtask_limit:
@@ -31,39 +33,17 @@ export function AutoApproveSuspendedBanner() {
       'Auto-approve suspended: remaining plan passes need manual approval.'
     : '';
 
-  const fg = 'var(--color-status-pending)';
-  const bg = 'rgba(251, 191, 36, 0.1)';
-
   return (
-    <AnimatePresence>
-      {visible ? (
-        <motion.div
-          key="auto-approve-suspended"
-          initial={{ y: '-100%' }}
-          animate={{ y: 0 }}
-          exit={{ y: '-100%' }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
-          role="status"
-          aria-live="polite"
-          data-testid="auto-approve-suspended-banner"
-          className="relative z-10 flex w-full items-start gap-2 px-4 py-3 text-fg-primary"
-          style={{
-            background: bg,
-            borderBottom: `1px solid ${fg}`,
-          }}
-        >
-          <AlertCircle size={16} style={{ color: fg, flexShrink: 0, marginTop: 2 }} />
-          <span className="flex-1 text-body">{message}</span>
-          <button
-            type="button"
-            onClick={dismiss}
-            aria-label="Dismiss auto-approve suspended notice"
-            className="inline-flex size-6 flex-shrink-0 items-center justify-center rounded-sm text-fg-secondary hover:bg-bg-subtle hover:text-fg-primary"
-          >
-            <X size={14} />
-          </button>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
+    <Banner
+      variant="warning"
+      visible={visible}
+      testId="auto-approve-suspended-banner"
+      role="status"
+      ariaLive="polite"
+      onDismiss={dismiss}
+      dismissLabel="Dismiss auto-approve suspended notice"
+    >
+      <span className="text-body">{message}</span>
+    </Banner>
   );
 }

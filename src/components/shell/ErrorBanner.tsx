@@ -1,10 +1,10 @@
-import { AnimatePresence, motion } from 'framer-motion';
-import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import { describeErrorCategory, sameErrorCategoryKind } from '../../lib/errorCategory';
 import type { ErrorCategoryWire } from '../../lib/ipc';
 import { useGraphStore } from '../../state/graphStore';
+import { Banner } from '../primitives/Banner';
 
 type Variant = 'error' | 'warning';
 
@@ -14,19 +14,6 @@ type Props = {
    * Phase 3 can surface non-fatal signals without refactoring this component.
    */
   variant?: Variant;
-};
-
-const ACCENT: Record<Variant, { fg: string; bg: string }> = {
-  error: {
-    fg: 'var(--color-status-failed)',
-    // ~10% alpha of --color-status-failed (#ef4444)
-    bg: 'rgba(239, 68, 68, 0.1)',
-  },
-  warning: {
-    fg: 'var(--color-status-pending)',
-    // ~10% alpha of --color-status-pending (#fbbf24)
-    bg: 'rgba(251, 191, 36, 0.1)',
-  },
 };
 
 export function ErrorBanner({ variant = 'error' }: Props) {
@@ -59,7 +46,10 @@ export function ErrorBanner({ variant = 'error' }: Props) {
   const effectiveCategory = categoryDismissed ? null : unanimousCategory;
 
   const { summary, details } = deriveSummary(currentError, effectiveCategory);
-  const accent = ACCENT[variant];
+  const accentFg =
+    variant === 'warning'
+      ? 'var(--color-status-pending)'
+      : 'var(--color-status-failed)';
   // The banner is visible whenever we have something to say — either a
   // free-form error string from the store or at least one classified
   // subtask failure that hasn't been dismissed. Pre-Step-5 backends
@@ -83,100 +73,83 @@ export function ErrorBanner({ variant = 'error' }: Props) {
         : `Merge conflict on ${mergeConflict.files.length} file${mergeConflict.files.length === 1 ? '' : 's'}`
       : summary;
 
-  return (
-    <AnimatePresence>
-      {visible ? (
-        <motion.div
-          key="error-banner"
-          initial={{ y: '-100%' }}
-          animate={{ y: 0 }}
-          exit={{ y: '-100%' }}
-          transition={{ duration: 0.2, ease: visible ? 'easeOut' : 'easeIn' }}
-          role="alert"
-          aria-live="assertive"
-          data-variant={variant}
-          data-category-kind={effectiveCategory?.kind ?? undefined}
-          className="relative z-10 flex w-full flex-col gap-2 px-4 py-3 text-fg-primary"
-          style={{
-            background: accent.bg,
-            borderBottom: `1px solid ${accent.fg}`,
-          }}
+  const actions = (
+    <>
+      {mergeConflict !== null ? (
+        <button
+          type="button"
+          onClick={() => setConflictResolverOpen(true)}
+          aria-label="Open conflict resolver"
+          data-testid="error-banner-open-resolver"
+          className="inline-flex flex-shrink-0 items-center rounded-sm border border-fg-secondary/40 px-2 py-0.5 text-meta font-medium text-fg-primary hover:border-fg-primary"
+          style={{ color: accentFg }}
         >
-          <div className="flex items-start gap-2">
-            <AlertCircle size={16} style={{ color: accent.fg, flexShrink: 0, marginTop: 2 }} />
-            <div className="flex flex-1 flex-col gap-1">
-              <span className="text-body" data-testid="error-banner-summary">
-                {effectiveSummary}
-              </span>
-              {details ? (
-                <button
-                  type="button"
-                  onClick={() => setExpanded((v) => !v)}
-                  className="inline-flex w-fit items-center gap-1 text-meta text-fg-secondary hover:text-fg-primary"
-                  aria-expanded={expanded}
-                >
-                  {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <span>{expanded ? 'Hide details' : 'Show details'}</span>
-                </button>
-              ) : null}
-            </div>
-            {mergeConflict !== null ? (
-              <button
-                type="button"
-                onClick={() => setConflictResolverOpen(true)}
-                aria-label="Open conflict resolver"
-                data-testid="error-banner-open-resolver"
-                className="inline-flex flex-shrink-0 items-center rounded-sm border border-fg-secondary/40 px-2 py-0.5 text-meta font-medium text-fg-primary hover:border-fg-primary"
-                style={{ color: accent.fg }}
-              >
-                Open resolver
-              </button>
-            ) : null}
-            {baseBranchDirty !== null ? (
-              <button
-                type="button"
-                onClick={() => {
-                  // Don't await — the store sets `stashInFlight` before
-                  // the IPC fires, which flips our disabled state. The
-                  // promise resolves when the backend emits
-                  // `StashCreated` (clears baseBranchDirty) or rejects
-                  // (surfaced via currentError by the store).
-                  void stashAndRetryApply();
-                }}
-                disabled={stashInFlight === 'stash-and-retry'}
-                aria-label="Stash and retry apply"
-                data-testid="error-banner-stash-retry"
-                className="inline-flex flex-shrink-0 items-center rounded-sm border border-fg-secondary/40 px-2 py-0.5 text-meta font-medium text-fg-primary hover:border-fg-primary disabled:cursor-wait disabled:opacity-60"
-                style={{ color: accent.fg }}
-              >
-                {stashInFlight === 'stash-and-retry'
-                  ? 'Stashing…'
-                  : 'Stash & retry apply'}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                setExpanded(false);
-                dismissError();
-              }}
-              aria-label="Dismiss error"
-              className="inline-flex size-6 flex-shrink-0 items-center justify-center rounded-sm text-fg-secondary hover:bg-bg-subtle hover:text-fg-primary"
-            >
-              <X size={14} />
-            </button>
-          </div>
-          {details && expanded ? (
-            <pre
-              className="ml-6 max-h-[200px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-bg-subtle px-2 py-1.5 text-meta text-fg-secondary"
-              style={{ fontFamily: 'var(--font-mono)' }}
-            >
-              {details}
-            </pre>
-          ) : null}
-        </motion.div>
+          Open resolver
+        </button>
       ) : null}
-    </AnimatePresence>
+      {baseBranchDirty !== null ? (
+        <button
+          type="button"
+          onClick={() => {
+            // Don't await — the store sets `stashInFlight` before
+            // the IPC fires, which flips our disabled state. The
+            // promise resolves when the backend emits
+            // `StashCreated` (clears baseBranchDirty) or rejects
+            // (surfaced via currentError by the store).
+            void stashAndRetryApply();
+          }}
+          disabled={stashInFlight === 'stash-and-retry'}
+          aria-label="Stash and retry apply"
+          data-testid="error-banner-stash-retry"
+          className="inline-flex flex-shrink-0 items-center rounded-sm border border-fg-secondary/40 px-2 py-0.5 text-meta font-medium text-fg-primary hover:border-fg-primary disabled:cursor-wait disabled:opacity-60"
+          style={{ color: accentFg }}
+        >
+          {stashInFlight === 'stash-and-retry'
+            ? 'Stashing…'
+            : 'Stash & retry apply'}
+        </button>
+      ) : null}
+    </>
+  );
+
+  return (
+    <Banner
+      variant={variant}
+      visible={visible}
+      testId="error-banner"
+      role="alert"
+      ariaLive="assertive"
+      dataAttrs={{ 'category-kind': effectiveCategory?.kind }}
+      onDismiss={() => {
+        setExpanded(false);
+        dismissError();
+      }}
+      dismissLabel="Dismiss error"
+      actions={actions}
+    >
+      <span className="text-body" data-testid="error-banner-summary">
+        {effectiveSummary}
+      </span>
+      {details ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="inline-flex w-fit items-center gap-1 text-meta text-fg-secondary hover:text-fg-primary"
+          aria-expanded={expanded}
+        >
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <span>{expanded ? 'Hide details' : 'Show details'}</span>
+        </button>
+      ) : null}
+      {details && expanded ? (
+        <pre
+          className="max-h-[200px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-bg-subtle px-2 py-1.5 text-meta text-fg-secondary"
+          style={{ fontFamily: 'var(--font-mono)' }}
+        >
+          {details}
+        </pre>
+      ) : null}
+    </Banner>
   );
 }
 
