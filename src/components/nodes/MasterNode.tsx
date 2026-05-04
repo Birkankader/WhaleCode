@@ -1,8 +1,9 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 
 import { NODE_DIMENSIONS } from '../../lib/layout';
-import type { AgentKind } from '../../state/graphStore';
+import { useGraphStore, type AgentKind } from '../../state/graphStore';
 import type { NodeState } from '../../state/nodeMachine';
+import { ElapsedCounter } from '../primitives/ElapsedCounter';
 import { NodeContainer } from '../primitives/NodeContainer';
 import { StatusDot } from '../primitives/StatusDot';
 import { AGENT_COLOR_VAR, AGENT_LABEL } from '../primitives/agentColor';
@@ -18,6 +19,10 @@ export function MasterNode({ data }: NodeProps) {
   const d = data as unknown as MasterNodeData;
   const { width, height } = NODE_DIMENSIONS.master;
   const color = AGENT_COLOR_VAR[d.agent];
+  // Phase 7 Step 4: master plan elapsed counter, driven by the
+  // lifecycle's plan-loop tick task. Visible during planning /
+  // replanning + frozen final value post-resolution.
+  const masterElapsedMs = useGraphStore((s) => s.masterElapsed);
 
   return (
     <NodeContainer
@@ -33,7 +38,14 @@ export function MasterNode({ data }: NodeProps) {
           <StatusDot color={color} />
           <span className="text-hint uppercase tracking-wide text-fg-secondary">Master</span>
         </div>
-        <span className="text-hint text-fg-tertiary">{AGENT_LABEL[d.agent]}</span>
+        <span className="flex items-center gap-2 text-hint text-fg-tertiary">
+          <ElapsedCounter
+            elapsedMs={masterElapsedMs}
+            testId="master-elapsed"
+            noIcon
+          />
+          {AGENT_LABEL[d.agent]}
+        </span>
       </header>
       <p className="truncate text-body text-fg-primary" title={d.title}>
         {d.title}

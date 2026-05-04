@@ -984,6 +984,53 @@ async fn dispatch_one(
     let run_for_cancel_check = run.clone();
     let pending_answers = deps.pending_answers.clone();
     let run_cancel_token = cancel.clone();
+
+    // Phase 7 Step 4: per-worker elapsed-time tick task. Emits a
+    // 1-second `ElapsedTick` while the join_set worker task is
+    // alive; stops via the `tick_cancel` token once the worker
+    // returns. A final tick fires post-loop so the frontend
+    // captures the frozen runtime on the terminal-state card.
+    let tick_started_at = std::time::Instant::now();
+    let tick_cancel = CancellationToken::new();
+    {
+        let event_sink = deps.event_sink.clone();
+        let run_id_for_tick = run_id.clone();
+        let sub_id_for_tick = sub_id.clone();
+        let cancel_for_tick = tick_cancel.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(1));
+            interval.set_missed_tick_behavior(
+                tokio::time::MissedTickBehavior::Skip,
+            );
+            // Skip the immediate first tick (interval fires once
+            // synchronously at start) — worker just transitioned
+            // to Running, the first observable tick should be
+            // 1 s in.
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel_for_tick.cancelled() => break,
+                    _ = interval.tick() => {
+                        let elapsed_ms = tick_started_at.elapsed().as_millis() as u64;
+                        event_sink
+                            .emit(RunEvent::ElapsedTick {
+                                run_id: run_id_for_tick.clone(),
+                                subtask_id: Some(sub_id_for_tick.clone()),
+                                elapsed_ms,
+                            })
+                            .await;
+                    }
+                }
+            }
+        });
+    }
+    let tick_cancel_for_post = tick_cancel.clone();
+    let tick_started_for_post = tick_started_at;
+    let event_sink_for_post = deps.event_sink.clone();
+    let run_id_for_post = run_id.clone();
+    let sub_id_for_post = sub_id.clone();
+
     join_set.spawn(async move {
         // Phase 6 Step 4: hint loop wraps the existing execute →
         // Q&A → commit chain. The first iteration runs the full
@@ -1153,6 +1200,18 @@ async fn dispatch_one(
                 }
             }
         };
+        // Phase 7 Step 4: stop the elapsed tick task + emit one
+        // final tick so the frontend captures the frozen runtime
+        // on the terminal card.
+        tick_cancel_for_post.cancel();
+        let final_elapsed_ms = tick_started_for_post.elapsed().as_millis() as u64;
+        event_sink_for_post
+            .emit(RunEvent::ElapsedTick {
+                run_id: run_id_for_post.clone(),
+                subtask_id: Some(sub_id_for_post.clone()),
+                elapsed_ms: final_elapsed_ms,
+            })
+            .await;
         (sub_id_owned, outcome)
     });
     Ok(())

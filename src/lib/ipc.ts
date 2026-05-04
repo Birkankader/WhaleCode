@@ -288,6 +288,11 @@ export const EVENT_SUBTASK_HINT_RECEIVED = 'run:subtask_hint_received' as const;
 // entry + flips the cancelled badge subtitle from "Stopped" to
 // "Reverted".
 export const EVENT_WORKTREE_REVERTED = 'run:worktree_reverted' as const;
+// Phase 7 Step 4: per-second elapsed-time tick. `subtaskId = null`
+// means master plan tick; `subtaskId = <id>` is a worker tick.
+// Final tick fires on terminal transition with the frozen elapsed
+// value so the post-run card keeps the captured runtime visible.
+export const EVENT_ELAPSED_TICK = 'run:elapsed_tick' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -560,6 +565,14 @@ export const worktreeRevertedSchema = z.object({
   filesCleared: z.number().int().nonnegative(),
 });
 export type WorktreeReverted = z.infer<typeof worktreeRevertedSchema>;
+
+/** Phase 7 Step 4 payload for {@link EVENT_ELAPSED_TICK}. */
+export const elapsedTickSchema = z.object({
+  runId: runIdSchema,
+  subtaskId: subtaskIdSchema.nullable(),
+  elapsedMs: z.number().int().nonnegative(),
+});
+export type ElapsedTick = z.infer<typeof elapsedTickSchema>;
 
 /** Phase 5 Step 4 payload for {@link EVENT_SUBTASK_ANSWER_RECEIVED}. */
 export const subtaskAnswerReceivedSchema = z.object({

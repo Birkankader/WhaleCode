@@ -46,6 +46,7 @@ import {
   EVENT_SUBTASK_HINT_RECEIVED,
   EVENT_SUBTASK_QUESTION_ASKED,
   EVENT_WORKTREE_REVERTED,
+  EVENT_ELAPSED_TICK,
   EVENT_SUBTASK_THINKING,
   EVENT_STATUS_CHANGED,
   EVENT_SUBTASK_DIFF,
@@ -71,6 +72,7 @@ import {
   subtaskAnswerReceivedSchema,
   subtaskHintReceivedSchema,
   worktreeRevertedSchema,
+  elapsedTickSchema,
   subtaskQuestionAskedSchema,
   subtaskThinkingSchema,
   statusChangedSchema,
@@ -98,6 +100,7 @@ import {
   type SubtaskAnswerReceived,
   type SubtaskHintReceived,
   type WorktreeReverted,
+  type ElapsedTick,
   type SubtaskQuestionAsked,
   type SubtaskThinking,
   type StatusChanged,
@@ -134,6 +137,7 @@ export type RunEventHandlers = {
   onSubtaskThinking?: (event: SubtaskThinking) => void;
   onSubtaskHintReceived?: (event: SubtaskHintReceived) => void;
   onWorktreeReverted?: (event: WorktreeReverted) => void;
+  onElapsedTick?: (event: ElapsedTick) => void;
   /**
    * Invoked when a payload fails schema validation. Receives the event name
    * and the raw Zod error so callers can log / surface appropriately.
@@ -337,6 +341,11 @@ export class RunSubscription {
         event: EVENT_WORKTREE_REVERTED,
         schema: worktreeRevertedSchema,
         handler: this.handlers.onWorktreeReverted as ((e: unknown) => void) | undefined,
+      },
+      {
+        event: EVENT_ELAPSED_TICK,
+        schema: elapsedTickSchema,
+        handler: this.handlers.onElapsedTick as ((e: unknown) => void) | undefined,
       },
     ];
   }

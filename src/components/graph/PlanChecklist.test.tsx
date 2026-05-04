@@ -318,6 +318,39 @@ describe('PlanChecklist — freeze on cancelled run', () => {
   });
 });
 
+describe('PlanChecklist — elapsed counter (Phase 7 Step 4)', () => {
+  it('renders worker elapsed inline in secondary line', () => {
+    seed({
+      subtasks: [{ id: 'a', title: 'first', state: 'running' }],
+    });
+    useGraphStore.setState((s) => ({
+      subtaskElapsed: new Map(s.subtaskElapsed).set('a', 84_000),
+    }));
+    render(<PlanChecklist />);
+    expect(
+      screen.getByTestId('plan-checklist-secondary-a'),
+    ).toHaveTextContent(/1m 24s/);
+  });
+
+  it('renders master elapsed inline on master row', () => {
+    seed({ subtasks: [] });
+    useGraphStore.setState({ masterElapsed: 12_000 });
+    render(<PlanChecklist />);
+    expect(
+      screen.getByTestId('plan-checklist-secondary-master'),
+    ).toHaveTextContent(/12s/);
+  });
+
+  it('omits elapsed when no value recorded for a subtask', () => {
+    seed({
+      subtasks: [{ id: 'a', title: 'first', state: 'proposed' }],
+    });
+    render(<PlanChecklist />);
+    const sec = screen.getByTestId('plan-checklist-secondary-a');
+    expect(sec.textContent).not.toMatch(/\ds$/);
+  });
+});
+
 describe('PlanChecklist — variant prop', () => {
   it('passes data-variant=tab by default (tabbed mode)', () => {
     seed({ subtasks: [{ id: 'a', title: 't', state: 'proposed' }] });

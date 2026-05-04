@@ -1462,6 +1462,61 @@ describe('WorkerNode — Undo button gating (Phase 7 Step 2)', () => {
   });
 });
 
+describe('WorkerNode — ElapsedCounter footer (Phase 7 Step 4)', () => {
+  function baseData(overrides: Partial<WorkerNodeData> = {}): WorkerNodeData {
+    return {
+      state: 'running',
+      agent: 'claude',
+      title: 'Worker A',
+      why: null,
+      dependsOn: [],
+      replaces: [],
+      retries: 0,
+      ...overrides,
+    };
+  }
+
+  function seedElapsed(id: string, ms: number) {
+    useGraphStore.setState((state) => {
+      const next = new Map(state.subtaskElapsed);
+      next.set(id, ms);
+      return { subtaskElapsed: next };
+    });
+  }
+
+  it('renders ElapsedCounter on running with elapsed value', () => {
+    seedElapsed('sub-a', 84_000);
+    renderNode('sub-a', baseData({ state: 'running' }));
+    const counter = screen.getByTestId('worker-elapsed-sub-a');
+    expect(counter).toBeInTheDocument();
+    expect(counter).toHaveTextContent('1m 24s');
+  });
+
+  it.each(['running', 'retrying', 'done', 'failed', 'cancelled', 'awaiting_input'] as const)(
+    'shows counter on %s state',
+    (state) => {
+      seedElapsed('sub-a', 5_000);
+      renderNode('sub-a', baseData({ state }));
+      expect(screen.getByTestId('worker-elapsed-sub-a')).toBeInTheDocument();
+    },
+  );
+
+  it.each(['proposed', 'waiting'] as const)(
+    'hides counter on %s state',
+    (state) => {
+      seedElapsed('sub-a', 5_000);
+      renderNode('sub-a', baseData({ state }));
+      expect(screen.queryByTestId('worker-elapsed-sub-a')).toBeNull();
+    },
+  );
+
+  it('hides counter when no elapsed entry recorded yet', () => {
+    renderNode('sub-a', baseData({ state: 'running' }));
+    // ElapsedCounter returns null on undefined; testid won't render.
+    expect(screen.queryByTestId('worker-elapsed-sub-a')).toBeNull();
+  });
+});
+
 describe('WorkerNode — HintInput gating (Phase 6 Step 4)', () => {
   function baseData(
     overrides: Partial<WorkerNodeData> = {},

@@ -251,6 +251,15 @@ pub enum RunEvent {
         subtask_id: SubtaskId,
         files_cleared: u32,
     },
+    /// Phase 7 Step 4: per-second elapsed-time tick. Driven by the
+    /// dispatcher's per-worker tick task during running and by the
+    /// master plan loop during planning / replanning. `subtask_id`
+    /// is `None` for the master tick.
+    ElapsedTick {
+        run_id: RunId,
+        subtask_id: Option<SubtaskId>,
+        elapsed_ms: u64,
+    },
 }
 
 impl RunEvent {
@@ -284,7 +293,8 @@ impl RunEvent {
             | RunEvent::SubtaskActivity { run_id, .. }
             | RunEvent::SubtaskThinking { run_id, .. }
             | RunEvent::SubtaskHintReceived { run_id, .. }
-            | RunEvent::WorktreeReverted { run_id, .. } => run_id,
+            | RunEvent::WorktreeReverted { run_id, .. }
+            | RunEvent::ElapsedTick { run_id, .. } => run_id,
         }
     }
 }
@@ -541,6 +551,18 @@ impl EventSink for TauriEventSink {
                     run_id,
                     subtask_id,
                     files_cleared,
+                },
+            ),
+            RunEvent::ElapsedTick {
+                run_id,
+                subtask_id,
+                elapsed_ms,
+            } => wire::emit_elapsed_tick(
+                &self.app,
+                &wire::ElapsedTick {
+                    run_id,
+                    subtask_id,
+                    elapsed_ms,
                 },
             ),
         };

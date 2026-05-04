@@ -80,6 +80,7 @@ import {
   type SubtaskQuestionAsked,
   type SubtaskThinking,
   type WorktreeReverted,
+  type ElapsedTick,
   type SkipResult,
   type StatusChanged,
   type SubtaskDiff,
@@ -582,6 +583,20 @@ export type GraphState = {
    * be visually distinguished from a plain Stop.
    */
   subtaskRevertIntent: ReadonlySet<SubtaskId>;
+  /**
+   * Phase 7 Step 4: latest elapsed-time value per subtask (ms),
+   * driven by the dispatcher's per-worker `ElapsedTick` task. Final
+   * tick fires on terminal transition with the frozen value, so
+   * post-run cards keep their captured runtime visible.
+   */
+  subtaskElapsed: ReadonlyMap<SubtaskId, number>;
+  /**
+   * Phase 7 Step 4: latest master plan elapsed value (ms). Set by
+   * the lifecycle's plan-loop tick task. `null` outside planning /
+   * once a plan resolves and the final tick has fired the frontend
+   * still keeps the last value (informational).
+   */
+  masterElapsed: number | null;
   pendingQuestions: ReadonlyMap<SubtaskId, { question: string }>;
   /**
    * Phase 5 Step 4: transient per-subtask flag for "the answer /
@@ -883,6 +898,8 @@ const initial: Pick<
   | 'hintInFlight'
   | 'revertInFlight'
   | 'subtaskRevertIntent'
+  | 'subtaskElapsed'
+  | 'masterElapsed'
   | 'inlineDiffSelection'
   | 'inlineDiffSidebarUserToggled'
   | 'inlineDiffSidebarWidth'
@@ -932,6 +949,8 @@ const initial: Pick<
   hintInFlight: new Set(),
   revertInFlight: new Set(),
   subtaskRevertIntent: new Set(),
+  subtaskElapsed: new Map(),
+  masterElapsed: null,
   inlineDiffSelection: new Set(),
   inlineDiffSidebarUserToggled: null,
   inlineDiffSidebarWidth: 480,
@@ -1611,6 +1630,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleElapsedTick(e: ElapsedTick) {
+    if (e.runId !== get().runId) return;
+    if (e.subtaskId === null) {
+      // Master plan tick. Single scalar slot — no map.
+      set({ masterElapsed: e.elapsedMs });
+      return;
+    }
+    set((state) => {
+      const next = new Map(state.subtaskElapsed);
+      next.set(e.subtaskId as SubtaskId, e.elapsedMs);
+      return { subtaskElapsed: next };
+    });
+  }
+
   function handleWorktreeReverted(e: WorktreeReverted) {
     if (e.runId !== get().runId) return;
     // Backend reset the worktree + tagged the row with revert_intent.
@@ -1910,6 +1943,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskThinking: handleSubtaskThinking,
       onSubtaskHintReceived: handleSubtaskHintReceived,
       onWorktreeReverted: handleWorktreeReverted,
+      onElapsedTick: handleElapsedTick,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -2565,6 +2599,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         hintInFlight: new Set(),
         revertInFlight: new Set(),
         subtaskRevertIntent: new Set(),
+        subtaskElapsed: new Map(),
+        masterElapsed: null,
         inlineDiffSelection: new Set(),
         inlineDiffSidebarUserToggled: null,
         inlineDiffSidebarWidth: persistedWidth,

@@ -298,6 +298,44 @@ pub async fn run_lifecycle(
     // First tick fires immediately — skip it; the "planning with …"
     // line emitted above already establishes the T=0 signal.
     heartbeat.tick().await;
+
+    // Phase 7 Step 4: spawn a 1-second ElapsedTick task alongside the
+    // 10s MasterLog heartbeat so the frontend can render a per-second
+    // "Working for Xm Ys" counter on the master node. The MasterLog
+    // heartbeat stays as-is — it's a human log line, not a counter.
+    // Cleanup via `tick_cancel` once plan() resolves (success or
+    // cancellation); a final tick emits afterwards so the UI captures
+    // the frozen runtime.
+    let tick_cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let event_sink = deps.event_sink.clone();
+        let run_id_for_tick = run_id.clone();
+        let cancel_for_tick = tick_cancel.clone();
+        let started = plan_started;
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(1));
+            interval
+                .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel_for_tick.cancelled() => break,
+                    _ = interval.tick() => {
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        event_sink
+                            .emit(RunEvent::ElapsedTick {
+                                run_id: run_id_for_tick.clone(),
+                                subtask_id: None,
+                                elapsed_ms,
+                            })
+                            .await;
+                    }
+                }
+            }
+        });
+    }
+
     let plan_fut = master.plan(&task_text, ctx, cancel.clone());
     tokio::pin!(plan_fut);
     let plan_result = loop {
@@ -315,6 +353,19 @@ pub async fn run_lifecycle(
             }
         }
     };
+
+    // Stop the per-second tick task + emit one final tick so the
+    // frontend has the frozen master elapsed value once planning
+    // resolves (or was cancelled).
+    tick_cancel.cancel();
+    let final_master_elapsed_ms = plan_started.elapsed().as_millis() as u64;
+    deps.event_sink
+        .emit(RunEvent::ElapsedTick {
+            run_id: run_id.clone(),
+            subtask_id: None,
+            elapsed_ms: final_master_elapsed_ms,
+        })
+        .await;
 
     let plan = match plan_result {
         Ok(p) => p,

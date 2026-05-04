@@ -32,6 +32,7 @@ import { ActivityChipStack } from './ActivityChipStack';
 import { HintInput } from './HintInput';
 import { QuestionInput } from './QuestionInput';
 import { ShowThinkingToggle } from './ShowThinkingToggle';
+import { ElapsedCounter } from '../primitives/ElapsedCounter';
 import { StopButton } from './StopButton';
 import { UndoButton } from './UndoButton';
 import { ThinkingPanel } from './ThinkingPanel';
@@ -98,6 +99,20 @@ const LOG_VISIBLE_STATES: ReadonlySet<NodeState> = new Set([
   'retrying',
   'done',
   'failed',
+]);
+
+/** Phase 7 Step 4: states where the elapsed-time counter renders.
+ *  Active work (running / retrying), terminal states with a
+ *  captured runtime (done / failed / cancelled), and the parked
+ *  awaiting_input state. Proposed / Waiting are intentionally
+ *  omitted — they have no elapsed yet. */
+const ELAPSED_VISIBLE_STATES: ReadonlySet<NodeState> = new Set([
+  'running',
+  'retrying',
+  'done',
+  'failed',
+  'cancelled',
+  'awaiting_input',
 ]);
 
 /**
@@ -258,6 +273,12 @@ export function WorkerNode({ id, data }: NodeProps) {
   // "Reverted" subtitle on the cancelled card and hides the
   // (now-pointless) Undo button.
   const isReverted = useGraphStore((s) => s.subtaskRevertIntent.has(id));
+  // Phase 7 Step 4: per-worker elapsed-time. Backend tick pushes
+  // 1s updates into `subtaskElapsed`. Visible on running + terminal
+  // states (Done / Failed / Cancelled / AwaitingInput); hidden on
+  // Proposed / Waiting since the worker hasn't started yet.
+  const elapsedMs = useGraphStore((s) => s.subtaskElapsed.get(id));
+  const showElapsed = ELAPSED_VISIBLE_STATES.has(d.state);
   // Show Undo when the worker has produced changes worth reverting.
   // Active states qualify even with no diff yet (worker may have
   // edits unflushed); terminal states require non-empty diff so we
@@ -512,6 +533,16 @@ export function WorkerNode({ id, data }: NodeProps) {
             the InlineDiffSidebar instead of opening the legacy popover. */}
         {!isProposed && diff !== undefined ? (
           <FileCountChip subtaskId={id} files={diff} />
+        ) : null}
+        {/* Phase 7 Step 4: elapsed counter sits between the diff
+            chip and the agent chip in the footer. Backend's tick
+            task pushes 1s updates; the component is a pure prop
+            renderer keyed off the store map. */}
+        {showElapsed ? (
+          <ElapsedCounter
+            elapsedMs={elapsedMs}
+            testId={`worker-elapsed-${id}`}
+          />
         ) : null}
         {isProposed ? (
           <WorkerDropdown id={id} value={d.agent} />

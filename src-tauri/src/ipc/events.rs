@@ -87,6 +87,14 @@ pub const EVENT_SUBTASK_HINT_RECEIVED: &str = "run:subtask_hint_received";
 /// (worktree is now clean) and renders a "Reverted" subtitle on
 /// the cancelled card.
 pub const EVENT_WORKTREE_REVERTED: &str = "run:worktree_reverted";
+/// Phase 7 Step 4: per-second elapsed-time tick. Emitted from the
+/// dispatcher's per-worker tick task while a worker is running, and
+/// from the master's plan / replan loop while planning is in flight.
+/// `subtask_id = None` means the master tick; `Some(id)` is a worker
+/// tick. Final tick fires on terminal transition with the frozen
+/// elapsed value so the frontend renders the captured runtime
+/// without a separate stop signal.
+pub const EVENT_ELAPSED_TICK: &str = "run:elapsed_tick";
 /// A subtask burned its Layer-1 retry budget; the master is being
 /// re-invoked to produce a replacement plan for it. Emitted *before*
 /// the master call so the frontend can flip the master chip to
@@ -432,6 +440,18 @@ pub struct WorktreeReverted {
     pub files_cleared: u32,
 }
 
+/// Phase 7 Step 4 wire payload for [`EVENT_ELAPSED_TICK`]. `subtask_id`
+/// is `None` for the master plan tick and `Some(id)` for per-worker
+/// ticks. `elapsed_ms` is monotonic against the started_at the tick
+/// task captured.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElapsedTick {
+    pub run_id: RunId,
+    pub subtask_id: Option<SubtaskId>,
+    pub elapsed_ms: u64,
+}
+
 /// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_ANSWER_RECEIVED`].
 /// Fires immediately before the subtask transitions back to
 /// `Running`. No answer text on the wire — the reply is ephemeral
@@ -598,6 +618,10 @@ pub fn emit_worktree_reverted(
     payload: &WorktreeReverted,
 ) -> tauri::Result<()> {
     app.emit(EVENT_WORKTREE_REVERTED, payload)
+}
+
+pub fn emit_elapsed_tick(app: &AppHandle, payload: &ElapsedTick) -> tauri::Result<()> {
+    app.emit(EVENT_ELAPSED_TICK, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

@@ -80,12 +80,14 @@ pub struct SubtaskRuntime {
     /// transitions land the subtask in `Cancelled` and bypass the
     /// retry / replan ladders, but the post-mortem state of the
     /// worktree is different:
-    ///   - `manual_cancel = true, revert_intent = false`
-    ///     → user clicked Stop. Worktree preserved as-is; the user
-    ///       can still inspect / copy edits via `WorktreeActions`.
-    ///   - `manual_cancel = true, revert_intent = true`
-    ///     → user clicked Undo. Worktree was reset (`git reset --hard
-    ///       HEAD` + `git clean -fd`); diffs cleared on the frontend.
+    ///
+    /// - `manual_cancel = true, revert_intent = false` —
+    ///   user clicked Stop. Worktree preserved as-is; the user
+    ///   can still inspect / copy edits via `WorktreeActions`.
+    /// - `manual_cancel = true, revert_intent = true` —
+    ///   user clicked Undo. Worktree was reset (`git reset --hard
+    ///   HEAD` + `git clean -fd`); diffs cleared on the frontend.
+    ///
     /// Both flags can be set on the same row when the user stops a
     /// running worker first and then reverts the (still-modified)
     /// worktree afterwards.

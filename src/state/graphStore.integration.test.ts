@@ -53,6 +53,7 @@ import {
   EVENT_SUBTASK_QUESTION_ASKED,
   EVENT_SUBTASK_THINKING,
   EVENT_WORKTREE_REVERTED,
+  EVENT_ELAPSED_TICK,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -2642,5 +2643,65 @@ describe('graphStore — Phase 7 Step 2 worktree revert', () => {
     state().reset();
     expect(state().subtaskRevertIntent.size).toBe(0);
     expect(state().revertInFlight.size).toBe(0);
+  });
+});
+
+describe('graphStore — Phase 7 Step 4 elapsed tick', () => {
+  it('per-subtask tick updates subtaskElapsed map', async () => {
+    await state().submitTask('x');
+    emit(EVENT_ELAPSED_TICK, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      elapsedMs: 5_000,
+    });
+    expect(state().subtaskElapsed.get('one')).toBe(5_000);
+  });
+
+  it('subsequent ticks overwrite the previous value', async () => {
+    await state().submitTask('x');
+    emit(EVENT_ELAPSED_TICK, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      elapsedMs: 5_000,
+    });
+    emit(EVENT_ELAPSED_TICK, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      elapsedMs: 6_000,
+    });
+    expect(state().subtaskElapsed.get('one')).toBe(6_000);
+  });
+
+  it('subtaskId=null routes to masterElapsed scalar', async () => {
+    await state().submitTask('x');
+    emit(EVENT_ELAPSED_TICK, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: null,
+      elapsedMs: 12_000,
+    });
+    expect(state().masterElapsed).toBe(12_000);
+  });
+
+  it('reset clears subtaskElapsed + masterElapsed', async () => {
+    await state().submitTask('x');
+    useGraphStore.setState({
+      subtaskElapsed: new Map([['one', 5_000]]),
+      masterElapsed: 12_000,
+    });
+    state().reset();
+    expect(state().subtaskElapsed.size).toBe(0);
+    expect(state().masterElapsed).toBe(null);
+  });
+
+  it('final tick post-terminal persists in the map (no auto-clear)', async () => {
+    await state().submitTask('x');
+    emit(EVENT_ELAPSED_TICK, {
+      runId: BACKEND_RUN_ID,
+      subtaskId: 'one',
+      elapsedMs: 30_000,
+    });
+    // Subtask transitioned to Done; the elapsed value should still
+    // be present so the post-run card renders the captured runtime.
+    expect(state().subtaskElapsed.get('one')).toBe(30_000);
   });
 });

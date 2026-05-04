@@ -57,6 +57,7 @@ import {
   useGraphStore,
 } from '../../state/graphStore';
 import type { NodeState } from '../../state/nodeMachine';
+import { formatElapsed } from '../primitives/ElapsedCounter';
 import { AGENT_LABEL } from '../primitives/agentColor';
 
 type Props = {
@@ -85,6 +86,10 @@ export function PlanChecklist({ className, ...rest }: Props) {
   );
   const nodeSnapshots = useGraphStore((s) => s.nodeSnapshots);
   const subtaskRevertIntent = useGraphStore((s) => s.subtaskRevertIntent);
+  // Phase 7 Step 4: per-row elapsed values. Master tick fills the
+  // master row; each subtask reads its slot from the map by id.
+  const subtaskElapsed = useGraphStore((s) => s.subtaskElapsed);
+  const masterElapsedMs = useGraphStore((s) => s.masterElapsed);
 
   const { getNode, setCenter, getViewport } = useReactFlow();
 
@@ -196,6 +201,7 @@ export function PlanChecklist({ className, ...rest }: Props) {
             kind="master"
             title="Master plan"
             secondary={AGENT_LABEL[masterNode.agent]}
+            elapsedMs={masterElapsedMs}
             state={masterIsThinking ? 'running' : 'done'}
             isReverted={false}
             onClick={() => panTo(MASTER_ID)}
@@ -212,6 +218,7 @@ export function PlanChecklist({ className, ...rest }: Props) {
               kind="worker"
               title={sub.title}
               secondary={AGENT_LABEL[sub.agent]}
+              elapsedMs={subtaskElapsed.get(sub.id) ?? null}
               state={state}
               isReverted={reverted}
               onClick={() => panTo(sub.id)}
@@ -224,6 +231,7 @@ export function PlanChecklist({ className, ...rest }: Props) {
             kind="final"
             title="Merge"
             secondary={status === 'applied' ? 'Applied' : null}
+            elapsedMs={null}
             state={
               status === 'applied'
                 ? 'done'
@@ -245,6 +253,7 @@ function ChecklistRow({
   kind,
   title,
   secondary,
+  elapsedMs,
   state,
   isReverted,
   onClick,
@@ -253,11 +262,16 @@ function ChecklistRow({
   kind: 'master' | 'worker' | 'final';
   title: string;
   secondary: string | null;
+  elapsedMs: number | null;
   state: NodeState;
   isReverted: boolean;
   onClick: () => void;
 }) {
   const stateText = stateLabel(state, isReverted);
+  const elapsedText =
+    elapsedMs !== null && elapsedMs !== undefined
+      ? formatElapsed(elapsedMs)
+      : null;
   return (
     <button
       type="button"
@@ -281,10 +295,14 @@ function ChecklistRow({
         >
           {title}
         </span>
-        <span className="block truncate text-hint text-fg-tertiary">
+        <span
+          className="block truncate text-hint text-fg-tertiary"
+          data-testid={`plan-checklist-secondary-${id}`}
+        >
           {secondary ?? ''}
           {secondary ? ' · ' : ''}
           {stateText}
+          {elapsedText ? ` · ${elapsedText}` : ''}
         </span>
       </div>
     </button>
