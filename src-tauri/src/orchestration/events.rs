@@ -260,6 +260,15 @@ pub enum RunEvent {
         subtask_id: Option<SubtaskId>,
         elapsed_ms: u64,
     },
+    /// Phase 7 Step 5: follow-up run started. `run_id` is the new
+    /// child run; `parent_run_id` traces lineage back to the run
+    /// that produced the branch + commit base. Emitted after the
+    /// child is registered in the orchestrator's runs map and its
+    /// `parent_run_id` column has been stamped in storage.
+    FollowupStarted {
+        run_id: RunId,
+        parent_run_id: RunId,
+    },
 }
 
 impl RunEvent {
@@ -294,7 +303,8 @@ impl RunEvent {
             | RunEvent::SubtaskThinking { run_id, .. }
             | RunEvent::SubtaskHintReceived { run_id, .. }
             | RunEvent::WorktreeReverted { run_id, .. }
-            | RunEvent::ElapsedTick { run_id, .. } => run_id,
+            | RunEvent::ElapsedTick { run_id, .. }
+            | RunEvent::FollowupStarted { run_id, .. } => run_id,
         }
     }
 }
@@ -563,6 +573,16 @@ impl EventSink for TauriEventSink {
                     run_id,
                     subtask_id,
                     elapsed_ms,
+                },
+            ),
+            RunEvent::FollowupStarted {
+                run_id,
+                parent_run_id,
+            } => wire::emit_followup_started(
+                &self.app,
+                &wire::FollowupStarted {
+                    run_id,
+                    parent_run_id,
                 },
             ),
         };

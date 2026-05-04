@@ -87,6 +87,12 @@ pub const EVENT_SUBTASK_HINT_RECEIVED: &str = "run:subtask_hint_received";
 /// (worktree is now clean) and renders a "Reverted" subtitle on
 /// the cancelled card.
 pub const EVENT_WORKTREE_REVERTED: &str = "run:worktree_reverted";
+/// Phase 7 Step 5: a follow-up run was kicked off. `runId` is the
+/// new child; `parentRunId` references the run that produced the
+/// branch + commit base the child is building on. Frontend swaps
+/// the active-run subscription to the child id and resets the
+/// graph store on receipt.
+pub const EVENT_FOLLOWUP_STARTED: &str = "run:followup_started";
 /// Phase 7 Step 4: per-second elapsed-time tick. Emitted from the
 /// dispatcher's per-worker tick task while a worker is running, and
 /// from the master's plan / replan loop while planning is in flight.
@@ -452,6 +458,16 @@ pub struct ElapsedTick {
     pub elapsed_ms: u64,
 }
 
+/// Phase 7 Step 5 wire payload for [`EVENT_FOLLOWUP_STARTED`].
+/// `runId` is the new child run; `parentRunId` traces lineage back
+/// to the run that produced the branch + commit base.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowupStarted {
+    pub run_id: RunId,
+    pub parent_run_id: RunId,
+}
+
 /// Phase 5 Step 4 wire payload for [`EVENT_SUBTASK_ANSWER_RECEIVED`].
 /// Fires immediately before the subtask transitions back to
 /// `Running`. No answer text on the wire — the reply is ephemeral
@@ -622,6 +638,13 @@ pub fn emit_worktree_reverted(
 
 pub fn emit_elapsed_tick(app: &AppHandle, payload: &ElapsedTick) -> tauri::Result<()> {
     app.emit(EVENT_ELAPSED_TICK, payload)
+}
+
+pub fn emit_followup_started(
+    app: &AppHandle,
+    payload: &FollowupStarted,
+) -> tauri::Result<()> {
+    app.emit(EVENT_FOLLOWUP_STARTED, payload)
 }
 
 pub fn emit_replan_started(app: &AppHandle, payload: &ReplanStarted) -> tauri::Result<()> {

@@ -22,7 +22,7 @@
 
 import { useReactFlow } from '@xyflow/react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, Copy, X } from 'lucide-react';
+import { Check, Copy, Send, X } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
@@ -37,15 +37,32 @@ function shortSha(sha: string): string {
 }
 
 export function ApplySummaryOverlay() {
-  const { applySummary, subtasks, dismiss } = useGraphStore(
+  const { applySummary, subtasks, dismiss, submitFollowupRun, followupInFlight } = useGraphStore(
     useShallow((s) => ({
       applySummary: s.applySummary,
       subtasks: s.subtasks,
       dismiss: s.dismissApplySummary,
+      submitFollowupRun: s.submitFollowupRun,
+      followupInFlight: s.followupInFlight,
     })),
   );
   const { getNode, setCenter, getViewport } = useReactFlow();
   const [copied, setCopied] = useState(false);
+  const [followupPrompt, setFollowupPrompt] = useState('');
+
+  const onFollowupSubmit = useCallback(async () => {
+    const trimmed = followupPrompt.trim();
+    if (trimmed.length === 0) return;
+    if (followupInFlight) return;
+    try {
+      await submitFollowupRun(trimmed);
+      setFollowupPrompt('');
+    } catch {
+      // graphStore action populates currentError — ErrorBanner /
+      // toast surface it. Keep the input value so the user can edit
+      // and retry without re-typing.
+    }
+  }, [followupPrompt, followupInFlight, submitFollowupRun]);
 
   const onCopySha = useCallback(async () => {
     if (!applySummary) return;
@@ -178,6 +195,49 @@ export function ApplySummaryOverlay() {
                 );
               })}
             </ul>
+          ) : null}
+
+          {/* Phase 7 Step 5: inline follow-up input. Submit on
+              Enter triggers the start_followup_run IPC + swaps the
+              active subscription to the new child run id. */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void onFollowupSubmit();
+            }}
+            className="flex items-center gap-1.5 border-t border-[var(--color-border-subtle)] pt-2"
+            data-testid="apply-summary-followup-form"
+          >
+            <input
+              type="text"
+              value={followupPrompt}
+              onChange={(e) => setFollowupPrompt(e.target.value)}
+              placeholder="Ask for follow-up changes…"
+              maxLength={500}
+              disabled={followupInFlight}
+              data-testid="apply-summary-followup-input"
+              className="min-w-0 flex-1 rounded-sm border border-[var(--color-border-default)] bg-bg-primary px-2 py-1 text-meta text-fg-primary outline-none placeholder:text-fg-tertiary focus:border-[var(--color-fg-secondary)] disabled:opacity-50"
+              aria-label="Follow-up prompt"
+            />
+            <button
+              type="submit"
+              disabled={
+                followupInFlight || followupPrompt.trim().length === 0
+              }
+              data-testid="apply-summary-followup-submit"
+              aria-label={followupInFlight ? 'Starting follow-up' : 'Send follow-up'}
+              className="inline-flex size-7 flex-shrink-0 items-center justify-center rounded-sm text-fg-secondary hover:bg-bg-subtle hover:text-fg-primary disabled:opacity-40"
+            >
+              <Send size={12} />
+            </button>
+          </form>
+          {followupInFlight ? (
+            <span
+              className="text-hint text-fg-tertiary"
+              data-testid="apply-summary-followup-status"
+            >
+              Starting follow-up…
+            </span>
           ) : null}
         </motion.aside>
       ) : null}

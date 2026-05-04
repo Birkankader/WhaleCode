@@ -30,6 +30,9 @@ pub struct NewRun {
     pub master_agent: AgentKind,
     pub status: RunStatus,
     pub started_at: DateTime<Utc>,
+    /// Phase 7 Step 5: set when the run is a follow-up
+    /// (`start_followup_run` IPC). `None` for top-level submissions.
+    pub parent_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +45,10 @@ pub struct Run {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub error: Option<String>,
+    /// Phase 7 Step 5: parent run id when this run is a follow-up.
+    /// DB column is `ON DELETE SET NULL`, so deleting a parent
+    /// orphans the child but leaves it navigable.
+    pub parent_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

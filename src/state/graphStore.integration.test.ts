@@ -54,6 +54,7 @@ import {
   EVENT_SUBTASK_THINKING,
   EVENT_WORKTREE_REVERTED,
   EVENT_ELAPSED_TICK,
+  EVENT_FOLLOWUP_STARTED,
   EVENT_COMPLETED,
   EVENT_DIFF_READY,
   EVENT_FAILED,
@@ -124,6 +125,7 @@ beforeEach(() => {
   invokeHandlers.set('skip_subtask_question', async () => undefined);
   invokeHandlers.set('hint_subtask', async () => undefined);
   invokeHandlers.set('revert_subtask_changes', async () => undefined);
+  invokeHandlers.set('start_followup_run', async () => 'child-run-id');
 });
 
 afterEach(() => {
@@ -2703,5 +2705,57 @@ describe('graphStore — Phase 7 Step 4 elapsed tick', () => {
     // Subtask transitioned to Done; the elapsed value should still
     // be present so the post-run card renders the captured runtime.
     expect(state().subtaskElapsed.get('one')).toBe(30_000);
+  });
+});
+
+describe('graphStore — Phase 7 Step 5 follow-up run', () => {
+  it('submitFollowupRun no-ops on empty prompt + sets currentError', async () => {
+    await state().submitTask('x');
+    await state().submitFollowupRun('   ');
+    expect(state().followupInFlight).toBe(false);
+    expect(state().currentError).toMatch(/empty/i);
+    expect(invokeHandlers.get('start_followup_run')).toBeDefined();
+  });
+
+  it('submitFollowupRun no-ops on pending_* runId', async () => {
+    useGraphStore.setState({ runId: 'pending_xxx' });
+    let calls = 0;
+    invokeHandlers.set('start_followup_run', async () => {
+      calls += 1;
+      return 'child';
+    });
+    await state().submitFollowupRun('do thing');
+    expect(calls).toBe(0);
+  });
+
+  it('submitFollowupRun swaps active subscription to child run id', async () => {
+    await state().submitTask('parent');
+    invokeHandlers.set('start_followup_run', async () => 'child-xyz');
+    await state().submitFollowupRun('add tests');
+    expect(state().runId).toBe('child-xyz');
+    expect(state().followupInFlight).toBe(false);
+  });
+
+  it('submitFollowupRun rejection rolls back inFlight + sets currentError', async () => {
+    await state().submitTask('parent');
+    invokeHandlers.set('start_followup_run', async () => {
+      throw 'wrong state';
+    });
+    await expect(state().submitFollowupRun('x')).rejects.toBeDefined();
+    expect(state().followupInFlight).toBe(false);
+    expect(state().currentError).toMatch(/Follow-up failed/i);
+    // Parent runId untouched — subscription not swapped on error.
+    expect(state().runId).toBe(BACKEND_RUN_ID);
+  });
+
+  it('FollowupStarted event handler is informational (no store mutation)', async () => {
+    await state().submitTask('parent');
+    const beforeRunId = state().runId;
+    emit(EVENT_FOLLOWUP_STARTED, {
+      runId: 'some-child',
+      parentRunId: BACKEND_RUN_ID,
+    });
+    // Action handles swap, not the event handler. No-op here.
+    expect(state().runId).toBe(beforeRunId);
   });
 });

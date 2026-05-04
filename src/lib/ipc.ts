@@ -293,6 +293,10 @@ export const EVENT_WORKTREE_REVERTED = 'run:worktree_reverted' as const;
 // Final tick fires on terminal transition with the frozen elapsed
 // value so the post-run card keeps the captured runtime visible.
 export const EVENT_ELAPSED_TICK = 'run:elapsed_tick' as const;
+// Phase 7 Step 5: a follow-up run was kicked off (parent_run_id set).
+// Frontend swaps the active-run subscription to the new child run id
+// and resets the graph store on receipt.
+export const EVENT_FOLLOWUP_STARTED = 'run:followup_started' as const;
 
 // ---------- Event payload schemas ----------
 
@@ -574,6 +578,13 @@ export const elapsedTickSchema = z.object({
 });
 export type ElapsedTick = z.infer<typeof elapsedTickSchema>;
 
+/** Phase 7 Step 5 payload for {@link EVENT_FOLLOWUP_STARTED}. */
+export const followupStartedSchema = z.object({
+  runId: runIdSchema,
+  parentRunId: runIdSchema,
+});
+export type FollowupStarted = z.infer<typeof followupStartedSchema>;
+
 /** Phase 5 Step 4 payload for {@link EVENT_SUBTASK_ANSWER_RECEIVED}. */
 export const subtaskAnswerReceivedSchema = z.object({
   runId: runIdSchema,
@@ -823,6 +834,24 @@ export async function revertSubtaskChanges(
   subtaskId: SubtaskId,
 ): Promise<void> {
   await invoke('revert_subtask_changes', { runId, subtaskId });
+}
+
+/**
+ * Phase 7 Step 5: kick off a follow-up run that builds on a previous
+ * run's outcome. Parent must be in `Done` (post-Apply) or `Rejected`;
+ * other states reject with a string error the UI surfaces as a toast.
+ * Returns the child run id; caller swaps active-run subscription to
+ * it.
+ */
+export async function startFollowupRun(
+  parentRunId: RunId,
+  prompt: string,
+): Promise<RunId> {
+  const id = await invoke<string>('start_followup_run', {
+    parentRunId,
+    prompt,
+  });
+  return id;
 }
 
 /**

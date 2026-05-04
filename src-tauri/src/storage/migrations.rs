@@ -95,6 +95,17 @@ CREATE INDEX IF NOT EXISTS idx_subtask_replans_original ON subtask_replans(origi
 CREATE INDEX IF NOT EXISTS idx_subtask_replans_replacement ON subtask_replans(replacement_subtask_id);
 "#;
 
+/// Phase 7 Step 5: follow-up runs. `parent_run_id` is `NULL` for
+/// every Phase 6 run (no follow-up concept) and `Some(<parent>)`
+/// for runs created via `start_followup_run`. ALTER TABLE is not
+/// idempotent in SQLite — Rust-side bootstrap gates on
+/// `pragma_table_info` (same pattern M002 uses).
+pub const M003_ADD_PARENT_RUN_ID: &str = r#"
+ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
+"#;
+
 /// Migration list consumed by `tauri_plugin_sql::Builder::add_migrations`.
 /// Ordered by `version`; never renumber a shipped migration.
 pub fn all() -> Vec<Migration> {
@@ -109,6 +120,12 @@ pub fn all() -> Vec<Migration> {
             version: 2,
             description: "phase3_user_edit_tracking_and_replans",
             sql: M002_ADD_USER_EDIT_TRACKING_AND_REPLANS,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "phase7_step5_parent_run_id",
+            sql: M003_ADD_PARENT_RUN_ID,
             kind: MigrationKind::Up,
         },
     ]

@@ -131,6 +131,22 @@ pub async fn revert_subtask_changes(
         .map_err(|e| e.to_string())
 }
 
+/// Phase 7 Step 5: kick off a follow-up run that builds on a
+/// previous run's outcome. Parent must be in a terminal post-merge
+/// state (`Applied` / `Rejected`); other states reject with a
+/// string error the frontend renders as a toast. Returns the
+/// child run id so the caller can swap the active-run subscription.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn start_followup_run(
+    orch: State<'_, Arc<Orchestrator>>,
+    parent_run_id: RunId,
+    prompt: String,
+) -> Result<RunId, String> {
+    orch.submit_followup_run(&parent_run_id, prompt)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Phase 5 Step 2: stash the dirty base branch and retry Apply.
 /// Composition of `git stash push -u` + the existing apply oneshot —
 /// the frontend offers this as a one-click remediation on the

@@ -104,6 +104,19 @@ impl Storage {
                 .execute(pool)
                 .await?;
         }
+        // Phase 7 Step 5: parent_run_id column on runs. Same gating
+        // pattern as M002 — ALTER TABLE has no IF NOT EXISTS in
+        // SQLite, so we probe the column first.
+        let m003_applied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'parent_run_id'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if m003_applied == 0 {
+            sqlx::query(migrations::M003_ADD_PARENT_RUN_ID)
+                .execute(pool)
+                .await?;
+        }
         Ok(())
     }
 
@@ -111,8 +124,8 @@ impl Storage {
 
     pub async fn insert_run(&self, new: &NewRun) -> StorageResult<()> {
         sqlx::query(
-            "INSERT INTO runs (id, task, repo_path, master_agent, status, started_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, task, repo_path, master_agent, status, started_at, parent_run_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&new.id)
         .bind(&new.task)
@@ -120,8 +133,30 @@ impl Storage {
         .bind(agent_kind_to_str(new.master_agent))
         .bind(run_status_to_str(new.status))
         .bind(new.started_at.to_rfc3339())
+        .bind(new.parent_run_id.as_deref())
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Phase 7 Step 5: stamp a follow-up child with its parent's run
+    /// id. Called from `Orchestrator::submit_followup_run` right
+    /// after the child row is inserted (the standard `submit_task`
+    /// path doesn't carry the parent id; this is the lightest-touch
+    /// way to attach it without splitting the submit pipeline).
+    pub async fn set_parent_run_id(
+        &self,
+        id: &str,
+        parent_run_id: &str,
+    ) -> StorageResult<()> {
+        let res = sqlx::query("UPDATE runs SET parent_run_id = ? WHERE id = ?")
+            .bind(parent_run_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(StorageError::NotFound(format!("run {id}")));
+        }
         Ok(())
     }
 
@@ -189,7 +224,7 @@ impl Storage {
 
     pub async fn get_run(&self, id: &str) -> StorageResult<Option<Run>> {
         let row = sqlx::query(
-            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error \
+            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error, parent_run_id \
              FROM runs WHERE id = ?",
         )
         .bind(id)
@@ -202,7 +237,7 @@ impl Storage {
     /// Most recent runs first. Reads `idx_runs_started_at`.
     pub async fn list_recent_runs(&self, limit: i64) -> StorageResult<Vec<Run>> {
         let rows = sqlx::query(
-            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error \
+            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error, parent_run_id \
              FROM runs ORDER BY started_at DESC LIMIT ?",
         )
         .bind(limit)
@@ -223,7 +258,7 @@ impl Storage {
     /// so recovery must sweep it.
     pub async fn list_active_runs(&self) -> StorageResult<Vec<Run>> {
         let rows = sqlx::query(
-            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error \
+            "SELECT id, task, repo_path, master_agent, status, started_at, finished_at, error, parent_run_id \
              FROM runs \
              WHERE status IN ('planning', 'awaiting-approval', 'running', 'merging', 'awaiting-human-fix') \
              ORDER BY started_at ASC",
@@ -565,6 +600,7 @@ fn row_to_run(row: sqlx::sqlite::SqliteRow) -> StorageResult<Run> {
         started_at: row.try_get("started_at")?,
         finished_at: row.try_get("finished_at")?,
         error: row.try_get("error")?,
+        parent_run_id: row.try_get("parent_run_id").ok(),
     })
 }
 
@@ -597,6 +633,7 @@ mod tests {
             master_agent: AgentKind::Claude,
             status: RunStatus::Planning,
             started_at: Utc::now(),
+            parent_run_id: None,
         }
     }
 

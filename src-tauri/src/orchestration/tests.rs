@@ -6399,3 +6399,130 @@ async fn hint_with_run_cancel_terminates_run() {
     h.orch.cancel_run(&run_id).await.unwrap();
     h.await_status(&run_id, RunStatus::Cancelled).await;
 }
+
+// -- Phase 7 Step 5: follow-up runs (parent_run_id) ------------------
+//
+// These cases stub the parent row directly via `storage.insert_run`
+// rather than driving a full plan → execute → merge → Apply
+// lifecycle. The orchestrator method's contract is:
+//   1. Look up parent row from storage
+//   2. Validate `parent.status` (Done | Rejected)
+//   3. Build augmented task
+//   4. Call submit_task → child run id
+//   5. Stamp parent_run_id on child + emit FollowupStarted
+// Steps 1-3 + 5 are the meat; step 4 calls into submit_task which
+// has its own coverage. The seeded-row tests exercise the meat
+// without burning ScriptedAgent fixtures on the parent's lifecycle.
+
+async fn seed_done_parent(
+    h: &Harness,
+    id: &str,
+    task: &str,
+    status: RunStatus,
+) {
+    use crate::storage::models::NewRun;
+    use chrono::Utc;
+    h.storage
+        .insert_run(&NewRun {
+            id: id.into(),
+            task: task.into(),
+            repo_path: h.repo_path.to_string_lossy().to_string(),
+            master_agent: AgentKind::Claude,
+            status,
+            started_at: Utc::now(),
+            parent_run_id: None,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn submit_followup_run_on_done_parent_stamps_parent_id_and_emits_event() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    seed_done_parent(&h, "parent-1", "parent task", RunStatus::Done).await;
+
+    let child_id = h
+        .orch
+        .submit_followup_run(&"parent-1".to_string(), "follow-up prompt".into())
+        .await
+        .unwrap();
+    assert_ne!(child_id, "parent-1");
+
+    // Child row carries parent_run_id + augmented task text.
+    let child = h.storage.get_run(&child_id).await.unwrap().unwrap();
+    assert_eq!(child.parent_run_id.as_deref(), Some("parent-1"));
+    assert!(child.task.contains("parent task"));
+    assert!(child.task.contains("follow-up prompt"));
+
+    // FollowupStarted event was emitted.
+    let events = h.sink.snapshot().await;
+    let saw = events.iter().any(|e| matches!(
+        e,
+        RunEvent::FollowupStarted { run_id, parent_run_id }
+            if run_id == &child_id && parent_run_id == "parent-1"
+    ));
+    assert!(saw, "expected FollowupStarted event");
+
+    // Cleanup: child is mid-plan / pre-approval; rejection finalises it.
+    h.orch.cancel_run(&child_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn submit_followup_run_on_rejected_parent_succeeds() {
+    let agent = ScriptedAgent::new(AgentKind::Claude)
+        .with_plan(Ok(plan_of(1)))
+        .await
+        .with_execute("t0", ExecuteScript::Block)
+        .await;
+    let h = Harness::new(agent).await;
+
+    seed_done_parent(&h, "parent-2", "parent rejected", RunStatus::Rejected).await;
+
+    let child_id = h
+        .orch
+        .submit_followup_run(&"parent-2".to_string(), "try again".into())
+        .await
+        .unwrap();
+    let child = h.storage.get_run(&child_id).await.unwrap().unwrap();
+    assert_eq!(child.parent_run_id.as_deref(), Some("parent-2"));
+
+    h.orch.cancel_run(&child_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn submit_followup_run_on_pre_terminal_parent_returns_wrong_state() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+
+    seed_done_parent(&h, "parent-3", "still running", RunStatus::Running).await;
+
+    let err = h
+        .orch
+        .submit_followup_run(&"parent-3".to_string(), "follow-up".into())
+        .await
+        .unwrap_err();
+    match err {
+        OrchestratorError::WrongState { state, .. } => {
+            assert_eq!(state, RunStatus::Running);
+        }
+        e => panic!("expected WrongState, got {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn submit_followup_run_on_unknown_parent_returns_not_found() {
+    let agent = ScriptedAgent::new(AgentKind::Claude);
+    let h = Harness::new(agent).await;
+    let err = h
+        .orch
+        .submit_followup_run(&"ghost".to_string(), "x".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OrchestratorError::RunNotFound(_)));
+}

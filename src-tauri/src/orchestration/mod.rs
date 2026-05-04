@@ -372,6 +372,7 @@ impl Orchestrator {
                 master_agent: master_kind,
                 status: RunStatus::Planning,
                 started_at,
+                parent_run_id: None,
             })
             .await
             .map_err(|e| OrchestratorError::Storage(e.to_string()))?;
@@ -756,6 +757,95 @@ impl Orchestrator {
 
     /// Fire the run's [`CancellationToken`]. The lifecycle task
     /// notices on its next `.await` branch and transitions to
+    /// Phase 7 Step 5: kick off a follow-up run that builds on the
+    /// parent's outcome. The follow-up is a brand-new top-level Run
+    /// with `parent_run_id` set to trace lineage; the parent's
+    /// branch + final commit + task summary are folded into the new
+    /// run's task text per the Step 0 follow-up diagnostic
+    /// recommendation (fresh-prompt shape — workspace state is
+    /// already authoritative on the parent's commit, so we only
+    /// inject a short reference prefix rather than the full parent
+    /// transcript).
+    ///
+    /// Validation:
+    ///
+    /// - parent must exist (`RunNotFound` otherwise)
+    /// - parent must be in a terminal post-merge state — `Applied`
+    ///   or `Rejected`. Anything else (still planning / running /
+    ///   merging / awaiting-human-fix) returns `WrongState` so the
+    ///   UI can surface the rejection as a toast. Concurrent
+    ///   follow-up policy (rejecting a second IPC while the first
+    ///   child is still in flight) is deliberately deferred — the
+    ///   UI rate-limits clicks via `applyInFlight`-style guards;
+    ///   a second submission lands a fresh sibling rather than
+    ///   colliding.
+    ///
+    /// On success: emits `FollowupStarted { parent_run_id,
+    /// child_run_id }` after the child run is registered, then
+    /// returns the child run id so the IPC caller can navigate the
+    /// frontend to the new run.
+    pub async fn submit_followup_run(
+        &self,
+        parent_run_id: &RunId,
+        prompt: String,
+    ) -> Result<RunId, OrchestratorError> {
+        let parent = self
+            .storage
+            .get_run(parent_run_id)
+            .await
+            .map_err(|e| OrchestratorError::Storage(e.to_string()))?
+            .ok_or_else(|| OrchestratorError::RunNotFound(parent_run_id.clone()))?;
+
+        // Backend's `Done` covers post-merge success (the frontend
+        // surfaces this as `applied` once the ApplySummary event
+        // lands). `Rejected` is the user-discarded path.
+        if !matches!(parent.status, RunStatus::Done | RunStatus::Rejected) {
+            return Err(OrchestratorError::WrongState {
+                run_id: parent_run_id.clone(),
+                state: parent.status,
+                expected: "done | rejected",
+            });
+        }
+
+        // Step 0 diagnostic recommendation: fresh prompt with a
+        // short prefix referencing the parent's outcome. NOT a full
+        // transcript injection (Gemini's 60 KB PROMPT_CHAR_BUDGET
+        // would 413 on long parents and the worktree state already
+        // encodes the previous commit's work).
+        let augmented_task = format!(
+            "Follow-up to parent run. Parent task: {}. Continue with: {}",
+            parent.task.trim(),
+            prompt.trim()
+        );
+
+        let child_run_id = self
+            .submit_task(augmented_task, std::path::PathBuf::from(&parent.repo_path))
+            .await?;
+
+        // Stamp the lineage. submit_task wrote the child row with
+        // parent_run_id = NULL (it has no concept of parent); this
+        // overwrites the column without disturbing the rest of the
+        // submit pipeline.
+        if let Err(e) = self
+            .storage
+            .set_parent_run_id(&child_run_id, parent_run_id)
+            .await
+        {
+            eprintln!(
+                "[orchestrator] set_parent_run_id({child_run_id}, {parent_run_id}) failed: {e}"
+            );
+        }
+
+        self.event_sink
+            .emit(RunEvent::FollowupStarted {
+                run_id: child_run_id.clone(),
+                parent_run_id: parent_run_id.clone(),
+            })
+            .await;
+
+        Ok(child_run_id)
+    }
+
     /// Cancelled. Idempotent: cancelling a missing or already-cancelled
     /// run is a no-op and returns `Ok(())` so the UI can smash the
     /// button repeatedly without error banners.
@@ -1875,6 +1965,7 @@ mod init_tests {
                 master_agent: AgentKind::Claude,
                 status,
                 started_at: Utc::now(),
+                parent_run_id: None,
             })
             .await
             .unwrap();

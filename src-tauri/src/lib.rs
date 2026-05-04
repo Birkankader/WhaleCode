@@ -92,6 +92,9 @@ pub fn run() {
             // row with `revert_intent` so the frontend distinguishes
             // "stopped, worktree preserved" from "undone, worktree clean".
             commands::revert_subtask_changes,
+            // Phase 7 Step 5: kick off a follow-up run that builds on
+            // a previous run's outcome. Parent must be Applied / Rejected.
+            commands::start_followup_run,
             // Phase 5 Step 2: base-branch dirty helper. stash_and_retry_apply
             // composes `git stash push -u` + the existing apply oneshot;
             // pop_stash is user-initiated — no auto-pop after Apply because

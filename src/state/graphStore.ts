@@ -51,6 +51,7 @@ import {
   revertSubtaskChanges as revertSubtaskChangesIpc,
   setSettings,
   skipSubtask as skipSubtaskIpc,
+  startFollowupRun as startFollowupRunIpc,
   submitTask as submitTaskIpc,
   tryReplanAgain as tryReplanAgainIpc,
   updateSubtask as updateSubtaskIpc,
@@ -81,6 +82,7 @@ import {
   type SubtaskThinking,
   type WorktreeReverted,
   type ElapsedTick,
+  type FollowupStarted,
   type SkipResult,
   type StatusChanged,
   type SubtaskDiff,
@@ -386,6 +388,21 @@ export type GraphState = {
 
   setMasterAgent: (agent: BackendAgentKind) => void;
   submitTask: (input: string, masterAgent?: BackendAgentKind) => Promise<void>;
+  /**
+   * Phase 7 Step 5: kick off a follow-up run. Calls
+   * `start_followup_run` IPC with the current run id as parent;
+   * on success, detaches the parent's subscription, resets the
+   * store, attaches a fresh subscription on the child run id, and
+   * sets `runId` to the child.
+   *
+   * `inFlight` flag (`followupInFlight`) gates the FollowupInput
+   * disabled state during the IPC + swap window; clears on
+   * success or error.
+   */
+  submitFollowupRun: (prompt: string) => Promise<void>;
+  /** Phase 7 Step 5: blocks UI re-submission while the IPC + swap
+   *  is in flight. */
+  followupInFlight: boolean;
   toggleSubtaskSelection: (id: string) => void;
   selectAll: () => void;
   selectNone: () => void;
@@ -900,6 +917,7 @@ const initial: Pick<
   | 'subtaskRevertIntent'
   | 'subtaskElapsed'
   | 'masterElapsed'
+  | 'followupInFlight'
   | 'inlineDiffSelection'
   | 'inlineDiffSidebarUserToggled'
   | 'inlineDiffSidebarWidth'
@@ -951,6 +969,7 @@ const initial: Pick<
   subtaskRevertIntent: new Set(),
   subtaskElapsed: new Map(),
   masterElapsed: null,
+  followupInFlight: false,
   inlineDiffSelection: new Set(),
   inlineDiffSidebarUserToggled: null,
   inlineDiffSidebarWidth: 480,
@@ -1630,6 +1649,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
     });
   }
 
+  function handleFollowupStarted(e: FollowupStarted) {
+    // Phase 7 Step 5: informational. The submitFollowupRun action
+    // performs the subscription swap inline; this handler exists so
+    // the wire event has a route + the FollowupStarted contract is
+    // observable for tests / future threaded-run-history view.
+    void e;
+  }
+
   function handleElapsedTick(e: ElapsedTick) {
     if (e.runId !== get().runId) return;
     if (e.subtaskId === null) {
@@ -1944,6 +1971,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       onSubtaskHintReceived: handleSubtaskHintReceived,
       onWorktreeReverted: handleWorktreeReverted,
       onElapsedTick: handleElapsedTick,
+      onFollowupStarted: handleFollowupStarted,
       onCompleted: handleCompleted,
       onFailed: handleFailed,
       onReplanStarted: handleReplanStarted,
@@ -2062,6 +2090,52 @@ export const useGraphStore = create<GraphState>((set, get) => {
         if (next.has(id)) next.delete(id);
         else next.add(id);
         return { selectedSubtaskIds: next };
+      });
+    },
+
+    async submitFollowupRun(prompt) {
+      const parentRunId = get().runId;
+      if (!parentRunId || parentRunId.startsWith('pending_')) return;
+      if (get().followupInFlight) return;
+      const trimmed = prompt.trim();
+      if (trimmed.length === 0) {
+        set({ currentError: 'Follow-up prompt is empty.' });
+        return;
+      }
+      set({ followupInFlight: true });
+      let childRunId: string;
+      try {
+        childRunId = await startFollowupRunIpc(parentRunId, trimmed);
+      } catch (err) {
+        set({
+          followupInFlight: false,
+          currentError: `Follow-up failed: ${String(err)}`,
+        });
+        throw err;
+      }
+      // Detach the parent's subscription, reset the store to a
+      // clean canvas, then attach a fresh subscription on the
+      // child run id. Mirrors the submitTask attach path so the
+      // event flow is identical to a top-level run.
+      detachActiveSubscription();
+      get().reset();
+      const subscription = new RunSubscription(childRunId, buildHandlers());
+      try {
+        await subscription.attach();
+      } catch (err) {
+        // Attach failed — we can't observe the child run. Best
+        // effort: cancel the orphan, clear, surface the error.
+        void cancelRunIpc(childRunId).catch(() => undefined);
+        set({
+          followupInFlight: false,
+          currentError: `Follow-up subscription failed: ${String(err)}`,
+        });
+        throw err;
+      }
+      set({
+        runId: childRunId,
+        activeSubscription: subscription,
+        followupInFlight: false,
       });
     },
 
@@ -2601,6 +2675,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         subtaskRevertIntent: new Set(),
         subtaskElapsed: new Map(),
         masterElapsed: null,
+        followupInFlight: false,
         inlineDiffSelection: new Set(),
         inlineDiffSidebarUserToggled: null,
         inlineDiffSidebarWidth: persistedWidth,

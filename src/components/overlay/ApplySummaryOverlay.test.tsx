@@ -229,3 +229,65 @@ describe('ApplySummaryOverlay', () => {
     ).toHaveTextContent('orphan-1');
   });
 });
+
+describe('ApplySummaryOverlay — follow-up input (Phase 7 Step 5)', () => {
+  it('renders the follow-up input + send button when summary present', () => {
+    useGraphStore.setState({ applySummary: sampleSummary() });
+    render(<ApplySummaryOverlay />);
+    expect(screen.getByTestId('apply-summary-followup-input')).toBeInTheDocument();
+    expect(screen.getByTestId('apply-summary-followup-submit')).toBeInTheDocument();
+  });
+
+  it('send button disabled when prompt empty', () => {
+    useGraphStore.setState({ applySummary: sampleSummary() });
+    render(<ApplySummaryOverlay />);
+    expect(screen.getByTestId('apply-summary-followup-submit')).toBeDisabled();
+  });
+
+  it('send button enabled when prompt has content', () => {
+    useGraphStore.setState({ applySummary: sampleSummary() });
+    render(<ApplySummaryOverlay />);
+    fireEvent.change(screen.getByTestId('apply-summary-followup-input'), {
+      target: { value: 'fix the bug' },
+    });
+    expect(screen.getByTestId('apply-summary-followup-submit')).not.toBeDisabled();
+  });
+
+  it('Enter triggers submitFollowupRun with trimmed prompt', async () => {
+    const submitFollowupRun = vi
+      .fn<(p: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    useGraphStore.setState({
+      applySummary: sampleSummary(),
+      submitFollowupRun,
+    });
+    render(<ApplySummaryOverlay />);
+    fireEvent.change(screen.getByTestId('apply-summary-followup-input'), {
+      target: { value: '  add tests  ' },
+    });
+    fireEvent.submit(screen.getByTestId('apply-summary-followup-form'));
+    await waitFor(() => {
+      expect(submitFollowupRun).toHaveBeenCalledWith('add tests');
+    });
+  });
+
+  it('shows "Starting follow-up…" status while in flight', () => {
+    useGraphStore.setState({
+      applySummary: sampleSummary(),
+      followupInFlight: true,
+    });
+    render(<ApplySummaryOverlay />);
+    expect(
+      screen.getByTestId('apply-summary-followup-status'),
+    ).toHaveTextContent(/Starting follow-up/);
+    expect(screen.getByTestId('apply-summary-followup-input')).toBeDisabled();
+    expect(screen.getByTestId('apply-summary-followup-submit')).toBeDisabled();
+  });
+
+  it('respects 500-char maxLength', () => {
+    useGraphStore.setState({ applySummary: sampleSummary() });
+    render(<ApplySummaryOverlay />);
+    const input = screen.getByTestId('apply-summary-followup-input');
+    expect(input.getAttribute('maxLength')).toBe('500');
+  });
+});
